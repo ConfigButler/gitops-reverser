@@ -13,7 +13,7 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-// A SaveRequest with catchUp: AfterPush asks its GitTarget's applier to apply the tip as soon as its
+// A CommitRequest with catchUp: AfterPush asks its GitTarget's applier to apply the tip as soon as its
 // commit is pushed, and the controller reports how that went in its Applied condition. The save's own
 // outcome is decided by the push alone; this is reported beside it and never changes it.
 //
@@ -35,7 +35,7 @@ const (
 	SaveApplyCommitDropped  = "CommitDropped"
 )
 
-// SaveApply is how the apply a SaveRequest asked for stands.
+// SaveApply is how the apply a CommitRequest asked for stands.
 type SaveApply struct {
 	// Done is whether it is settled: it changes no more.
 	Done bool
@@ -55,56 +55,56 @@ type saveApplyEntry struct {
 }
 
 // recordSaveApply stores where a save's apply stands, for the controller to read. The event loop is
-// the only writer; the entries are collected with the SaveRequest outcomes.
-func (w *BranchWorker) recordSaveApply(id saveRequestID, apply SaveApply) {
+// the only writer; the entries are collected with the CommitRequest outcomes.
+func (w *BranchWorker) recordSaveApply(id commitRequestID, apply SaveApply) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	if w.crApplies == nil {
-		w.crApplies = map[saveRequestID]saveApplyEntry{}
+		w.crApplies = map[commitRequestID]saveApplyEntry{}
 	}
 	w.crApplies[id] = saveApplyEntry{apply: apply, updatedAt: time.Now()}
 }
 
-// LookupSaveApply reports where the apply a SaveRequest asked for stands, and false while the
+// LookupSaveApply reports where the apply a CommitRequest asked for stands, and false while the
 // worker knows nothing of it.
 func (w *BranchWorker) LookupSaveApply(namespace, name, uid string) (SaveApply, bool) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
-	entry, ok := w.crApplies[saveRequestID{Namespace: namespace, Name: name, UID: uid}]
+	entry, ok := w.crApplies[commitRequestID{Namespace: namespace, Name: name, UID: uid}]
 	return entry.apply, ok
 }
 
 // collectSaveApplies drops the entries older than the outcome TTL. The caller holds crOutcomesMu.
 func (w *BranchWorker) collectSaveApplies(now time.Time) {
 	for id, entry := range w.crApplies {
-		if now.Sub(entry.updatedAt) > saveRequestOutcomeTTL {
+		if now.Sub(entry.updatedAt) > commitRequestOutcomeTTL {
 			delete(w.crApplies, id)
 		}
 	}
 }
 
-// catchUpAfterSave is called as a SaveRequest that asked to catch up resolves. With a pushed
+// catchUpAfterSave is called as a CommitRequest that asked to catch up resolves. With a pushed
 // commit, its GitTarget's applier gets a converge when the appliers are next listed, at the end of
 // this wake (takeSavedCatchUps); with none, there is nothing to apply.
-func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingSaveRequest, commit string) {
+func (l *branchWorkerEventLoop) catchUpAfterSave(pcr *pendingCommitRequest, commit string) {
 	if commit == "" {
 		l.w.recordSaveApply(pcr.id, SaveApply{Done: true, Applied: true, Reason: SaveApplyNothingToApply,
 			Message: "the request pushed no commit: what it saved was in Git already, and the cluster holds it"})
 		return
 	}
 	if l.savedCatchUps == nil {
-		l.savedCatchUps = map[itypes.ResourceReference]map[saveRequestID]string{}
+		l.savedCatchUps = map[itypes.ResourceReference]map[commitRequestID]string{}
 	}
 	ref := itypes.NewResourceReference(pcr.gitTargetName, pcr.gitTargetNamespace)
 	if l.savedCatchUps[ref] == nil {
-		l.savedCatchUps[ref] = map[saveRequestID]string{}
+		l.savedCatchUps[ref] = map[commitRequestID]string{}
 	}
 	l.savedCatchUps[ref][pcr.id] = commit
 	l.w.recordSaveApply(pcr.id, SaveApply{Reason: SaveApplyApplying,
 		Message: "commit " + commit + " is pushed; its applier is asked to apply it"})
 }
 
-// takeSavedCatchUps leaves a converge pending for every applier a pushed SaveRequest asked to catch
+// takeSavedCatchUps leaves a converge pending for every applier a pushed CommitRequest asked to catch
 // up, and records the request as waiting on it. It was asked for, so it is no lag converge: it does
 // not yield to an edit (convergeHolds). A request whose GitTarget names no applier is settled.
 func (l *branchWorkerEventLoop) takeSavedCatchUps() {
@@ -122,7 +122,7 @@ func (l *branchWorkerEventLoop) takeSavedCatchUps() {
 		for id, commit := range saves {
 			state.waitSave(id, commit)
 		}
-		l.w.Log.Info("A SaveRequest asked its applier to catch up with the pushed commit",
+		l.w.Log.Info("A CommitRequest asked its applier to catch up with the pushed commit",
 			"branch", l.w.Branch, "applier", state.ref.String(), "gitTarget", ref.String(), "requests", len(saves))
 	}
 	l.savedCatchUps = nil
@@ -140,11 +140,11 @@ func (l *branchWorkerEventLoop) applierNaming(ref itypes.ResourceReference) *app
 	return nil
 }
 
-// waitSave records a SaveRequest, which pushed commit, as waiting for the applier's next apply that
+// waitSave records a CommitRequest, which pushed commit, as waiting for the applier's next apply that
 // succeeds.
-func (s *applierState) waitSave(id saveRequestID, commit string) {
+func (s *applierState) waitSave(id commitRequestID, commit string) {
 	if s.waitingSaves == nil {
-		s.waitingSaves = map[saveRequestID]string{}
+		s.waitingSaves = map[commitRequestID]string{}
 	}
 	s.waitingSaves[id] = commit
 }
@@ -157,7 +157,7 @@ func (s *applierState) waitSave(id saveRequestID, commit string) {
 //   - one whose commit the branch holds and revision does not waits for the converge left pending;
 //   - one the checkout cannot tell about, because it lacks a commit, waits as well, and the remote is
 //     looked at: revision is a commit pushed elsewhere, and its fetch brings the apply that settles it.
-func (l *branchWorkerEventLoop) settleSaves(state *applierState, saves map[saveRequestID]string, revision string) {
+func (l *branchWorkerEventLoop) settleSaves(state *applierState, saves map[commitRequestID]string, revision string) {
 	if len(saves) == 0 {
 		return
 	}
@@ -235,7 +235,7 @@ func commitHolds(repo *gogit.Repository, descendant, commit string) (bool, bool)
 }
 
 // retrySaves records the saves an attempt that did not succeed gave back as waiting again, with why.
-func (l *branchWorkerEventLoop) retrySaves(saves map[saveRequestID]string, why string) {
+func (l *branchWorkerEventLoop) retrySaves(saves map[commitRequestID]string, why string) {
 	for id := range saves {
 		l.w.recordSaveApply(id, SaveApply{Reason: SaveApplyRetrying,
 			Message: "the apply did not complete, and is asked again: " + why})
@@ -248,7 +248,7 @@ func (l *branchWorkerEventLoop) dropSaves(state *applierState) {
 	saves := maps.Clone(state.waitingSaves)
 	if state.inflight != nil {
 		if saves == nil {
-			saves = map[saveRequestID]string{}
+			saves = map[commitRequestID]string{}
 		}
 		maps.Copy(saves, state.inflight.saves)
 	}

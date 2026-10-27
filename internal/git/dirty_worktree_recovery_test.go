@@ -120,7 +120,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 			},
 		},
 		{
-			name: "empty commit recording a SaveRequest",
+			name: "empty commit recording a CommitRequest",
 			commit: func(t *testing.T, loop *branchWorkerEventLoop) {
 				t.Helper()
 				serviceAttach(loop, commitEmptyReq("alice", "save: nothing changed"))

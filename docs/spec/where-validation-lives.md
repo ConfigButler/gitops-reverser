@@ -52,10 +52,10 @@ being refused at admission.
 
 [`/validate-operator-types`](../../internal/webhook/validate_operator_types_handler.go#L27)
 is **not a validation gate**. It captures the *submitter's identity* on a command kind
-(`SaveRequest`) so a commit can be authored by a real Kubernetes user, and for a command it
+(`CommitRequest`) so a commit can be authored by a real Kubernetes user, and for a command it
 **always allows**. Identity is the textbook case for admission: it exists in the `AdmissionRequest`
 and on no persisted field, so no reconciler could recover it later. See
-[`saverequest-admission-authorship.md`](saverequest-admission-authorship.md).
+[`commitrequest-admission-authorship.md`](commitrequest-admission-authorship.md).
 
 The same endpoint carries one rejection, and it is feedback, not a gate: a `WatchRule` that would
 bring a second source namespace to a `GitTarget` declaring `spec.serializeNamespace: false` is

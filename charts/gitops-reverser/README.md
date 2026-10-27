@@ -19,7 +19,7 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 - ✅ **Git synchronization**: Push Kubernetes changes back to Git repositories
 - ✅ **Single-pod stability**: 1 replica by default while multi-pod support is in progress
 - ✅ **Automatic CRD installation**: KubeProvider, GitProvider, GitBranch, GitTarget, WatchRule,
-  ClusterWatchRule, SaveRequest, FluxClaim, and ArgoCDClaim CRDs installed automatically
+  ClusterWatchRule, CommitRequest, FluxClaim, and ArgoCDClaim CRDs installed automatically
 - ✅ **Watch-based ingestion**: object state comes from the Kubernetes watch API
 - ✅ **Optional audit attribution**: name commit authors from kube-apiserver audit events over HTTPS
 - ✅ **Prometheus metrics**: Built-in monitoring support
@@ -30,7 +30,7 @@ For the chart's optional starter `quickstart` block, see [`docs/configuration.md
 - cert-manager (for TLS certificates)
 - **Valkey or Redis: optional but advised.** The default install runs without it in
   `configured-author` mode (watches cold-replay on restart). Add it to unlock warm-restart resume
-  cursors, SaveRequest author capture (the admission webhook), and attributed-author mode; enabling
+  cursors, CommitRequest author capture (the admission webhook), and attributed-author mode; enabling
   any of those requires a non-empty `queue.redis.addr`.
 - **Optional, attributed-author mode only:** kube-apiserver audit delivery, which adds
   mirrored-resource commit-author attribution. Without it the operator still mirrors state, authored by
@@ -182,7 +182,7 @@ nodeSelector:
 | `controllerManager.insecureAllowGitHTTP` | Permit credentials with `http://` GitProvider URLs for trusted in-cluster development Git servers | `false` |
 | `controllerManager.branchWorkerQueueDepth` | Event queue depth per branch worker. A full queue refuses the write (`git_queue_refusals_total`) instead of stalling the watch path; the watch delivers it again from its cursor, and only a cursor that expires first loses that write's own commit (and, under `prune.mode: OnEvent`, a delete's removal). Costs queue depth × payload of pod memory, which `branchBufferMaxSize` does **not** cover | `1000` |
 | `controllerManager.branchBufferMaxSize` | Maximum in-memory event buffer per branch worker. Bounds the open commit window plus the writes retained for replay until a push succeeds. While the remote cannot be reached, retained writes that reach it close the worker to new writes, saves and resyncs until they are published; the watch delivers a refused event again | `8Mi` |
-| `controllerManager.saveRequestTTL` | How long a `SaveRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
+| `controllerManager.commitRequestTTL` | How long a `CommitRequest` is kept once it finishes. Written onto the request as the `configbutler.ai/delete-after` annotation; remove or edit that to keep one. `"0"` writes none | `48h` |
 | `git.refreshInterval` | How often an idle `GitTarget` re-proves where its branch is on the Git remote. `"0"` disables it | `10m` |
 | `applierAccess.flux` | Grant the operator `get`, `list` and `patch` on Flux `Kustomizations`, `get` and `patch` on `GitRepositories`, `list` on `HelmReleases` and `HelmCharts` (to find what else applies a source), and `create` on `SelfSubjectAccessReviews`, so it can hold the `Kustomization` a `FluxClaim` names suspended and resume it for each apply | `false` |
 | `applierAccess.argocd` | Grant the operator `get`, `update` and `patch` on Argo CD `Applications`, and `create` on `SelfSubjectAccessReviews`, so it can hold the automated sync of the `Application` an `ArgoCDClaim` names off and start its syncs | `false` |
@@ -198,7 +198,7 @@ nodeSelector:
 | `quickstart.gitBranch.branch` | Branch the starter `GitBranch` writes. Must match `quickstart.gitProvider.branchPatterns` | `main` |
 | `quickstart.gitTarget.path` | Repository path used by the starter `GitTarget`; set `.` only to deliberately target the repo root | `live-cluster` |
 | `quickstart.watchRule.rules` | Rules used by the starter `WatchRule` | `configmaps create/update/delete` |
-| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty means cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record SaveRequest authors (admission runs as a no-op without it); **required** when `attribution.enabled=true` unless `attribution.transport=memory` | `""` |
+| `queue.redis.addr` | Redis/Valkey endpoint (`host:port`). Optional but advised: empty means cold-replay on restart. Set it for warm-restart cursors and for the admission webhook to actually record CommitRequest authors (admission runs as a no-op without it); **required** when `attribution.enabled=true` unless `attribution.transport=memory` | `""` |
 | `queue.redis.auth.existingSecret` | Name of a pre-created Secret holding the Redis password (only used when `queue.redis.addr` is set) | `""` |
 | `queue.redis.auth.existingSecretKey` | Key within the Secret that holds the password | `password` |
 | `queue.redis.auth.username` | Optional Redis ACL username | `""` |
@@ -220,7 +220,7 @@ nodeSelector:
 | `kubeProvider.secretRef.key` | Key within that Secret. Empty reads `value` then `value.yaml` | `""` |
 | `kubeProvider.allowedGitTargets` | Rendered as the provider's `spec.allowedGitTargets`: which namespaces' `GitTarget`s may mirror through it, and what. Each grant has a `consumerNamespaces` block (`from`: `Same`, `Names`, `Selector`, `All`), and `sourceNamespaces`, `clusterResources` or both beside it. **Unset, the field is omitted and the CRD defaults it to the release namespace mirroring its own**; a list is the whole policy, and `[]` admits nobody, the release namespace included: a refused `GitTarget` names `spec.allowedGitTargets`. `quickstart.enabled` adds a grant for the quickstart namespace, and [`values-playground.yaml`](values-playground.yaml) grants every namespace its own. With an `inCluster` provider a grant bypasses live namespace RBAC through the operator's identity | `null` |
 | `kubeProvider.allowedApplierClaims` | Rendered as the provider's `spec.allowedApplierClaims`: which namespaces' `FluxClaim`s and `ArgoCDClaim`s may hold an applier through it (`consumerNamespaces`), and in which `applierNamespaces` it may live, such as `flux-system`. Admission to mirror is no admission to apply. Unset, the CRD defaults it to the release namespace holding appliers in its own; `[]` admits nobody | `null` |
-| `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures SaveRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
+| `servers.admission.enabled` | Install the validate-operator-types admission webhook that captures CommitRequest authors (a form of author attribution). Enabled by default; a no-op until `queue.redis.addr` is set | `true` |
 | `rbac.create` | Create the manager ClusterRole and its binding | `true` |
 | `rbac.watchTypes.mode` | Which types a `WatchRule` may read. `any` grants cluster-wide read on everything, including every Secret in the cluster. `selected` grants read on `rbac.watchTypes.selected` only, so the reverser cannot list or watch Secrets (it keeps `get` on named Secrets it is pointed at). See [`docs/rbac.md`](../../docs/rbac.md) | `any` |
 | `rbac.watchTypes.selected` | Types to grant when `mode: selected`, as `{apiGroups, resources}` entries (verbs are always `get,list,watch`). Required and non-empty in that mode; `namespaces`, `customresourcedefinitions` and `apiservices` come from the manager role and must not be restated | `[]` |
@@ -287,7 +287,7 @@ This chart automatically manages the following CRDs:
 - **`gittargets.configbutler.ai`** - Branch/path and optional encryption configuration
 - **`watchrules.configbutler.ai`** - Namespaced watch rules
 - **`clusterwatchrules.configbutler.ai`** - Cluster-scoped watch rules
-- **`saverequests.configbutler.ai`** - One-shot "save now" signals that finalize the open commit window
+- **`commitrequests.configbutler.ai`** - One-shot "save now" signals that finalize the open commit window
 - **`fluxclaims.configbutler.ai`** - Applier claims holding a Flux `Kustomization` for bi-directional GitOps
 - **`argocdclaims.configbutler.ai`** - Applier claims holding an Argo CD `Application` for bi-directional GitOps
 
@@ -309,7 +309,7 @@ kubectl apply -f https://github.com/ConfigButler/gitops-reverser/releases/downlo
 To manually remove CRDs after uninstallation:
 
 ```bash
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai saverequests.configbutler.ai fluxclaims.configbutler.ai argocdclaims.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxclaims.configbutler.ai argocdclaims.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
 ```
 
 Delete the applier claims while the operator still runs, before this ([Uninstallation](#uninstallation)).
@@ -400,7 +400,7 @@ helm uninstall gitops-reverser --namespace gitops-reverser
 kubectl delete namespace gitops-reverser
 
 # Delete CRDs (optional, but removes all custom resources)
-kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai saverequests.configbutler.ai fluxclaims.configbutler.ai argocdclaims.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
+kubectl delete crd gitproviders.configbutler.ai gittargets.configbutler.ai watchrules.configbutler.ai clusterwatchrules.configbutler.ai commitrequests.configbutler.ai fluxclaims.configbutler.ai argocdclaims.configbutler.ai kubeproviders.configbutler.ai gitbranches.configbutler.ai gitreceivers.configbutler.ai
 ```
 
 ## Troubleshooting

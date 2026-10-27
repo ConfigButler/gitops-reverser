@@ -97,12 +97,12 @@ controllerManager:
   # included: work that would exceed it pauses the worker's intake of new writes, saves and
   # resyncs until a push lands, and the watch delivers what was refused once intake reopens.
   branchBufferMaxSize: 8Mi
-  # How long a SaveRequest is kept once it finishes, as a duration. Every save leaves one object
+  # How long a CommitRequest is kept once it finishes, as a duration. Every save leaves one object
   # behind, so without this they accumulate for as long as the namespace lives. The controller
   # writes the deletion time onto the request as the annotation configbutler.ai/delete-after when
   # it finishes; remove or edit that annotation to keep one request or move its deletion. Set "0"
   # to write no annotation, so new requests are kept.
-  saveRequestTTL: 48h
+  commitRequestTTL: 48h
 
 # How the operator treats the Git remote.
 git:
@@ -175,16 +175,16 @@ servers:
       secretNameOverride: ""
 
   # Validating admission server hosting the validate-operator-types webhook, which captures
-  # the submitter of each SaveRequest at admission and records it as the request's named actor
+  # the submitter of each CommitRequest at admission and records it as the request's named actor
   # (read back by the controller with no wait). Independent of `attribution` below:
   # attribution governs *mirrored-resource* authorship (from audit), this governs
-  # *command* authorship (from admission). Off → SaveRequests claim no actor and report
+  # *command* authorship (from admission). Off → CommitRequests claim no actor and report
   # AuthorAttributed=False. See
-  # docs/spec/saverequest-admission-authorship.md.
+  # docs/spec/commitrequest-admission-authorship.md.
   #
   # Command-author capture is Redis-backed: the captured author is written to Redis at admission and
   # read back at reconcile. Enabled by default so the webhook is always installed, but it is a no-op
-  # without Redis: the pod runs healthy and SaveRequests claim no actor
+  # without Redis: the pod runs healthy and CommitRequests claim no actor
   # (AuthorAttributed=False) until queue.redis.addr is set.
   admission:
     enabled: true

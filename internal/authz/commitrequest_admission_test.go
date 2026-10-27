@@ -18,21 +18,21 @@ import (
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// A GitTarget admits a SaveRequest by the namespace it is in and that namespace's labels, and gives it
+// A GitTarget admits a CommitRequest by the namespace it is in and that namespace's labels, and gives it
 // the most any admitting grant allows of a window whose writes name no author.
-func TestSaveRequestAdmitted(t *testing.T) {
+func TestCommitRequestAdmitted(t *testing.T) {
 	tenant := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name: testNS, Labels: map[string]string{"platform.example.com/tenant": "true"},
 	}}
-	request := &configv1alpha3.SaveRequest{ObjectMeta: metav1.ObjectMeta{Name: "save", Namespace: testNS}}
-	target := func(grants ...configv1alpha3.GitTargetSaveRequestGrant) *configv1alpha3.GitTarget {
+	request := &configv1alpha3.CommitRequest{ObjectMeta: metav1.ObjectMeta{Name: "save", Namespace: testNS}}
+	target := func(grants ...configv1alpha3.GitTargetCommitRequestGrant) *configv1alpha3.GitTarget {
 		return &configv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: platformNS},
-			Spec:       configv1alpha3.GitTargetSpec{AllowedSaveRequests: grants},
+			Spec:       configv1alpha3.GitTargetSpec{AllowedCommitRequests: grants},
 		}
 	}
-	bySelector := func(policy configv1alpha3.UnattributedWindowPolicy) configv1alpha3.GitTargetSaveRequestGrant {
-		return configv1alpha3.GitTargetSaveRequestGrant{
+	bySelector := func(policy configv1alpha3.UnattributedWindowPolicy) configv1alpha3.GitTargetCommitRequestGrant {
+		return configv1alpha3.GitTargetCommitRequestGrant{
 			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
 				From:     configv1alpha3.GrantFromSelector,
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"platform.example.com/tenant": "true"}},
@@ -40,27 +40,27 @@ func TestSaveRequestAdmitted(t *testing.T) {
 			UnattributedWindows: policy,
 		}
 	}
-	all := func(policy configv1alpha3.UnattributedWindowPolicy) configv1alpha3.GitTargetSaveRequestGrant {
-		return configv1alpha3.GitTargetSaveRequestGrant{
+	all := func(policy configv1alpha3.UnattributedWindowPolicy) configv1alpha3.GitTargetCommitRequestGrant {
+		return configv1alpha3.GitTargetCommitRequestGrant{
 			ConsumerNamespaces:  configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
 			UnattributedWindows: policy,
 		}
 	}
 	reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).WithObjects(tenant).Build()
 
-	decision, _, err := SaveRequestAdmitted(context.Background(), reader, request, target())
+	decision, _, err := CommitRequestAdmitted(context.Background(), reader, request, target())
 	require.NoError(t, err)
 	assert.False(t, decision.Allowed, "the default admits only the GitTarget's own namespace")
 	assert.Equal(t, ReasonNamespaceNotAuthorized, decision.Reason)
-	assert.Contains(t, decision.Message, "spec.allowedSaveRequests")
+	assert.Contains(t, decision.Message, "spec.allowedCommitRequests")
 
-	decision, admission, err := SaveRequestAdmitted(context.Background(), reader, request,
+	decision, admission, err := CommitRequestAdmitted(context.Background(), reader, request,
 		target(bySelector(configv1alpha3.UnattributedWindowsSavedBy)))
 	require.NoError(t, err)
 	assert.True(t, decision.Allowed, "the namespace's labels match")
 	assert.Equal(t, configv1alpha3.UnattributedWindowsSavedBy, admission.UnattributedWindows)
 
-	_, admission, err = SaveRequestAdmitted(context.Background(), reader, request,
+	_, admission, err = CommitRequestAdmitted(context.Background(), reader, request,
 		target(all(configv1alpha3.UnattributedWindowsKeep), bySelector(configv1alpha3.UnattributedWindowsTakeOver)))
 	require.NoError(t, err)
 	assert.Equal(t, configv1alpha3.UnattributedWindowsTakeOver, admission.UnattributedWindows,
@@ -71,6 +71,6 @@ func TestSaveRequestAdmitted(t *testing.T) {
 			return errors.New("apiserver unavailable")
 		},
 	}).Build()
-	_, _, err = SaveRequestAdmitted(context.Background(), failing, request, target(all("")))
+	_, _, err = CommitRequestAdmitted(context.Background(), failing, request, target(all("")))
 	require.Error(t, err, "a namespace that cannot be read is retried, never refused")
 }

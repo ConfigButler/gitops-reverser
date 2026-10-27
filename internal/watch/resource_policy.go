@@ -24,7 +24,7 @@ func isDefaultResourceExcluded(group, resource string) bool {
 		groupResourceKey("flowcontrol.apiserver.k8s.io", "prioritylevelconfigurations"),
 		groupResourceKey("batch", "jobs"),
 		groupResourceKey("batch", "cronjobs"),
-		// A save is a request to GitOps Reverser, never state to mirror (save_requests.go).
+		// A save is a request to GitOps Reverser, never state to mirror (commit_requests.go).
 		groupResourceKey("source.configbutler.ai", "remotesaverequests"):
 		return true
 	default:

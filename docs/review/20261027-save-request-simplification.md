@@ -864,7 +864,7 @@ Hard cuts, no migration.
    - Scope each provider's watch to the namespaces it lends, with `status.commitRequests.namespaces`
      and the `CommitRequestsServed` condition.
    - Gate the chart `Issuer`, and move the quickstart's cert-manager step under attribution.
-   - Rewrite [saverequest-design.md](../spec/saverequest-design.md) to describe the one kind, and
+   - Rewrite [commitrequest-design.md](../spec/commitrequest-design.md) to describe the one kind, and
      add a sentence to [definitions.md](../definitions.md): CommitRequest is the one operator kind
      that can also live on a source cluster.
    - Publish the `commitrequest-crd.yaml` release asset, with the schema revision line and its hash

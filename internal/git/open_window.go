@@ -16,8 +16,8 @@ type openWindow struct {
 	// author agree, so an unresolved event never coalesces with a resolved one that happens
 	// to carry an empty username. Exact enum equality is right HERE — canAppend compares two
 	// events from the same watch pipeline, so the outcomes are directly comparable. It is not
-	// right when comparing against a SaveRequest, which a different subsystem attributes;
-	// see pendingSaveRequest.matchesWindow.
+	// right when comparing against a CommitRequest, which a different subsystem attributes;
+	// see pendingCommitRequest.matchesWindow.
 	Attribution AttributionOutcome
 	// GitTarget is the target this window is bound to. Each finalized commit
 	// covers exactly one target so per-target encryption and bootstrap
@@ -39,28 +39,28 @@ type openWindow struct {
 	// window collapse onto the same path key.
 	writer eventContentWriter
 
-	// pendingMessage is the SaveRequest message attached to this window (§6.4).
+	// pendingMessage is the CommitRequest message attached to this window (§6.4).
 	// Once set, whichever path finalizes the window uses it instead of the
 	// generated grouped-commit message, so an early cut-off still carries intent.
 	pendingMessage string
-	// pendingCR identifies the SaveRequest attached to this window; at most one. On
+	// pendingCR identifies the CommitRequest attached to this window; at most one. On
 	// finalize its outcome is resolved (Committed once the carrying write pushes).
-	pendingCR *saveRequestID
-	// claim and claimedBy say what the attached SaveRequest claimed of the window, whose writes
-	// name no author, and who submitted it (pendingSaveRequest.claims): its message (SavedBy), or
+	pendingCR *commitRequestID
+	// claim and claimedBy say what the attached CommitRequest claimed of the window, whose writes
+	// name no author, and who submitted it (pendingCommitRequest.claims): its message (SavedBy), or
 	// the window, which the submitter then authors (TakeOver). Empty when it claimed nothing.
 	claim     UnattributedClaim
 	claimedBy UserInfo
 
 	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
-	// opened, until a SaveRequest attaches and replaces them with its own.
+	// opened, until a CommitRequest attaches and replaces them with its own.
 	timers windowTimers
 	// openedAt is when the write that opened the window arrived. Unlike the timers and lastWriteAt it
-	// never moves, not even when a SaveRequest attaches, so it is what the window's collection time
+	// never moves, not even when a CommitRequest attaches, so it is what the window's collection time
 	// is measured from.
 	openedAt time.Time
 	// lastWriteAt is when the idle interval last restarted: the latest collected write, or the
-	// attach of a SaveRequest.
+	// attach of a CommitRequest.
 	lastWriteAt time.Time
 }
 
@@ -68,7 +68,7 @@ type openWindow struct {
 type windowTimers struct {
 	// idle is the silence that closes the window. Ignored when noIdle is set.
 	idle time.Duration
-	// noIdle disables the idle close: a SaveRequest that set no idleTimeout collects until
+	// noIdle disables the idle close: a CommitRequest that set no idleTimeout collects until
 	// maxAt alone.
 	noIdle bool
 	// maxAt closes the window whatever keeps arriving: the window's opening (or the attach) plus
@@ -149,9 +149,9 @@ func windowPathKey(e Event, writer eventContentWriter) string {
 // window contributes the LAST routed event's resourceVersion, which is the state the commit
 // actually writes.
 //
-// requestMessage is the attached SaveRequest's message, or empty when no request attached. It is
+// requestMessage is the attached CommitRequest's message, or empty when no request attached. It is
 // carried through unaltered — never parsed, never trimmed — because the request's literal bytes
-// reaching the commit is the audit property the whole SaveRequest contract rests on.
+// reaching the commit is the audit property the whole CommitRequest contract rests on.
 func buildLiveCommitMessageData(
 	author, gitTarget, requestMessage string,
 	events []Event,

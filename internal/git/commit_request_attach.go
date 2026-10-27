@@ -31,7 +31,7 @@ var ErrResyncDiscarded = errors.New("resync snapshot discarded: an apply made it
 // it stays pending in its place and is applied with the writes around it once the remote answers.
 var ErrResyncDeferred = errors.New("resync deferred until the remote can be reached")
 
-// FinalizeOutcome is the terminal result of resolving a SaveRequest.
+// FinalizeOutcome is the terminal result of resolving a CommitRequest.
 type FinalizeOutcome string
 
 const (
@@ -45,7 +45,7 @@ const (
 	// window this request could attach to. It is a refusal a human can see: the author's own edits
 	// went into somebody else's commit, under a generated message rather than theirs.
 	//
-	// Raised at expiry from pendingSaveRequest.sawForeignWindow, never at attach time: under
+	// Raised at expiry from pendingCommitRequest.sawForeignWindow, never at attach time: under
 	// eager attach a request WAITS for a matching window rather than being refused on sight, so
 	// "a foreign window is open right now" is not yet an outcome.
 	FinalizeWindowMismatch FinalizeOutcome = "WindowMismatch"
@@ -60,38 +60,38 @@ const (
 	FinalizeSaveInProgress FinalizeOutcome = "SaveInProgress"
 )
 
-// SaveRequestPhase is where an unresolved SaveRequest stands on the worker. It is what the
+// CommitRequestPhase is where an unresolved CommitRequest stands on the worker. It is what the
 // controller reports while it waits, and it comes from the worker because sending an attach does
 // not prove the request was registered, attached or committed.
-type SaveRequestPhase string
+type CommitRequestPhase string
 
 const (
 	// PhaseWaitingForWorker is a request whose GitTarget has no branch worker yet, at startup or
 	// before the target's first reconcile. It is reported by the router, since there is no worker to
 	// report it, and the request is sent again on the controller's next poll.
-	PhaseWaitingForWorker SaveRequestPhase = "WaitingForWorker"
+	PhaseWaitingForWorker CommitRequestPhase = "WaitingForWorker"
 	// PhaseWaitingForWindow is a registered request waiting for a window to attach to.
-	PhaseWaitingForWindow SaveRequestPhase = "WaitingForWindow"
+	PhaseWaitingForWindow CommitRequestPhase = "WaitingForWindow"
 	// PhaseCollectingWindow is an attached request collecting writes until the window's timers close it.
-	PhaseCollectingWindow SaveRequestPhase = "CollectingWindow"
+	PhaseCollectingWindow CommitRequestPhase = "CollectingWindow"
 	// PhaseWaitingForPush is a request whose write is decided and not yet confirmed by the remote.
-	PhaseWaitingForPush SaveRequestPhase = "WaitingForPush"
+	PhaseWaitingForPush CommitRequestPhase = "WaitingForPush"
 )
 
 // Held reports whether the worker has acted on a request in this phase: it is attached to a window
 // or committed. From there only the worker can say how it ends, so the controller waits for it
 // however long that takes, instead of failing the request on a clock of its own.
-func (p SaveRequestPhase) Held() bool {
+func (p CommitRequestPhase) Held() bool {
 	return p == PhaseCollectingWindow || p == PhaseWaitingForPush
 }
 
-// ErrSaveRequestWithdrawn is the outcome of a request the controller withdrew before the worker
+// ErrCommitRequestWithdrawn is the outcome of a request the controller withdrew before the worker
 // acted on it. The worker records it, so a late re-send of the attach can never register the
 // request again, and the controller's failure and the worker's answer are the same answer.
-var ErrSaveRequestWithdrawn = errors.New("the SaveRequest was withdrawn before the worker acted on it")
+var ErrCommitRequestWithdrawn = errors.New("the CommitRequest was withdrawn before the worker acted on it")
 
-// FinalizeResult carries the resolved outcome of a SaveRequest back to the
-// controller, polled via LookupSaveRequestOutcome.
+// FinalizeResult carries the resolved outcome of a CommitRequest back to the
+// controller, polled via LookupCommitRequestOutcome.
 type FinalizeResult struct {
 	// Outcome is set when Err is nil.
 	Outcome FinalizeOutcome
@@ -103,19 +103,19 @@ type FinalizeResult struct {
 	Err error
 	// Phase is where an UNRESOLVED request stands on the worker; empty once resolved, and empty
 	// before the worker has registered it.
-	Phase SaveRequestPhase
+	Phase CommitRequestPhase
 	// Held is why a request the worker holds has not reached the remote yet: the worker's
 	// publication report while it cannot publish, empty otherwise. See PublicationStatus.
 	Held string
 }
 
-// AttachSaveRequest is the "attach this SaveRequest to the author's window, with its
+// AttachCommitRequest is the "attach this CommitRequest to the author's window, with its
 // message and its timers" work item. It rides the same per-worker FIFO
 // event queue as resource events, so by audit-stream ordering it is processed
 // after every earlier write for that worker. Re-sends are idempotent: the worker
 // keys pending requests by identity and keeps everything the first delivery set.
-type AttachSaveRequest struct {
-	// Namespace, Name, UID identify the SaveRequest. UID may be empty (a
+type AttachCommitRequest struct {
+	// Namespace, Name, UID identify the CommitRequest. UID may be empty (a
 	// Metadata-level audit policy can omit it); identity then keys on
 	// namespace/name only.
 	Namespace string
@@ -127,7 +127,7 @@ type AttachSaveRequest struct {
 	// matches is attached; this binds "the open window" to "the requesting
 	// author's open window".
 	Author string
-	// Attribution is the outcome of attributing THIS SaveRequest, from the command-authorship
+	// Attribution is the outcome of attributing THIS CommitRequest, from the command-authorship
 	// path. It is matched alongside Author rather than inferred from it, because an empty Author
 	// alone cannot say whether an actor was sought: it is both "attribution is off" and
 	// "attribution ran and named nobody". Only the NamesActor half is compared against the
@@ -166,7 +166,7 @@ type AttachSaveRequest struct {
 	Unattributed UnattributedClaim
 }
 
-// UnattributedClaim is what a SaveRequest may claim of a commit window whose writes name no author.
+// UnattributedClaim is what a CommitRequest may claim of a commit window whose writes name no author.
 type UnattributedClaim string
 
 const (
@@ -180,24 +180,24 @@ const (
 	UnattributedClaimTakeOver UnattributedClaim = "TakeOver"
 )
 
-// saveRequestID is the worker-local key for a SaveRequest: its namespaced
-// name plus UID when available. Two SaveRequests with the same name but
+// commitRequestID is the worker-local key for a CommitRequest: its namespaced
+// name plus UID when available. Two CommitRequests with the same name but
 // different UIDs (a delete-and-recreate) are distinct.
-type saveRequestID struct {
+type commitRequestID struct {
 	Namespace string
 	Name      string
 	UID       string
 }
 
-func (a AttachSaveRequest) id() saveRequestID {
-	return saveRequestID{Namespace: a.Namespace, Name: a.Name, UID: a.UID}
+func (a AttachCommitRequest) id() commitRequestID {
+	return commitRequestID{Namespace: a.Namespace, Name: a.Name, UID: a.UID}
 }
 
-// pendingSaveRequest is a SaveRequest registered with the worker and not yet
+// pendingCommitRequest is a CommitRequest registered with the worker and not yet
 // resolved: waiting for a same-author window to attach to, attached and collecting until the
 // window's timers close it, or committed locally and awaiting the push that settles it.
-type pendingSaveRequest struct {
-	id                 saveRequestID
+type pendingCommitRequest struct {
+	id                 commitRequestID
 	author             string
 	attribution        AttributionOutcome
 	gitTargetName      string
@@ -219,7 +219,7 @@ type pendingSaveRequest struct {
 	// catchUpNow asks the GitTarget's applier for a converge once the request's commit is pushed.
 	catchUpNow bool
 	// unattributed is what the request may claim of a window whose writes name no author
-	// (AttachSaveRequest.Unattributed).
+	// (AttachCommitRequest.Unattributed).
 	unattributed UnattributedClaim
 	// attached is true once this request is bound to a write: its message to the open window, or
 	// its own empty-commit record. From then on only that write's outcome settles it, and it stays
@@ -249,9 +249,9 @@ type pendingSaveRequest struct {
 // to save" and "someone else held the window the whole time" are different events with the same
 // shape, and only the second one silently substitutes a generated commit message for the sentence
 // the request's author typed. FinalizeWindowMismatch has always been declared, surfaced by the
-// controller as the WindowMismatch reason, and counted by save_requests_total; from the eager
+// controller as the WindowMismatch reason, and counted by commit_requests_total; from the eager
 // attach onwards nothing produced it, so every one of those refusals reported as NoOpenWindow.
-func (p *pendingSaveRequest) expiryOutcome() FinalizeOutcome {
+func (p *pendingCommitRequest) expiryOutcome() FinalizeOutcome {
 	if p.sawForeignWindow {
 		return FinalizeWindowMismatch
 	}
@@ -279,7 +279,7 @@ func (p *pendingSaveRequest) expiryOutcome() FinalizeOutcome {
 // outcome fields being right, so any path that leaves an outcome unset while the author IS set
 // would let one author's request finalize another's window. Comparing both costs nothing and
 // keeps "bob never attaches to alice's window" true regardless of what the outcomes say.
-func (p *pendingSaveRequest) matchesWindow(w *openWindow) bool {
+func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p == nil || w == nil {
 		return false
 	}
@@ -291,21 +291,21 @@ func (p *pendingSaveRequest) matchesWindow(w *openWindow) bool {
 
 // sameSaver reports whether two requests would save one window: the same GitTarget and the same
 // author, by the comparison matchesWindow makes.
-func (p *pendingSaveRequest) sameSaver(other *pendingSaveRequest) bool {
+func (p *pendingCommitRequest) sameSaver(other *pendingCommitRequest) bool {
 	return p.gitTargetName == other.gitTargetName && p.gitTargetNamespace == other.gitTargetNamespace &&
 		p.author == other.author && p.attribution.NamesActor() == other.attribution.NamesActor()
 }
 
 // claims reports whether the request matches a window on its GitTarget whose writes name no author
 // only because it may claim such a window: it names its submitter, and asked for more than its own
-// windows (AttachSaveRequest.Unattributed).
-func (p *pendingSaveRequest) claims(w *openWindow) bool {
+// windows (AttachCommitRequest.Unattributed).
+func (p *pendingCommitRequest) claims(w *openWindow) bool {
 	return p.unattributed != UnattributedClaimNone && p.attribution.NamesActor() && !w.Attribution.NamesActor()
 }
 
-// saveRequestOutcomeEntry is a resolved outcome retained for the controller to
+// commitRequestOutcomeEntry is a resolved outcome retained for the controller to
 // poll, GC'd by age.
-type saveRequestOutcomeEntry struct {
+type commitRequestOutcomeEntry struct {
 	result     FinalizeResult
 	resolvedAt time.Time
 }

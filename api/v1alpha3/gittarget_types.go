@@ -186,23 +186,23 @@ type GitTargetSpec struct {
 	// +optional
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
-	// AllowedSaveRequests says which SaveRequests may save this GitTarget's
+	// AllowedCommitRequests says which CommitRequests may save this GitTarget's
 	// commit windows, by the namespace they are in, and how much each may
 	// claim of a window whose writes name no author:
 	//
-	// - Omitted: the SaveRequests in this GitTarget's namespace, as one grant
+	// - Omitted: the CommitRequests in this GitTarget's namespace, as one grant
 	//   with from: "Same" that claims nothing.
-	// - Empty list ([]): no SaveRequest.
-	// - A list of grants: the SaveRequests that at least one grant allows.
+	// - Empty list ([]): no CommitRequest.
+	// - A list of grants: the CommitRequests that at least one grant allows.
 	//
-	// A list replaces the default: the SaveRequests in this namespace keep
+	// A list replaces the default: the CommitRequests in this namespace keep
 	// access only if at least one grant allows them. A request no grant allows
 	// fails with reason "NotAllowed".
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:default={{consumerNamespaces: {from: Same}, unattributedWindows: Keep}}
-	AllowedSaveRequests []GitTargetSaveRequestGrant `json:"allowedSaveRequests"`
+	AllowedCommitRequests []GitTargetCommitRequestGrant `json:"allowedCommitRequests"`
 
 	// Consent lives on the GitTarget, not on the KubeProvider that serves the requests: the provider's
 	// owner lends a cluster, and whether a save made on it may steer this folder's commits, with its
@@ -266,7 +266,7 @@ type GitTargetCommitSpec struct {
 	// Window sets when this GitTarget's commit windows close. A window opens on an
 	// author's first write and collects that author's writes until idleTimeout
 	// passes without one, or maxDuration after it opened, whichever comes first. A
-	// change applies to windows opened afterward. A SaveRequest attached to a
+	// change applies to windows opened afterward. A CommitRequest attached to a
 	// window replaces both timers for that window.
 	// +optional
 	Window *CommitWindow `json:"window,omitempty"`
@@ -277,7 +277,7 @@ type GitTargetCommitSpec struct {
 	Message *CommitMessageSpec `json:"message,omitempty"`
 }
 
-// UnattributedWindowPolicy is how much a SaveRequest may claim of a commit
+// UnattributedWindowPolicy is how much a CommitRequest may claim of a commit
 // window whose writes name no author.
 type UnattributedWindowPolicy string
 
@@ -290,7 +290,7 @@ const (
 	UnattributedWindowsTakeOver UnattributedWindowPolicy = "TakeOver"
 )
 
-// Allows reports whether a SaveRequest asking for author may attach as it asks under this policy:
+// Allows reports whether a CommitRequest asking for author may attach as it asks under this policy:
 // "TakeOver" allows every ask, "SavedBy" allows "SavedBy" and "Own", and "Keep" (or empty) allows only
 // "Own". An unknown value allows only "Own".
 func (p UnattributedWindowPolicy) Allows(author WindowAuthor) bool {

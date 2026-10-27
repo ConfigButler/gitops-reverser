@@ -116,7 +116,7 @@ func TestPublishConditionMetrics_ForgetsAnObjectThatIsGoing(t *testing.T) {
 	assert.False(t, ok, "an object with no finalizer left is going now and must stop publishing")
 }
 
-// The kind switch is the surface. SaveRequest is data-shaped — one per save — so it is excluded
+// The kind switch is the surface. CommitRequest is data-shaped — one per save — so it is excluded
 // structurally rather than by a rule someone has to remember.
 func TestConditionMetricKind_CoversTheFiveConfigKindsAndNothingElse(t *testing.T) {
 	assert.Equal(t, conditionKindGitTarget, conditionMetricKind(&configbutleraiv1alpha3.GitTarget{}))
@@ -124,7 +124,7 @@ func TestConditionMetricKind_CoversTheFiveConfigKindsAndNothingElse(t *testing.T
 	assert.Equal(t, conditionKindClusterWatchRule, conditionMetricKind(&configbutleraiv1alpha3.ClusterWatchRule{}))
 	assert.Equal(t, conditionKindGitProvider, conditionMetricKind(&configbutleraiv1alpha3.GitProvider{}))
 	assert.Equal(t, conditionKindKubeProvider, conditionMetricKind(&configbutleraiv1alpha3.KubeProvider{}))
-	assert.Empty(t, conditionMetricKind(&configbutleraiv1alpha3.SaveRequest{}))
+	assert.Empty(t, conditionMetricKind(&configbutleraiv1alpha3.CommitRequest{}))
 }
 
 // A condition written with an empty reason publishes a visibly wrong placeholder rather than an

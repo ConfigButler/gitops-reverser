@@ -159,11 +159,11 @@ var _ = Describe("Access grants at admission", func() {
 		{"KubeProvider allowedApplierClaims",
 			func(g map[string]any) *unstructured.Unstructured { return kubeProvider("allowedApplierClaims", g) },
 			map[string]any{"applierNamespaces": []any{"flux-system"}}},
-		{"GitTarget allowedSaveRequests",
+		{"GitTarget allowedCommitRequests",
 			func(g map[string]any) *unstructured.Unstructured {
 				return object("GitTarget", map[string]any{
 					"gitBranchRef": map[string]any{"name": "b"}, "path": "apps",
-					"kubeProviderRef": map[string]any{"name": "k"}, "allowedSaveRequests": []any{g},
+					"kubeProviderRef": map[string]any{"name": "k"}, "allowedCommitRequests": []any{g},
 				})
 			},
 			map[string]any{"unattributedWindows": "SavedBy"}},

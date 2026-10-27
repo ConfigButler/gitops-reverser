@@ -543,18 +543,18 @@ func dumpFailureDiagnostics() {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s\n", err)
 	}
 
-	By("Fetching SaveRequest diagnostics")
-	saveRequestsOutput, err := kubectlRun(
+	By("Fetching CommitRequest diagnostics")
+	commitRequestsOutput, err := kubectlRun(
 		"get",
-		"saverequests.configbutler.ai",
+		"commitrequests.configbutler.ai",
 		"--all-namespaces",
 		"-o",
 		"yaml",
 	)
 	if err == nil {
-		_, _ = fmt.Fprintf(GinkgoWriter, "SaveRequests:\n%s", saveRequestsOutput)
+		_, _ = fmt.Fprintf(GinkgoWriter, "CommitRequests:\n%s", commitRequestsOutput)
 	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get SaveRequests: %s\n", err)
+		_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get CommitRequests: %s\n", err)
 	}
 
 	podNames, err := controllerPodNames()

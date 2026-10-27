@@ -172,9 +172,9 @@ on the worker.
 
 For an attached save that committed locally, this left `WaitingForPush` with no time limit.
 After its safety window, `withdrawCommitRequest` in the
-[controller](../../internal/controller/saverequest_controller.go) sends withdrawal and continues
+[controller](../../internal/controller/commitrequest_controller.go) sends withdrawal and continues
 polling when the worker still holds the request. `handleWithdrawCommitRequest` in the
-[attach loop](../../internal/git/save_request_attach_loop.go) leaves attached or committed
+[attach loop](../../internal/git/commit_request_attach_loop.go) leaves attached or committed
 requests unchanged. Neither path retries the push. The API showed `Ready=False`,
 `Reconciling=True`, `Stalled=False`, and `Pushed=Unknown`, with reason `WaitingForPush`.
 
@@ -315,7 +315,7 @@ Represent intent, decisions, and external work separately so recovery knows what
 
 | Category | Example | Meaning |
 |---|---|---|
-| Command | `SaveRequested` | A caller asks to attach a save |
+| Command | `CommitRequested` | A caller asks to attach a save |
 | Fact | `SaveAttached` | The worker bound that request to a particular window |
 | Effect intent | `PublishBatch` | A recorded decision that a push must still be attempted |
 | Effect result | `PublicationConfirmed` | Evidence that a particular attempt published its work |
@@ -380,7 +380,7 @@ The current attach loop and controller already preserve several rules:
 Retain those rules in a durable lifecycle. One illustrative successful path is:
 
 ```text
-SaveRequested(request UID, target UID, attribution, message, timing policy)
+CommitRequested(request UID, target UID, attribution, message, timing policy)
 SaveRegistered(request UID, sequence, registration time, attach deadline)
 SaveAttached(request UID, window ID)
 WindowClosed(window ID, included inputs, reason)

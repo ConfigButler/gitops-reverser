@@ -40,7 +40,7 @@ to make and cheap to hold.
   compatibility frontier.
 - **The hard prerequisites already shipped or are designed.** The config-plane split
   (inline `GitTarget.spec.kubeConfig`) points a target at a remote or ephemeral intent
-  cluster. `SaveRequest` carries authorship and intent. The branch-per-experiment flow
+  cluster. `CommitRequest` carries authorship and intent. The branch-per-experiment flow
   is designed in [`idea-application-editing.md`](idea-application-editing.md).
 - **The layout model is a direction-B feature wearing direction-A clothes.**
   `kind: Kustomize` with `create: true` bootstraps structure into an empty repository;
@@ -295,7 +295,7 @@ environment its own dry run, status, and commit batching.
 | #295 placement bugs | fix now; direction-agnostic correctness | before the wave |
 | #296 visibility | metric split, `{kindLower}`, template constant now; `status.layout` rides the wave | split |
 | #293 layout model | the centerpiece; more valuable under direction B than its own text claims | the wave's core |
-| #294 API wave | core four (layout, mode, suspend/interval, commitWindow move) gate nothing else; SaveRequest items ride along without gating | the wave |
+| #294 API wave | core four (layout, mode, suspend/interval, commitWindow move) gate nothing else; CommitRequest items ride along without gating | the wave |
 | #146 per-rule objectSelector | yes; in direction B it is how an intent cluster marks what belongs in the artifact | any time |
 | #148 leader election | yes, scoped to active-passive; decoupled from full HA distribution | any time |
 | #210 conventional PR titles | implement the ~15-line workflow check or close; it is a process wish, not a bug | close out |

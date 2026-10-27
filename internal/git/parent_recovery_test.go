@@ -325,12 +325,12 @@ func TestParentRecovery_AParentChangeMakesTheProbeDue(t *testing.T) {
 	assert.False(t, f.worker.awaitingParentProbe(), "a new parent is looked for at once")
 }
 
-// A SaveRequest that rides a write held back by a missing parent stays held through the whole
+// A CommitRequest that rides a write held back by a missing parent stays held through the whole
 // recovery, however long it takes, and resolves Committed when the work lands. This runs the real
 // event loop on its own goroutine; the clock stands in for a recovery far longer than the bound the
 // controller used to fail requests on (attachTimeout + maxDuration + 120s).
-func TestParentRecovery_AHeldSaveRequestIsCommittedAfterALongRecovery(t *testing.T) {
-	f := newRealServerNewBranch(t, "recovery-held-save-request", func(repoDir string) {
+func TestParentRecovery_AHeldCommitRequestIsCommittedAfterALongRecovery(t *testing.T) {
+	f := newRealServerNewBranch(t, "recovery-held-commit-request", func(repoDir string) {
 		simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "main\n")
 		gitIn(t, repoDir, "branch", "release", "main")
 	})
@@ -350,8 +350,8 @@ func TestParentRecovery_AHeldSaveRequestIsCommittedAfterALongRecovery(t *testing
 	require.True(t, f.worker.Enqueue(configMapTargetEvent("cm1", "alice", newBranchTarget)))
 	req := standbyRequest()
 	f.worker.EnqueueAttach(req)
-	phase := func() SaveRequestPhase {
-		return f.worker.LookupSaveRequestPhase(req.Namespace, req.Name, req.UID)
+	phase := func() CommitRequestPhase {
+		return f.worker.LookupCommitRequestPhase(req.Namespace, req.Name, req.UID)
 	}
 	require.Eventually(t, func() bool {
 		open, _ := f.worker.ParentRecovery()

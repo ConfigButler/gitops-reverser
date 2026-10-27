@@ -1,6 +1,6 @@
 # Commit-window example
 
-Two Kubernetes resources become one Git commit: one created, one edited. A `SaveRequest` supplies
+Two Kubernetes resources become one Git commit: one created, one edited. A `CommitRequest` supplies
 the message and its own timers, which replace the target's for that one window. You can save after
 the changes or before them; the example shows both. The request itself is outside the selected
 resource types, so saving never commits the save button.
@@ -139,7 +139,7 @@ Save as `save-now.yaml`. Use `kubectl create` rather than `kubectl apply`: the r
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   generateName: save-hello-
   namespace: gitops-reverser-quickstart-demo
@@ -179,7 +179,7 @@ The request can come first, and wait for the changes. Save as `save-long.yaml`:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   generateName: save-hello-
   namespace: gitops-reverser-quickstart-demo
@@ -228,13 +228,13 @@ reaches the operator after the window closed goes into the next commit.
 
 The default configured-author setup without request author capture works for this example. If actor
 attribution and request author capture are enabled, submit the resources and the request as the same
-Kubernetes user. See [SaveRequest](../configuration.md#saverequest) for author matching and
+Kubernetes user. See [CommitRequest](../configuration.md#commitrequest) for author matching and
 outcomes.
 
 ## Check the result
 
 ```bash
-kubectl get saverequests -n gitops-reverser-quickstart-demo -o wide
+kubectl get commitrequests -n gitops-reverser-quickstart-demo -o wide
 ```
 
 Look for `Pushed=True` and a `status.commit`. `Pushed` is a wide column; `Ready` and the `COMMIT`
@@ -257,7 +257,7 @@ With `save-long.yaml` the first line is `feat(demo): save long running`. Either 
 | Resource | Captured by this rule? |
 |---|---|
 | ServiceAccount, ConfigMap | Yes |
-| SaveRequest, GitTarget, WatchRule | No |
+| CommitRequest, GitTarget, WatchRule | No |
 | Services, Deployments, Pods, ReplicaSets | No |
 
 Without the request, the window closes on its own five seconds after the last change, and the

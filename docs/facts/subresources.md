@@ -188,7 +188,7 @@ marker on the type:
 ```
 
 Every `configbutler.ai` CRD enables `/status`: `GitProvider`, `GitTarget`,
-`WatchRule`, `ClusterWatchRule`, and `SaveRequest`. A real `GitTarget`:
+`WatchRule`, `ClusterWatchRule`, and `CommitRequest`. A real `GitTarget`:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -263,7 +263,7 @@ status:
 ```
 
 No `configbutler.ai` resource enables `/scale`: `GitProvider`, `GitTarget`,
-`WatchRule`, `ClusterWatchRule`, and `SaveRequest` are not scalable workloads,
+`WatchRule`, `ClusterWatchRule`, and `CommitRequest` are not scalable workloads,
 so a replica count has no meaning for them.
 
 ## Audit logs and the `/scale` subresource
@@ -432,14 +432,14 @@ For an imperative operation, Kubernetes API design has two options: a custom
 subresource (requires an aggregated API server), or a **request resource** — a
 normal CRD that represents "please do X", carrying its outcome in `status`.
 
-`configbutler.ai` uses the request-resource pattern with **`SaveRequest`**.
+`configbutler.ai` uses the request-resource pattern with **`CommitRequest`**.
 Instead of a hypothetical `POST /gittargets/{name}/commit` subresource, creating
-a `SaveRequest` object finalizes the open commit window for the referenced
+a `CommitRequest` object finalizes the open commit window for the referenced
 `GitTarget` and reports the result back in status:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   name: save-now
   namespace: default
@@ -475,7 +475,7 @@ action: the request itself is a durable, inspectable object.
 | Durable declarative intent | CRD |
 | Controller reports observed state | CRD + `/status` |
 | HPA / `kubectl scale` compatibility | CRD + `/scale` |
-| One-off declarative job/request | Request CRD (e.g. `SaveRequest`) |
+| One-off declarative job/request | Request CRD (e.g. `CommitRequest`) |
 | Derived synchronous or streaming output | Aggregated API subresource |
 | Proxy / tunnel / console / session | Aggregated API subresource |
 | Imperative action | Request CRD, or aggregated API subresource if it must be synchronous/streaming |
@@ -501,5 +501,5 @@ The pattern Kubernetes follows:
 
 `configbutler.ai` stays entirely within CRDs: every type is served by the main
 kube-apiserver, every type uses `/status`, none use `/scale`, and imperative
-actions are modeled as request resources (`SaveRequest`) rather than custom
+actions are modeled as request resources (`CommitRequest`) rather than custom
 subresources.

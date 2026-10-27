@@ -879,7 +879,7 @@ point where an author can most easily respond.
 [render-verification]: ../../internal/manifestanalyzer/render_verify.go
 [namespace-admission]: ../../internal/webhook/watchrule_source_namespace_admission.go
 [oracle-tests]: ../../internal/git/kustomize_oracle_test.go
-[commitrequest]: ../spec/saverequest-design.md
+[commitrequest]: ../spec/commitrequest-design.md
 [placement-tests]: ../../internal/git/placement_test.go
 [consent]: support-boundary/admission-consent.md
 [validation-placement]: ../spec/where-validation-lives.md

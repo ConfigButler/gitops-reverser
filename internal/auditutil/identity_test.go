@@ -15,11 +15,11 @@ import (
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-func rawSaveRequestBody(t *testing.T, namespace, name, uid string) *runtime.Unknown {
+func rawCommitRequestBody(t *testing.T, namespace, name, uid string) *runtime.Unknown {
 	t.Helper()
 	obj := &unstructured.Unstructured{}
 	obj.SetAPIVersion("configbutler.ai/v1alpha3")
-	obj.SetKind("SaveRequest")
+	obj.SetKind("CommitRequest")
 	if namespace != "" {
 		obj.SetNamespace(namespace)
 	}
@@ -38,13 +38,13 @@ func TestIdentityFromAuditEvent_ObjectRefWins(t *testing.T) {
 	ev := auditv1.Event{
 		Verb: "create",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:  "saverequests",
+			Resource:  "commitrequests",
 			Namespace: "team-a",
 			Name:      "save-1",
 			UID:       "uid-objref",
 		},
 	}
-	ev.ResponseObject = rawSaveRequestBody(t, "team-a", "save-from-body", "uid-from-body")
+	ev.ResponseObject = rawCommitRequestBody(t, "team-a", "save-from-body", "uid-from-body")
 
 	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
@@ -59,12 +59,12 @@ func TestIdentityFromAuditEvent_BackfillsNameFromResponseObject(t *testing.T) {
 	ev := auditv1.Event{
 		Verb: "create",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:  "saverequests",
+			Resource:  "commitrequests",
 			Namespace: "team-a",
 			Name:      "",
 		},
 	}
-	ev.ResponseObject = rawSaveRequestBody(t, "team-a", "save-generated-abcde", "uid-resp")
+	ev.ResponseObject = rawCommitRequestBody(t, "team-a", "save-generated-abcde", "uid-resp")
 
 	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
@@ -79,10 +79,10 @@ func TestIdentityFromAuditEvent_BackfillsNamespaceFromBody(t *testing.T) {
 	ev := auditv1.Event{
 		Verb: "create",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource: "saverequests",
+			Resource: "commitrequests",
 		},
 	}
-	ev.ResponseObject = rawSaveRequestBody(t, "team-from-body", "save-x", "uid-x")
+	ev.ResponseObject = rawCommitRequestBody(t, "team-from-body", "save-x", "uid-x")
 
 	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
@@ -96,13 +96,13 @@ func TestIdentityFromAuditEvent_FallsBackToRequestObject_NonDelete(t *testing.T)
 	ev := auditv1.Event{
 		Verb: "create",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:  "saverequests",
+			Resource:  "commitrequests",
 			Namespace: "team-a",
 		},
 	}
 	// Only RequestObject is populated; for non-delete the helper prefers
 	// ResponseObject but must fall back to RequestObject when it is absent.
-	ev.RequestObject = rawSaveRequestBody(t, "team-a", "save-from-request", "uid-req")
+	ev.RequestObject = rawCommitRequestBody(t, "team-a", "save-from-request", "uid-req")
 
 	got := IdentityFromAuditEvent(ev, itypes.OperationCreate)
 
@@ -116,12 +116,12 @@ func TestIdentityFromAuditEvent_DeletePrefersRequestObject(t *testing.T) {
 	ev := auditv1.Event{
 		Verb: "delete",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:  "saverequests",
+			Resource:  "commitrequests",
 			Namespace: "team-a",
 		},
 	}
-	ev.RequestObject = rawSaveRequestBody(t, "team-a", "from-request", "uid-req")
-	ev.ResponseObject = rawSaveRequestBody(t, "team-a", "from-response", "uid-resp")
+	ev.RequestObject = rawCommitRequestBody(t, "team-a", "from-request", "uid-req")
+	ev.ResponseObject = rawCommitRequestBody(t, "team-a", "from-response", "uid-resp")
 
 	got := IdentityFromAuditEvent(ev, itypes.OperationDelete)
 
@@ -134,7 +134,7 @@ func TestIdentityFromAuditEvent_NoBodyKeepsObjectRef(t *testing.T) {
 	ev := auditv1.Event{
 		Verb: "create",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:  "saverequests",
+			Resource:  "commitrequests",
 			Namespace: "team-a",
 			Name:      "save-1",
 		},
@@ -161,7 +161,7 @@ func TestIdentityFromAuditEvent_IgnoresMalformedBody(t *testing.T) {
 	ev := auditv1.Event{
 		Verb: "create",
 		ObjectRef: &auditv1.ObjectReference{
-			Resource:  "saverequests",
+			Resource:  "commitrequests",
 			Namespace: "team-a",
 		},
 	}

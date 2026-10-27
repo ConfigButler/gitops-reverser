@@ -58,7 +58,7 @@ and out-of-band age-key updates ride the 5-minute reconcile instead.
 
 Sources: `gitprovider_controller.go`, `gittarget_controller.go`,
 `watchrule_controller.go`, `clusterwatchrule_controller.go`,
-`saverequest_controller.go`.
+`commitrequest_controller.go`.
 
 ### 1.3 Two structural consequences
 
@@ -143,9 +143,9 @@ not reconciled until an unrelated event happens to fire. (Full treatment, incl. 
 subtree-hash detection and Flux/Argo coordination, in the sibling doc.)
 
 **A4. CommitRequest outcomes are polled, not pushed.** The worker records a terminal
-outcome (`recordCommitRequestOutcome`, `internal/git/save_request_attach_loop.go:47`)
+outcome (`recordCommitRequestOutcome`, `internal/git/commit_request_attach_loop.go:47`)
 and the controller reads it (`LookupCommitRequestOutcome`) — but by **requeuing
-every 2 s** (`saverequest_controller.go:195`). The capture half of the recipe
+every 2 s** (`commitrequest_controller.go:195`). The capture half of the recipe
 already exists; only the push edge is missing. A nudge would replace the poll.
 
 ### Gap B — control-plane status does not propagate to dependents

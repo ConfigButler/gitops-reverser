@@ -13,12 +13,12 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// The SaveRequest suite exercises the "save" signal: a SaveRequest
+// The CommitRequest suite exercises the "save" signal: a CommitRequest
 // object finalizes the open commit window for a GitTarget immediately, instead
 // of waiting for the rolling silence timer. The GitProvider is configured with
-// a deliberately long commitWindow so that, without the SaveRequest, the
+// a deliberately long commitWindow so that, without the CommitRequest, the
 // edit would not be committed for minutes — observing the commit promptly is
-// what proves the save-request path works.
+// what proves the commit-request path works.
 //
 // Not Serial: this spec owns a dedicated Gitea repo (its own GitProvider →
 // GitTarget → namespace-scoped WatchRule), so the only writer to its main
@@ -26,7 +26,7 @@ import (
 // namespace. The HEAD/SHA assertions below therefore read back only this spec's
 // own commit; concurrent audit traffic for other GitTargets lands in other
 // repos and cannot move this repo's HEAD. See docs/spec/e2e-serial-registry.md.
-var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordered, func() {
+var _ = Describe("Save Request", Label("commit-request", "audit-consumer"), Ordered, func() {
 	var (
 		testNs        string
 		repo          *RepoArtifacts
@@ -40,7 +40,7 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 	const commitWindow = "300s"
 
 	BeforeAll(func() {
-		p := setupWindowedDeploymentPipeline("save-request", "e2e/save-request-test", commitWindow)
+		p := setupWindowedDeploymentPipeline("commit-request", "e2e/commit-request-test", commitWindow)
 		testNs, repo, gitProvName, gitTargetName, watchRuleName = p.ns, p.repo, p.gitProvider, p.gitTarget, p.watchRule
 	})
 
@@ -50,10 +50,10 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 	})
 
 	It("finalizes the open commit window on demand and reports the resulting SHA", func() {
-		basePath := "e2e/save-request-test"
+		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
-		deployName := fmt.Sprintf("save-request-deploy-%d", seed)
-		saveRequestName := fmt.Sprintf("save-request-save-%d", seed)
+		deployName := fmt.Sprintf("commit-request-deploy-%d", seed)
+		commitRequestName := fmt.Sprintf("commit-request-save-%d", seed)
 		message := fmt.Sprintf("save: save request from e2e seed %d", seed)
 
 		By("creating a Deployment to open a commit window")
@@ -69,16 +69,16 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 				"the open commit window must hold the edit; main must not exist until the window is finalized")
 		}, 10*time.Second, 2*time.Second).Should(Succeed())
 
-		By("creating a SaveRequest to finalize the open window now")
-		applySaveRequest(testNs, saveRequestName, gitTargetName, message)
+		By("creating a CommitRequest to finalize the open window now")
+		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 
-		By("waiting for the SaveRequest to commit and push")
+		By("waiting for the CommitRequest to commit and push")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			reportedSHA = expectSaveRequestCommitted(g, testNs, saveRequestName,
+			reportedSHA = expectCommitRequestCommitted(g, testNs, commitRequestName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
-			branch := saveRequestField(g, testNs, saveRequestName, "{.status.branch}")
+			branch := commitRequestField(g, testNs, commitRequestName, "{.status.branch}")
 			g.Expect(branch).To(Equal("main"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
@@ -116,11 +116,11 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 		// is: the commit above is verified in Git, so a missing series is a broken exporter rather
 		// than a spec that did not run. Both queries are scoped to this suite's own GitTarget, so
 		// they need no run bookkeeping to isolate from the other parallel processes.
-		By("verifying this save reached the SaveRequest outcome counter")
+		By("verifying this save reached the CommitRequest outcome counter")
 		ensurePrometheusClient()
 		waitForMetric(
 			fmt.Sprintf(
-				`sum(gitopsreverser_save_requests_total{outcome="committed",`+
+				`sum(gitopsreverser_commit_requests_total{outcome="committed",`+
 					`gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
 				testNs, gitTargetName),
 			func(v float64) bool { return v > 0 },
@@ -133,7 +133,7 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 		waitForMetric(
 			fmt.Sprintf(
 				`sum(gitopsreverser_git_commit_windows_total{close_reason="max_duration",`+
-					`timer_source="save_request",gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
+					`timer_source="commit_request",gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`,
 				testNs, gitTargetName),
 			func(v float64) bool { return v > 0 },
 			"the save's window is counted with the timer that closed it",
@@ -159,20 +159,20 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 			"the join series maps this GitTarget to the GitBranch its commits are labelled by",
 		)
 
-		By("cleaning up the test Deployment and SaveRequest")
+		By("cleaning up the test Deployment and CommitRequest")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "saverequest", saveRequestName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
 	// The companion path: once a branch HAS been established (the previous spec's finalize created
 	// main), a fresh edit must STILL be held in the open window — an existing branch must not
-	// advance until a SaveRequest finalizes it. Together with the spec above this covers both
+	// advance until a CommitRequest finalizes it. Together with the spec above this covers both
 	// cases of "defer committing as long as possible": an absent branch and an established one.
 	It("holds a new edit in the open window without advancing an already-established branch", func() {
-		basePath := "e2e/save-request-test"
+		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
-		deployName := fmt.Sprintf("save-request-hold-%d", seed)
-		saveRequestName := fmt.Sprintf("save-request-hold-save-%d", seed)
+		deployName := fmt.Sprintf("commit-request-hold-%d", seed)
+		commitRequestName := fmt.Sprintf("commit-request-hold-save-%d", seed)
 		message := fmt.Sprintf("save: held edit from e2e seed %d", seed)
 
 		By("capturing the branch HEAD the previous spec established")
@@ -192,10 +192,10 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 				"the open commit window must hold the new edit; main must not advance until finalized")
 		}, 10*time.Second, 2*time.Second).Should(Succeed())
 
-		By("creating a SaveRequest and confirming the branch then advances with the held edit")
-		applySaveRequest(testNs, saveRequestName, gitTargetName, message)
+		By("creating a CommitRequest and confirming the branch then advances with the held edit")
+		applyCommitRequest(testNs, commitRequestName, gitTargetName, message)
 		Eventually(func(g Gomega) {
-			expectSaveRequestCommitted(g, testNs, saveRequestName,
+			expectCommitRequestCommitted(g, testNs, commitRequestName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 			g.Expect(remoteBranchHead(g, repo.CheckoutDir)).NotTo(Equal(baseSHA),
 				"finalizing must advance main past the previously-established HEAD")
@@ -211,9 +211,9 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 				fmt.Sprintf("the held Deployment should exist after finalize at %s", expected))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("cleaning up the held Deployment and SaveRequest")
+		By("cleaning up the held Deployment and CommitRequest")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "saverequest", saveRequestName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
 	// generateName authorship is now captured at admission, not from the audit
@@ -221,26 +221,26 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 	// validating admission runs, so the validate-operator-types webhook records the
 	// submitter keyed by uid with no response-body name recovery (the old audit
 	// generateName headache is gone, see
-	// docs/spec/saverequest-admission-authorship.md). This spec proves a
-	// generateName SaveRequest still finalizes and becomes Ready. It is skipped in
+	// docs/spec/commitrequest-admission-authorship.md). This spec proves a
+	// generateName CommitRequest still finalizes and becomes Ready. It is skipped in
 	// configured-author mode, where the edit's window is committer-authored and the
 	// named admission author would not match it end to end.
-	It("finalizes a SaveRequest created with metadata.generateName", func() {
-		basePath := "e2e/save-request-test"
+	It("finalizes a CommitRequest created with metadata.generateName", func() {
+		basePath := "e2e/commit-request-test"
 		seed := GinkgoRandomSeed()
-		deployName := fmt.Sprintf("save-request-gen-deploy-%d", seed)
-		saveRequestPrefix := fmt.Sprintf("save-request-gen-%d-", seed)
+		deployName := fmt.Sprintf("commit-request-gen-deploy-%d", seed)
+		commitRequestPrefix := fmt.Sprintf("commit-request-gen-%d-", seed)
 		message := fmt.Sprintf("save: generateName save request from e2e seed %d", seed)
 
 		By("creating a Deployment to open a commit window")
 		applyScaleTestDeployment(testNs, deployName, 0)
 
-		By("creating a SaveRequest with metadata.generateName")
-		generatedName := applySaveRequestWithGenerateName(testNs, saveRequestPrefix, gitTargetName, message)
+		By("creating a CommitRequest with metadata.generateName")
+		generatedName := applyCommitRequestWithGenerateName(testNs, commitRequestPrefix, gitTargetName, message)
 
-		By("waiting for the generated-name SaveRequest to commit")
+		By("waiting for the generated-name CommitRequest to commit")
 		Eventually(func(g Gomega) {
-			expectSaveRequestCommitted(g, testNs, generatedName,
+			expectCommitRequestCommitted(g, testNs, generatedName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
@@ -261,24 +261,24 @@ var _ = Describe("Save Request", Label("save-request", "audit-consumer"), Ordere
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("cleaning up the generateName Deployment and SaveRequest")
+		By("cleaning up the generateName Deployment and CommitRequest")
 		_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", deployName, "--ignore-not-found=true")
-		_, _ = kubectlRunInNamespace(testNs, "delete", "saverequest", generatedName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", generatedName, "--ignore-not-found=true")
 	})
 })
 
-// The UC2 suite exercises a `kubectl apply` bundle that includes a SaveRequest
+// The UC2 suite exercises a `kubectl apply` bundle that includes a CommitRequest
 // as its FIRST document — the deliberately-hard ordering where the save intent
-// arrives before the work it is meant to save (docs/spec/saverequest-design.md). The request
+// arrives before the work it is meant to save (docs/spec/commitrequest-design.md). The request
 // waits (spec.window.attachTimeout) for the first Deployment to open a window, attaches, and
 // collects (spec.window.maxDuration from the attach) while the rest of the bundle arrives, so the
-// whole bundle lands in ONE commit carrying the SaveRequest's message.
+// whole bundle lands in ONE commit carrying the CommitRequest's message.
 //
 // Its own dedicated Gitea repo (own GitProvider → GitTarget → namespace-scoped
 // Deployment WatchRule) makes the one-commit assertion unambiguous: main does not
 // exist until the bundle is finalized, so the bundle commit is the only commit on
 // main.
-var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consumer"), Ordered, func() {
+var _ = Describe("Save Request Bundle (UC2)", Label("commit-request", "audit-consumer"), Ordered, func() {
 	var (
 		testNs        string
 		repo          *RepoArtifacts
@@ -288,11 +288,11 @@ var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consu
 	)
 
 	// A long spec.commit.window so the silence timer can never be what produces the
-	// commit — only the SaveRequest finalize may (A1).
+	// commit — only the CommitRequest finalize may (A1).
 	const commitWindow = "300s"
 
 	BeforeAll(func() {
-		p := setupWindowedDeploymentPipeline("save-request-bundle", "e2e/save-request-bundle", commitWindow)
+		p := setupWindowedDeploymentPipeline("commit-request-bundle", "e2e/commit-request-bundle", commitWindow)
 		testNs, repo, gitProvName, gitTargetName, watchRuleName = p.ns, p.repo, p.gitProvider, p.gitTarget, p.watchRule
 	})
 
@@ -301,11 +301,11 @@ var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consu
 		cleanupNamespace(testNs)
 	})
 
-	It("lands a kubectl-apply bundle (SaveRequest first) in one commit with the request's message", func() {
-		basePath := "e2e/save-request-bundle"
+	It("lands a kubectl-apply bundle (CommitRequest first) in one commit with the request's message", func() {
+		basePath := "e2e/commit-request-bundle"
 		seed := GinkgoRandomSeed()
 		message := fmt.Sprintf("bundle save: apply from e2e seed %d", seed)
-		saveRequestName := fmt.Sprintf("save-request-bundle-save-%d", seed)
+		commitRequestName := fmt.Sprintf("commit-request-bundle-save-%d", seed)
 		deployNames := []string{
 			fmt.Sprintf("bundle-deploy-a-%d", seed),
 			fmt.Sprintf("bundle-deploy-b-%d", seed),
@@ -318,25 +318,25 @@ var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consu
 				"main must not exist before the bundle is finalized")
 		}, 5*time.Second, 1*time.Second).Should(Succeed())
 
-		By("applying a bundle whose FIRST document is a SaveRequest, then three Deployments")
+		By("applying a bundle whose FIRST document is a CommitRequest, then three Deployments")
 		// The window is sized to comfortably exceed the bundle's per-type ingestion spread, so the
 		// collection after the attach is deterministic.
 		var bundle strings.Builder
-		bundle.WriteString(saveRequestManifest(testNs, saveRequestName, gitTargetName, message, "8s"))
+		bundle.WriteString(commitRequestManifest(testNs, commitRequestName, gitTargetName, message, "8s"))
 		for _, name := range deployNames {
 			bundle.WriteString("---\n")
 			bundle.WriteString(deploymentManifest(testNs, name))
 		}
 		_, err := kubectlRunWithStdin(testNs, bundle.String(), "apply", "-f", "-")
-		Expect(err).NotTo(HaveOccurred(), "failed to apply the SaveRequest+Deployments bundle")
+		Expect(err).NotTo(HaveOccurred(), "failed to apply the CommitRequest+Deployments bundle")
 
-		By("waiting for the bundle's SaveRequest to commit the collected window")
+		By("waiting for the bundle's CommitRequest to commit the collected window")
 		var reportedSHA string
 		Eventually(func(g Gomega) {
-			reportedSHA = expectSaveRequestCommitted(g, testNs, saveRequestName,
+			reportedSHA = expectCommitRequestCommitted(g, testNs, commitRequestName,
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
-			branch := saveRequestField(g, testNs, saveRequestName, "{.status.branch}")
+			branch := commitRequestField(g, testNs, commitRequestName, "{.status.branch}")
 			g.Expect(branch).To(Equal("main"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
@@ -345,7 +345,7 @@ var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consu
 			pullLatestRepoState(g, repo.CheckoutDir)
 
 			// Exactly one commit on the fresh repo's main: the entire bundle — applied
-			// across the SaveRequest's attribution and the per-type Deployment stream —
+			// across the CommitRequest's attribution and the per-type Deployment stream —
 			// collapsed into a single commit.
 			g.Expect(mustCommitCount(repo.CheckoutDir)).To(Equal(1),
 				"the whole bundle must land in exactly one commit\n%s",
@@ -354,7 +354,7 @@ var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consu
 			subject, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%B")
 			g.Expect(logErr).NotTo(HaveOccurred())
 			g.Expect(strings.TrimSpace(subject)).To(Equal(message),
-				"the single commit must carry the SaveRequest's message verbatim\n%s",
+				"the single commit must carry the CommitRequest's message verbatim\n%s",
 				recentCommitDiagnostics(repo.CheckoutDir, basePath))
 
 			headSHA, shaErr := gitRun(repo.CheckoutDir, "rev-parse", "HEAD")
@@ -372,20 +372,20 @@ var _ = Describe("Save Request Bundle (UC2)", Label("save-request", "audit-consu
 			}
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 
-		By("cleaning up the bundle Deployments and SaveRequest")
+		By("cleaning up the bundle Deployments and CommitRequest")
 		for _, name := range deployNames {
 			_, _ = kubectlRunInNamespace(testNs, "delete", "deployment", name, "--ignore-not-found=true")
 		}
-		_, _ = kubectlRunInNamespace(testNs, "delete", "saverequest", saveRequestName, "--ignore-not-found=true")
+		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 })
 
-// saveRequestManifest renders a single SaveRequest document with an explicit message and a
+// commitRequestManifest renders a single CommitRequest document with an explicit message and a
 // window that waits and then collects for the given Go duration each. It is used to build
-// multi-document `kubectl apply` bundles where the SaveRequest is the first document.
-func saveRequestManifest(namespace, name, gitTargetName, message, window string) string {
+// multi-document `kubectl apply` bundles where the CommitRequest is the first document.
+func commitRequestManifest(namespace, name, gitTargetName, message, window string) string {
 	return fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   name: %s
   namespace: %s
@@ -424,11 +424,11 @@ spec:
 `, name, namespace, name, name)
 }
 
-// applySaveRequestWithGenerateName creates a SaveRequest using
+// applyCommitRequestWithGenerateName creates a CommitRequest using
 // metadata.generateName and returns the server-allocated name. The spec creates its work and this
-// SaveRequest back-to-back: authorship is settled synchronously at admission (no controller-side
+// CommitRequest back-to-back: authorship is settled synchronously at admission (no controller-side
 // wait), so a zero wait would race the work's watch event and could resolve NoWindow before the
-// window opens. Waiting to attach is the documented mechanism for a SaveRequest issued
+// window opens. Waiting to attach is the documented mechanism for a CommitRequest issued
 // concurrently with its work (UC2).
 //
 // The wait is deliberately tight: it covers audit delivery (--audit-webhook-batch-max-wait=1s) and
@@ -437,10 +437,10 @@ spec:
 // attributes its events in order, so a work event held behind another event that waits out the whole
 // grace fails the spec with NoWindow instead of passing slowly. Do not widen it to make such a
 // failure go away: that wait is the bug.
-func applySaveRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
+func applyCommitRequestWithGenerateName(namespace, prefix, gitTargetName, message string) string {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   generateName: %s
   namespace: %s
@@ -455,19 +455,19 @@ spec:
 	out, err := kubectlRunWithStdin(namespace, manifest,
 		"create", "-f", "-", "-o", "jsonpath={.metadata.name}")
 	Expect(err).NotTo(HaveOccurred(),
-		fmt.Sprintf("failed to create SaveRequest with generateName=%s", prefix))
+		fmt.Sprintf("failed to create CommitRequest with generateName=%s", prefix))
 	name := strings.TrimSpace(out)
 	Expect(name).NotTo(BeEmpty(), "kubectl create must return the server-allocated name")
 	Expect(name).To(HavePrefix(prefix), "the allocated name must start with the requested prefix")
 	return name
 }
 
-// applySaveRequest creates a SaveRequest object that targets the given
+// applyCommitRequest creates a CommitRequest object that targets the given
 // GitTarget with an optional commit message.
-func applySaveRequest(namespace, name, gitTargetName, message string) {
+func applyCommitRequest(namespace, name, gitTargetName, message string) {
 	GinkgoHelper()
 	manifest := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   name: %s
   namespace: %s
@@ -477,37 +477,37 @@ spec:
   message: %q
 `, name, namespace, gitTargetName, message)
 	_, err := kubectlRunWithStdin(namespace, manifest, "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to apply SaveRequest %s/%s", namespace, name))
+	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to apply CommitRequest %s/%s", namespace, name))
 }
 
-// saveRequestField reads a jsonpath field off a SaveRequest object.
-func saveRequestField(g Gomega, namespace, name, jsonPath string) string {
-	out, err := kubectlRunInNamespace(namespace, "get", "saverequest", name,
+// commitRequestField reads a jsonpath field off a CommitRequest object.
+func commitRequestField(g Gomega, namespace, name, jsonPath string) string {
+	out, err := kubectlRunInNamespace(namespace, "get", "commitrequest", name,
 		"-o", "jsonpath="+jsonPath)
-	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read %s of SaveRequest %s", jsonPath, name))
+	g.Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to read %s of CommitRequest %s", jsonPath, name))
 	return strings.TrimSpace(out)
 }
 
-// saveRequestCondition reads the status of one condition off a SaveRequest.
-func saveRequestCondition(g Gomega, namespace, name, conditionType string) string {
-	return saveRequestField(g, namespace, name,
+// commitRequestCondition reads the status of one condition off a CommitRequest.
+func commitRequestCondition(g Gomega, namespace, name, conditionType string) string {
+	return commitRequestField(g, namespace, name,
 		fmt.Sprintf(`{.status.conditions[?(@.type=="%s")].status}`, conditionType))
 }
 
-// saveRequestReasonCommitted is the one Ready reason that means a commit actually happened.
-// It mirrors crReasonCommitted in internal/controller/saverequest_finalize.go.
-const saveRequestReasonCommitted = "Committed"
+// commitRequestReasonCommitted is the one Ready reason that means a commit actually happened.
+// It mirrors crReasonCommitted in internal/controller/commitrequest_finalize.go.
+const commitRequestReasonCommitted = "Committed"
 
-// saveRequestOutcome is the terminal shape of a SaveRequest: not just whether it finished,
+// commitRequestOutcome is the terminal shape of a CommitRequest: not just whether it finished,
 // but WHICH ending it reached.
 //
 // Ready=True alone cannot answer that, and reading it as "it committed" is how this suite went
 // blind. A benign rejection — no window collected in the grace, a foreign author's window, a
 // change already present on the remote — is deliberately Ready=True with Pushed=False and an
-// empty status.commit, so that kstatus reads Current rather than Failed (see rejectSaveRequest).
+// empty status.commit, so that kstatus reads Current rather than Failed (see rejectCommitRequest).
 // A spec asserting Ready=True therefore PASSES on a request that committed nothing, then fails
 // seconds later on the empty sha with "<string>: not to be empty" and no reason attached.
-type saveRequestOutcome struct {
+type commitRequestOutcome struct {
 	Ready   string
 	Reason  string
 	Message string
@@ -518,59 +518,59 @@ type saveRequestOutcome struct {
 }
 
 // String renders the outcome as the diagnostic the bare-sha assertion never produced.
-func (o saveRequestOutcome) String() string {
+func (o commitRequestOutcome) String() string {
 	return fmt.Sprintf(
-		"SaveRequest status: Ready=%s (reason=%q) Stalled=%s Pushed=%s commit=%q branch=%q\n  message: %s",
+		"CommitRequest status: Ready=%s (reason=%q) Stalled=%s Pushed=%s commit=%q branch=%q\n  message: %s",
 		o.Ready, o.Reason, o.Stalled, o.Pushed, o.Commit, o.Branch, o.Message)
 }
 
 // isTerminal reports whether the controller has stopped working on this request: Ready=True
-// (committed or benignly rejected) or Stalled=True (failed). It mirrors saveRequestIsTerminal
+// (committed or benignly rejected) or Stalled=True (failed). It mirrors commitRequestIsTerminal
 // in the controller, and it is what makes an early give-up safe.
-func (o saveRequestOutcome) isTerminal() bool {
+func (o commitRequestOutcome) isTerminal() bool {
 	return o.Ready == "True" || o.Stalled == "True"
 }
 
-// readSaveRequestOutcome reads the whole terminal picture in one API call, so every field in a
+// readCommitRequestOutcome reads the whole terminal picture in one API call, so every field in a
 // failure report is from the same observation rather than five reads a poll apart.
-func readSaveRequestOutcome(g Gomega, namespace, name string) saveRequestOutcome {
+func readCommitRequestOutcome(g Gomega, namespace, name string) commitRequestOutcome {
 	const readyPath = `{.status.conditions[?(@.type=="Ready")]`
-	return saveRequestOutcome{
-		Ready:   saveRequestField(g, namespace, name, readyPath+`.status}`),
-		Reason:  saveRequestField(g, namespace, name, readyPath+`.reason}`),
-		Message: saveRequestField(g, namespace, name, readyPath+`.message}`),
-		Stalled: saveRequestCondition(g, namespace, name, "Stalled"),
-		Pushed:  saveRequestCondition(g, namespace, name, "Pushed"),
-		Commit:  saveRequestField(g, namespace, name, "{.status.commit}"),
-		Branch:  saveRequestField(g, namespace, name, "{.status.branch}"),
+	return commitRequestOutcome{
+		Ready:   commitRequestField(g, namespace, name, readyPath+`.status}`),
+		Reason:  commitRequestField(g, namespace, name, readyPath+`.reason}`),
+		Message: commitRequestField(g, namespace, name, readyPath+`.message}`),
+		Stalled: commitRequestCondition(g, namespace, name, "Stalled"),
+		Pushed:  commitRequestCondition(g, namespace, name, "Pushed"),
+		Commit:  commitRequestField(g, namespace, name, "{.status.commit}"),
+		Branch:  commitRequestField(g, namespace, name, "{.status.branch}"),
 	}
 }
 
-// expectSaveRequestCommitted asserts the request reached the COMMITTED ending, and returns the
+// expectCommitRequestCommitted asserts the request reached the COMMITTED ending, and returns the
 // commit it reported.
 //
 // It gives up early on any other terminal ending rather than polling to the timeout. A terminal
 // outcome is final — the controller will not revisit it — so continuing to re-read it cannot
 // change the result; it only delays the report and buries the reason. Failing at the moment the
 // ending is known means the message names it: "NoWindow" instead of an empty string.
-func expectSaveRequestCommitted(g Gomega, namespace, name, diagnostics string) string {
-	outcome := readSaveRequestOutcome(g, namespace, name)
-	if outcome.isTerminal() && outcome.Reason != saveRequestReasonCommitted {
+func expectCommitRequestCommitted(g Gomega, namespace, name, diagnostics string) string {
+	outcome := readCommitRequestOutcome(g, namespace, name)
+	if outcome.isTerminal() && outcome.Reason != commitRequestReasonCommitted {
 		StopTrying(fmt.Sprintf(
-			"the SaveRequest reached a terminal outcome that is not a commit, so waiting longer "+
+			"the CommitRequest reached a terminal outcome that is not a commit, so waiting longer "+
 				"cannot help.\n%s\n%s", outcome, diagnostics)).Now()
 	}
 
-	g.Expect(outcome.Ready).To(Equal("True"), "SaveRequest is not Ready yet\n%s\n%s", outcome, diagnostics)
-	g.Expect(outcome.Reason).To(Equal(saveRequestReasonCommitted),
+	g.Expect(outcome.Ready).To(Equal("True"), "CommitRequest is not Ready yet\n%s\n%s", outcome, diagnostics)
+	g.Expect(outcome.Reason).To(Equal(commitRequestReasonCommitted),
 		"Ready=True must mean a commit, not a benign rejection\n%s\n%s", outcome, diagnostics)
 	g.Expect(outcome.Pushed).To(Equal("True"),
-		"a committed SaveRequest must report Pushed=True\n%s", outcome)
-	g.Expect(outcome.Commit).NotTo(BeEmpty(), "a committed SaveRequest must report status.commit\n%s", outcome)
+		"a committed CommitRequest must report Pushed=True\n%s", outcome)
+	g.Expect(outcome.Commit).NotTo(BeEmpty(), "a committed CommitRequest must report status.commit\n%s", outcome)
 	return outcome.Commit
 }
 
-// windowedDeploymentPipeline is the pipeline a SaveRequest suite saves through: a namespace and
+// windowedDeploymentPipeline is the pipeline a CommitRequest suite saves through: a namespace and
 // Gitea repo of its own, a GitProvider, a GitTarget with a long spec.commit.window, and a WatchRule
 // on Deployments.
 type windowedDeploymentPipeline struct {

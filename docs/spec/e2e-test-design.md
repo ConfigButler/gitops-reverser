@@ -213,7 +213,7 @@ These namespaces are typically named:
 
 - `<ginkgo-seed>-test-manager-watchrule`
 - `<ginkgo-seed>-test-signing`
-- `<ginkgo-seed>-test-save-request`
+- `<ginkgo-seed>-test-commit-request`
 - and so on
 
 Those namespaces are created in `BeforeAll` and removed in `AfterAll` for the suite.
@@ -263,7 +263,7 @@ Each repo-using e2e file owns its own repo, for example:
 | `watchrule_configmap_secret_e2e_test.go` (one of the `manager` files) | `testNamespaceFor("manager-watchrule")` | `e2e-manager-watchrule-<seed>` |
 | `signing_e2e_test.go` | `testNamespaceFor("signing")` | `e2e-signing-<seed>` |
 | `commit_window_batching_e2e_test.go` | `testNamespaceFor("commit-window-batching")` | `e2e-commit-window-<seed>` |
-| `save_request_e2e_test.go` | `testNamespaceFor("save-request")`, and `save-request-bundle` for the bundle describe | `e2e-save-request-<seed>`, `e2e-save-request-bundle-<seed>` |
+| `commit_request_e2e_test.go` | `testNamespaceFor("commit-request")`, and `commit-request-bundle` for the bundle describe | `e2e-commit-request-<seed>`, `e2e-commit-request-bundle-<seed>` |
 | `commit_author_attribution_e2e_test.go` | `testNamespaceFor("commit-author")` | `e2e-commit-author-<seed>` |
 | `quickstart_framework_e2e_test.go` | `testNamespaceFor("quickstart-framework")` | `e2e-quickstart-framework-<seed>` |
 | `flux_bi_directional_e2e_test.go` | `testNamespaceFor("bi-directional")` | `e2e-bi-directional-<seed>` |
@@ -384,7 +384,7 @@ The e2e package includes, among others:
 | `controller_basics_e2e_test.go` and the other `manager` files | `manager` | Main reconciliation and GitOps behavior |
 | `signing_e2e_test.go` | `signing` | Commit signing behavior |
 | `commit_window_batching_e2e_test.go` | `commit-window-batching`, `audit-consumer` | Commit-window batching through the audit pipeline |
-| `save_request_e2e_test.go` | `save-request`, `audit-consumer` | SaveRequest finalization through the audit pipeline |
+| `commit_request_e2e_test.go` | `commit-request`, `audit-consumer` | CommitRequest finalization through the audit pipeline |
 | `commit_author_attribution_e2e_test.go` | `manager` | OIDC claim to Git author attribution |
 | `image_refresh_test.go` | `image-refresh` | Build/load/restart invalidation chain |
 | `quickstart_framework_e2e_test.go` | `quickstart-framework` | Installer-level quickstart flow |

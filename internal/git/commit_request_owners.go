@@ -4,7 +4,7 @@ package git
 
 import "sync"
 
-// saveRequestOwners records which branch worker accepted each SaveRequest's attach, so the
+// commitRequestOwners records which branch worker accepted each CommitRequest's attach, so the
 // controller's questions about a request reach the worker that can still act on it.
 //
 // The GitTarget cannot answer that. A worker serves every GitTarget on its (provider, branch), so it
@@ -20,14 +20,14 @@ import "sync"
 //
 // It is shared by the manager and every worker it creates. The lock is a leaf: callers may hold
 // a worker's pendingResyncsMu or crOutcomesMu when they take it, never the other way round.
-type saveRequestOwners struct {
+type commitRequestOwners struct {
 	mu     sync.Mutex
-	owners map[saveRequestID]*BranchWorker
+	owners map[commitRequestID]*BranchWorker
 }
 
 // owner returns the worker holding the request, if any. A nil table (a worker built outside a
 // manager) knows no owners.
-func (o *saveRequestOwners) owner(id saveRequestID) (*BranchWorker, bool) {
+func (o *commitRequestOwners) owner(id commitRequestID) (*BranchWorker, bool) {
 	if o == nil {
 		return nil, false
 	}
@@ -39,7 +39,7 @@ func (o *saveRequestOwners) owner(id saveRequestID) (*BranchWorker, bool) {
 
 // claim makes w the request's owner, unless another worker already is. It reports whether w owns
 // the request afterwards. A nil table lets every worker claim.
-func (o *saveRequestOwners) claim(id saveRequestID, w *BranchWorker) bool {
+func (o *commitRequestOwners) claim(id commitRequestID, w *BranchWorker) bool {
 	if o == nil {
 		return true
 	}
@@ -49,14 +49,14 @@ func (o *saveRequestOwners) claim(id saveRequestID, w *BranchWorker) bool {
 		return current == w
 	}
 	if o.owners == nil {
-		o.owners = map[saveRequestID]*BranchWorker{}
+		o.owners = map[commitRequestID]*BranchWorker{}
 	}
 	o.owners[id] = w
 	return true
 }
 
 // release forgets the request, if w is still its owner.
-func (o *saveRequestOwners) release(id saveRequestID, w *BranchWorker) {
+func (o *commitRequestOwners) release(id commitRequestID, w *BranchWorker) {
 	if o == nil {
 		return
 	}

@@ -104,7 +104,7 @@ func (s *reconcileStatus) writeLost() bool { return s.writeLostToRace }
 // commit() drops the write, and the GenerationChangedPredicate on their For() filters the
 // status-only update that won, so nothing re-enqueues the object — it keeps the older answer for
 // its full steady interval. Fixing that at one call site would have left the same bug in the other
-// four. SaveRequestReconciler carries neither half; see its Reconcile for why.
+// four. CommitRequestReconciler carries neither half; see its Reconcile for why.
 func (s *reconcileStatus) requeueAfter(cadence time.Duration) time.Duration {
 	if s.writeLostToRace {
 		return RequeueWriteLostInterval
@@ -123,7 +123,7 @@ func (s *reconcileStatus) requeueAfter(cadence time.Duration) time.Duration {
 // handing it one object's conditions and another object's metadata.
 //
 // It carries no kind name, on purpose. conditionMetricKind resolves that from its own list,
-// because SaveRequest is excluded from the condition metric and an interface anything could
+// because CommitRequest is excluded from the condition metric and an interface anything could
 // implement is not a place to keep an exclusion. See resource_condition_metrics.go.
 type statusObject interface {
 	client.Object

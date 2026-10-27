@@ -89,7 +89,7 @@ smallest token the UI already has that can name the save it wants Git to show.
 Four mechanisms decide the outcome, and the failure is structural rather than a tuning miss.
 
 **The deadline is stamped from receipt.** `handleAttachCommitRequest` in
-[`save_request_attach_loop.go`](../../internal/git/save_request_attach_loop.go) sets
+[`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go) sets
 `finalizeAt = time.Now().Add(closeDelay)` on first registration, and idempotent re-sends keep
 that first value. With the field omitted the deadline is the present instant, so the request is due
 on the next pass of the worker's event loop.
@@ -105,7 +105,7 @@ audit in batches bounded by `--audit-webhook-batch-max-wait=1s`, so the floor on
 is bounded below by that batch plus the join.
 
 **Attach is author-bound.** `matchesWindow` in
-[`save_request_attach.go`](../../internal/git/save_request_attach.go) admits a window only when
+[`commit_request_attach.go`](../../internal/git/commit_request_attach.go) admits a window only when
 the author strings are equal, the two sides agree on whether an actor is named, and the `GitTarget`
 identity matches.
 
@@ -331,10 +331,10 @@ importantly, the cluster-level default flag below is **blocked** on the pointer 
 omitted field and an explicit `0` are the same value, so nothing downstream can tell them apart.
 The type is `v1alpha3` with one known consumer; this is the cheapest it will ever be.
 
-- `api/v1alpha3/saverequest_types.go`, then `task generate` and `task manifests`
-- nil handling at the controller seam (`saverequest_controller.go`, where the field is copied onto
+- `api/v1alpha3/commitrequest_types.go`, then `task generate` and `task manifests`
+- nil handling at the controller seam (`commitrequest_controller.go`, where the field is copied onto
   `AttachCommitRequest`)
-- docs: `configuration.md`, `architecture.md`, `spec/saverequest-design.md`, an `UPGRADING.md` note
+- docs: `configuration.md`, `architecture.md`, `spec/commitrequest-design.md`, an `UPGRADING.md` note
 
 **Half a day.** Fixes R2. Leaves rows 1, 4, 6 untouched, and moves row 3 from "always" to "when the
 cluster is slower than two seconds" — an improvement in reliability, not a change in kind.
@@ -405,12 +405,12 @@ cluster never saw the write you named" (fact-index lookup, row 4 vs 5), "the tar
 accepting writes" (row 10), and "nothing was pending" (row 5).
 
 - `api/v1alpha3`, CRD, CEL cap
-- `saverequest_controller.go` plumb; `saverequest_finalize.go` reasons and messages
-- `pendingCommitRequest` satisfaction state and the two-timer model in `save_request_attach_loop.go`
+- `commitrequest_controller.go` plumb; `commitrequest_finalize.go` reasons and messages
+- `pendingCommitRequest` satisfaction state and the two-timer model in `commit_request_attach_loop.go`
 - `status.waitingFor` on the object while it waits (R9)
-- docs: `spec/saverequest-design.md`, `spec/status-conditions-guide.md`, `interpreting-metrics.md`,
+- docs: `spec/commitrequest-design.md`, `spec/status-conditions-guide.md`, `interpreting-metrics.md`,
   `configuration.md`, `architecture.md`
-- unit tests plus a timing-sensitive e2e in `test/e2e/save_request_e2e_test.go`
+- unit tests plus a timing-sensitive e2e in `test/e2e/commit_request_e2e_test.go`
 
 **Three to four days.** Fixes rows 1, 2, 3, 7, 9 outright, and row 10 via the hook above. Splits
 row 4 from row 5 only where a usable fact exists. Does **not** fix row 11.
@@ -503,9 +503,9 @@ the participant's message on the commit.
 
 ## Related
 
-- [`../spec/saverequest-design.md`](../spec/saverequest-design.md), the current contract. The
+- [`../spec/commitrequest-design.md`](../spec/commitrequest-design.md), the current contract. The
   code depends on it, so each phase changes that page in the same commit.
-- [`../spec/saverequest-admission-authorship.md`](../spec/saverequest-admission-authorship.md),
+- [`../spec/commitrequest-admission-authorship.md`](../spec/commitrequest-admission-authorship.md),
   where the submitter comes from and why the lookup is present-or-never.
 - [`../spec/watch-event-ordering-and-attribution-grace.md`](../spec/watch-event-ordering-and-attribution-grace.md),
   the head-of-line wait this page proposes to wait behind rather than shorten.

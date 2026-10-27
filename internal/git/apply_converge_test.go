@@ -198,20 +198,20 @@ func TestCatchUpAfter_AChangedIntervalAppliesFromTheNextWake(t *testing.T) {
 	assert.Equal(t, "bbb", requests[0].Commit)
 }
 
-// TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce: a SaveRequest with catchUp: AfterPush
+// TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce: a CommitRequest with catchUp: AfterPush
 // leaves a converge pending for its GitTarget's applier once its commit is pushed, without waiting
 // for catchUpAfter; one that pushed no commit asks nothing. It does not yield to an edit: it was
 // asked for.
 func TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	convergedAt(t, loop, requester)
-	loop.pendingCRs = map[saveRequestID]*pendingSaveRequest{}
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
 	save := func(name string, commit string) {
-		id := saveRequestID{Namespace: "team-a", Name: name, UID: "uid-" + name}
-		loop.pendingCRs[id] = &pendingSaveRequest{
+		id := commitRequestID{Namespace: "team-a", Name: name, UID: "uid-" + name}
+		loop.pendingCRs[id] = &pendingCommitRequest{
 			id: id, gitTargetName: "alpha", gitTargetNamespace: "team-a", catchUpNow: true,
 		}
-		loop.resolveSaveRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: commit})
+		loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: commit})
 	}
 
 	save("nothing-pushed", "")
@@ -237,16 +237,16 @@ func TestCatchUpAfter_ASaveThatAsksCatchesUpAtOnce(t *testing.T) {
 func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true), applierTestTarget("loner", false))
 	convergedAt(t, loop, requester)
-	loop.pendingCRs = map[saveRequestID]*pendingSaveRequest{}
-	save := func(name, target, commit string) saveRequestID {
-		id := saveRequestID{Namespace: "team-a", Name: name, UID: "uid-" + name}
-		loop.pendingCRs[id] = &pendingSaveRequest{
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	save := func(name, target, commit string) commitRequestID {
+		id := commitRequestID{Namespace: "team-a", Name: name, UID: "uid-" + name}
+		loop.pendingCRs[id] = &pendingCommitRequest{
 			id: id, gitTargetName: target, gitTargetNamespace: "team-a", catchUpNow: true,
 		}
-		loop.resolveSaveRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: commit})
+		loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: commit})
 		return id
 	}
-	lookup := func(id saveRequestID) SaveApply {
+	lookup := func(id commitRequestID) SaveApply {
 		apply, known := loop.w.LookupSaveApply(id.Namespace, id.Name, id.UID)
 		require.True(t, known, "the worker knows %s", id.Name)
 		return apply
@@ -289,15 +289,15 @@ func TestSaveApply_FollowsTheAttemptThatCarriesIt(t *testing.T) {
 func TestSaveApply_AnApplierAlreadyAtTheTipSettlesIt(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true))
 	convergedAt(t, loop, requester)
-	loop.pendingCRs = map[saveRequestID]*pendingSaveRequest{}
-	id := saveRequestID{Namespace: "team-a", Name: "late", UID: "uid-late"}
-	loop.pendingCRs[id] = &pendingSaveRequest{
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	id := commitRequestID{Namespace: "team-a", Name: "late", UID: "uid-late"}
+	loop.pendingCRs[id] = &pendingCommitRequest{
 		id:                 id,
 		gitTargetName:      "alpha",
 		gitTargetNamespace: "team-a",
 		catchUpNow:         true,
 	}
-	loop.resolveSaveRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: "aaa"})
+	loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: "aaa"})
 
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken())
@@ -332,12 +332,12 @@ func TestCatchUpAfter_TurningItOffCancelsAPendingConverge(t *testing.T) {
 	assert.Empty(t, requester.taken(), "off: the timed converge is gone")
 	assert.False(t, state.converge)
 
-	loop.pendingCRs = map[saveRequestID]*pendingSaveRequest{}
-	id := saveRequestID{Namespace: "team-a", Name: "asks", UID: "uid-asks"}
-	loop.pendingCRs[id] = &pendingSaveRequest{
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+	id := commitRequestID{Namespace: "team-a", Name: "asks", UID: "uid-asks"}
+	loop.pendingCRs[id] = &pendingCommitRequest{
 		id: id, gitTargetName: "alpha", gitTargetNamespace: "team-a", catchUpNow: true,
 	}
-	loop.resolveSaveRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: "bbb"})
+	loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: "bbb"})
 	loop.serviceAppliers()
 	asked := requester.taken()
 	require.Len(t, asked, 1, "a save that asks is no timed converge")
@@ -403,12 +403,12 @@ func TestSaveApply_AppliedOnlyWhenTheRevisionHoldsItsCommit(t *testing.T) {
 			startup[0].Report(ApplyResult{ID: startup[0].ID, Outcome: ApplySucceeded, AppliedRevision: base})
 			loop.serviceAppliers()
 
-			loop.pendingCRs = map[saveRequestID]*pendingSaveRequest{}
-			id := saveRequestID{Namespace: "team-a", Name: "save", UID: "uid-save"}
-			loop.pendingCRs[id] = &pendingSaveRequest{
+			loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
+			id := commitRequestID{Namespace: "team-a", Name: "save", UID: "uid-save"}
+			loop.pendingCRs[id] = &pendingCommitRequest{
 				id: id, gitTargetName: "alpha", gitTargetNamespace: "team-a", catchUpNow: true,
 			}
-			loop.resolveSaveRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: saved})
+			loop.resolveCommitRequest(id, FinalizeResult{Outcome: FinalizeCommitted, Commit: saved})
 			tip, by := tc.tip(base, saved, later, rewritten)
 			loop.w.inbox.observe(RemoteObservation{Commit: tip, By: by})
 			loop.serviceAppliers()
@@ -435,6 +435,6 @@ func TestSaveApply_AppliedOnlyWhenTheRevisionHoldsItsCommit(t *testing.T) {
 func TestApplierState_ASaveIsNeverOnlyALag(t *testing.T) {
 	state := &applierState{lag: true}
 	assert.True(t, state.onlyLag(nil))
-	state.waitSave(saveRequestID{Namespace: "team-a", Name: "save", UID: "uid"}, "ccc")
+	state.waitSave(commitRequestID{Namespace: "team-a", Name: "save", UID: "uid"}, "ccc")
 	assert.False(t, state.onlyLag(nil))
 }

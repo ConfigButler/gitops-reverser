@@ -54,7 +54,7 @@ exceptions:
   - WatchRule
   - ClusterWatchRule
   - KubeProvider
-  - SaveRequest
+  - CommitRequest
   - RemoteSaveRequest
   - APIResourceCatalog
   - HelmRelease

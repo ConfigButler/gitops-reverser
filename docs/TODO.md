@@ -72,20 +72,20 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 - [ ] Two doc sentences: no condition detects an API server's 30s default
   `--audit-webhook-batch-max-wait` (say so in the `KubeProvider` docs), and a relist after a watch
   gap ships its changes as the configured author (say so in the operator docs).
-- [ ] Optional: capture `SaveRequest` authors without Redis in single-pod mode, with an in-memory
+- [ ] Optional: capture `CommitRequest` authors without Redis in single-pod mode, with an in-memory
   `CommandAuthorStore`. The only thing that still forces Redis on one replica. Low priority, and
   only useful until HA.
 
-## Branch worker and SaveRequests
+## Branch worker and CommitRequests
 
-- [ ] `expireWaitingSaveRequests` ranges over a map, so empty commits for saves that expire in
-  the same pass land in random order; sort by `seq` (`internal/git/save_request_attach_loop.go`).
+- [ ] `expireWaitingCommitRequests` ranges over a map, so empty commits for saves that expire in
+  the same pass land in random order; sort by `seq` (`internal/git/commit_request_attach_loop.go`).
 - [ ] `buildRequestRecordWrite` keeps only the username (`UserInfo{Username: pcr.author}`); carry the
   full `UserInfo` so a record commit has the same author identity as a window commit.
 - [ ] A record commit skips `requestTemplate`, though its doc comment says it is phrased like every
   other commit; fix the code or the comment.
 - [ ] Nits: a doubled doc comment on `commitWindowFor`; "close-delay" in the test names in
-  `internal/controller/saverequest_kstatus_test.go`.
+  `internal/controller/commitrequest_kstatus_test.go`.
 - [ ] **Parent observation, step 1**: keep parent availability and its timestamp after the write
   branch exists, from existing advertisements, with no extra connections.
   [gittarget-parent-observation.md](design/gittarget-parent-observation.md#implementation-and-validation).

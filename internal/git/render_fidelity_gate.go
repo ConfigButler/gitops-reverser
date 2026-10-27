@@ -146,7 +146,7 @@ func (g *RenderFidelityGate) Reconcile(
 	// An EMPTY plan restarts every scope vacuously, and a vacuous full restart is the absence
 	// of a measurement rather than a fresh one. Without the length guard a target whose rules
 	// stopped selecting anything would clear a write divergence it never repaired, and the
-	// writes that do not come from a watch — a SaveRequest — would be
+	// writes that do not come from a watch — a CommitRequest — would be
 	// admitted again on the strength of nothing.
 	if len(scopes) > 0 && fresh == len(scopes) {
 		state.writeDivergence = nil

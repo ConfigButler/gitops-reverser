@@ -11,14 +11,14 @@ import (
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
-// This file holds the worker-loop side of SaveRequest attach. All methods run on the single
+// This file holds the worker-loop side of CommitRequest attach. All methods run on the single
 // event loop goroutine, so pendingCRs needs no locking; only the resolved-outcome and phase tables
 // (BranchWorker.crOutcomes, crPhases) cross goroutines and are mutex-guarded.
 //
-// The lifecycle of one SaveRequest, worker-side. A window is only ever opened by a write; a
+// The lifecycle of one CommitRequest, worker-side. A window is only ever opened by a write; a
 // request attaches to one and never opens one.
 //
-//   register (handleAttachSaveRequest) → attach: Next closes the author's open window first
+//   register (handleAttachCommitRequest) → attach: Next closes the author's open window first
 //                                        → [matching window open, CurrentOrNext] Attached
 //                                        → otherwise WaitingForWindow
 //   a same-author window opens before the attach deadline → Attached (first come, first served)
@@ -27,35 +27,35 @@ import (
 //   attach deadline passes while WaitingForWindow → resolved NoOpenWindow, or WindowMismatch when
 //             a window it could not attach to was open meanwhile; never a later window
 
-// saveRequestOutcomeTTL bounds how long a resolved SaveRequest outcome is
+// commitRequestOutcomeTTL bounds how long a resolved CommitRequest outcome is
 // retained for the controller to poll before it is GC'd. It comfortably exceeds
 // the controller's poll cadence. It is not what keeps a withdrawn request withdrawn:
 // an outcome is never collected while an attach for it is still queued (crQueuedAttaches),
 // and the controller sends no attach once it has started withdrawing.
-const saveRequestOutcomeTTL = 15 * time.Minute
+const commitRequestOutcomeTTL = 15 * time.Minute
 
 // ErrBranchWorkerStopped is the outcome of a request whose branch worker stopped before it could
 // finish it. Once the loop has exited nothing can publish the request, so this answer is final.
-var ErrBranchWorkerStopped = errors.New("the GitTarget's branch worker stopped before it finished the SaveRequest")
+var ErrBranchWorkerStopped = errors.New("the GitTarget's branch worker stopped before it finished the CommitRequest")
 
-// recordSaveRequestOutcome stores a resolved outcome and GCs stale entries. The
+// recordCommitRequestOutcome stores a resolved outcome and GCs stale entries. The
 // event loop is the only caller, but it takes the mutex because the controller
-// reads concurrently via LookupSaveRequestOutcome.
-func (w *BranchWorker) recordSaveRequestOutcome(id saveRequestID, result FinalizeResult) {
+// reads concurrently via LookupCommitRequestOutcome.
+func (w *BranchWorker) recordCommitRequestOutcome(id commitRequestID, result FinalizeResult) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
-	w.recordSaveRequestOutcomeLocked(id, result)
+	w.recordCommitRequestOutcomeLocked(id, result)
 }
 
-// recordSaveRequestOutcomeLocked is recordSaveRequestOutcome for a caller holding crOutcomesMu.
-func (w *BranchWorker) recordSaveRequestOutcomeLocked(id saveRequestID, result FinalizeResult) {
+// recordCommitRequestOutcomeLocked is recordCommitRequestOutcome for a caller holding crOutcomesMu.
+func (w *BranchWorker) recordCommitRequestOutcomeLocked(id commitRequestID, result FinalizeResult) {
 	if w.crOutcomes == nil {
-		w.crOutcomes = map[saveRequestID]saveRequestOutcomeEntry{}
+		w.crOutcomes = map[commitRequestID]commitRequestOutcomeEntry{}
 	}
 	now := time.Now()
-	w.crOutcomes[id] = saveRequestOutcomeEntry{result: result, resolvedAt: now}
+	w.crOutcomes[id] = commitRequestOutcomeEntry{result: result, resolvedAt: now}
 	for k, entry := range w.crOutcomes {
-		if now.Sub(entry.resolvedAt) > saveRequestOutcomeTTL && w.crQueuedAttaches[k] == 0 {
+		if now.Sub(entry.resolvedAt) > commitRequestOutcomeTTL && w.crQueuedAttaches[k] == 0 {
 			delete(w.crOutcomes, k)
 			w.crOwners.release(k, w)
 		}
@@ -65,11 +65,11 @@ func (w *BranchWorker) recordSaveRequestOutcomeLocked(id saveRequestID, result F
 
 // countQueuedAttach records an attach entering the FIFO. The caller holds pendingResyncsMu, so the
 // count is raised before the loop can receive the item.
-func (w *BranchWorker) countQueuedAttach(id saveRequestID) {
+func (w *BranchWorker) countQueuedAttach(id commitRequestID) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	if w.crQueuedAttaches == nil {
-		w.crQueuedAttaches = map[saveRequestID]int{}
+		w.crQueuedAttaches = map[commitRequestID]int{}
 	}
 	w.crQueuedAttaches[id]++
 }
@@ -77,7 +77,7 @@ func (w *BranchWorker) countQueuedAttach(id saveRequestID) {
 // uncountQueuedAttach records an attach leaving the FIFO: handled by the loop, dropped on a full
 // queue, or drained by an exiting worker. A request the worker then knows nothing else about is
 // given back, so the controller's next poll finds the worker its GitTarget names.
-func (w *BranchWorker) uncountQueuedAttach(id saveRequestID) {
+func (w *BranchWorker) uncountQueuedAttach(id commitRequestID) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	if n := w.crQueuedAttaches[id]; n > 1 {
@@ -92,7 +92,7 @@ func (w *BranchWorker) uncountQueuedAttach(id saveRequestID) {
 	}
 }
 
-// settleSaveRequestsAfterExit runs once the event loop has returned: after a shutdown, after a
+// settleCommitRequestsAfterExit runs once the event loop has returned: after a shutdown, after a
 // retirement, or when the loop never started because its GitProvider could not be read. Either way
 // nothing will act on a request again, and every request the worker knew must get an answer
 // rather than wait for one that cannot come.
@@ -103,7 +103,7 @@ func (w *BranchWorker) uncountQueuedAttach(id saveRequestID) {
 //     controller is free to send it to the worker the GitTarget names now, or to withdraw it.
 //
 // From then on a withdraw is answered at once (answerWithdrawAfterExit).
-func (w *BranchWorker) settleSaveRequestsAfterExit() {
+func (w *BranchWorker) settleCommitRequestsAfterExit() {
 	w.pendingResyncsMu.Lock()
 	w.stoppingState = true
 	w.pendingResyncsMu.Unlock()
@@ -114,7 +114,7 @@ func (w *BranchWorker) settleSaveRequestsAfterExit() {
 	w.crOutcomesMu.Lock()
 	for id, phase := range w.crPhases {
 		if phase.Held() {
-			w.recordSaveRequestOutcomeLocked(id, FinalizeResult{Branch: w.Branch, Err: ErrBranchWorkerStopped})
+			w.recordCommitRequestOutcomeLocked(id, FinalizeResult{Branch: w.Branch, Err: ErrBranchWorkerStopped})
 		} else {
 			w.crOwners.release(id, w)
 		}
@@ -129,30 +129,30 @@ func (w *BranchWorker) settleSaveRequestsAfterExit() {
 
 // answerWithdrawAfterExit resolves a withdraw sent to a worker whose loop has exited. Nothing can
 // act on the request any more, so it is withdrawn for good, unless it already has an outcome.
-func (w *BranchWorker) answerWithdrawAfterExit(id saveRequestID) {
+func (w *BranchWorker) answerWithdrawAfterExit(id commitRequestID) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	if _, resolved := w.crOutcomes[id]; resolved {
 		return
 	}
-	w.recordSaveRequestOutcomeLocked(id, FinalizeResult{
+	w.recordCommitRequestOutcomeLocked(id, FinalizeResult{
 		Branch: w.Branch,
-		Err:    errors.Join(ErrSaveRequestWithdrawn, ErrBranchWorkerStopped),
+		Err:    errors.Join(ErrCommitRequestWithdrawn, ErrBranchWorkerStopped),
 	})
 }
 
-// LookupSaveRequestOutcome returns a resolved SaveRequest outcome, or ok=false
+// LookupCommitRequestOutcome returns a resolved CommitRequest outcome, or ok=false
 // when the request is still in flight (or already GC'd). The controller polls this
-// after sending its AttachSaveRequest.
-func (w *BranchWorker) LookupSaveRequestOutcome(namespace, name, uid string) (FinalizeResult, bool) {
+// after sending its AttachCommitRequest.
+func (w *BranchWorker) LookupCommitRequestOutcome(namespace, name, uid string) (FinalizeResult, bool) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
-	entry, ok := w.crOutcomes[saveRequestID{Namespace: namespace, Name: name, UID: uid}]
+	entry, ok := w.crOutcomes[commitRequestID{Namespace: namespace, Name: name, UID: uid}]
 	return entry.result, ok
 }
 
-// setSaveRequestPhase records where an unresolved request stands; an empty phase forgets it.
-func (w *BranchWorker) setSaveRequestPhase(id saveRequestID, phase SaveRequestPhase) {
+// setCommitRequestPhase records where an unresolved request stands; an empty phase forgets it.
+func (w *BranchWorker) setCommitRequestPhase(id commitRequestID, phase CommitRequestPhase) {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	if phase == "" {
@@ -160,40 +160,40 @@ func (w *BranchWorker) setSaveRequestPhase(id saveRequestID, phase SaveRequestPh
 		return
 	}
 	if w.crPhases == nil {
-		w.crPhases = map[saveRequestID]SaveRequestPhase{}
+		w.crPhases = map[commitRequestID]CommitRequestPhase{}
 	}
 	w.crPhases[id] = phase
 }
 
-// LookupSaveRequestPhase returns where an unresolved request stands on this worker, or "" when
+// LookupCommitRequestPhase returns where an unresolved request stands on this worker, or "" when
 // the worker has not registered it (yet) or it is resolved.
-func (w *BranchWorker) LookupSaveRequestPhase(namespace, name, uid string) SaveRequestPhase {
+func (w *BranchWorker) LookupCommitRequestPhase(namespace, name, uid string) CommitRequestPhase {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
-	return w.crPhases[saveRequestID{Namespace: namespace, Name: name, UID: uid}]
+	return w.crPhases[commitRequestID{Namespace: namespace, Name: name, UID: uid}]
 }
 
-// hasSaveRequestOutcome reports whether a request is already resolved, so a late
+// hasCommitRequestOutcome reports whether a request is already resolved, so a late
 // idempotent re-send of its attach is a no-op.
-func (w *BranchWorker) hasSaveRequestOutcome(id saveRequestID) bool {
+func (w *BranchWorker) hasCommitRequestOutcome(id commitRequestID) bool {
 	w.crOutcomesMu.Lock()
 	defer w.crOutcomesMu.Unlock()
 	_, ok := w.crOutcomes[id]
 	return ok
 }
 
-// handleAttachSaveRequest registers a SaveRequest with the worker. Everything is stamped once:
+// handleAttachCommitRequest registers a CommitRequest with the worker. Everything is stamped once:
 // an idempotent re-send restarts nothing and closes nothing.
-func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) {
+func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitRequest) {
 	id := req.id()
 	// Uncounted only once the request is registered or resolved, so the worker never looks as if it
 	// had forgotten a request it is in the middle of taking.
 	defer l.w.uncountQueuedAttach(id)
-	if l.w.hasSaveRequestOutcome(id) {
+	if l.w.hasCommitRequestOutcome(id) {
 		return // already resolved: a late idempotent re-send.
 	}
 	if l.pendingCRs == nil {
-		l.pendingCRs = map[saveRequestID]*pendingSaveRequest{}
+		l.pendingCRs = map[commitRequestID]*pendingCommitRequest{}
 	}
 	if _, exists := l.pendingCRs[id]; exists {
 		return // idempotent re-send: keep the first registration.
@@ -202,7 +202,7 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 	// delayed ingestion pipeline this lets attachTimeout cover only the inter-stream spread
 	// instead of the absolute latency.
 	l.crSeq++
-	pcr := &pendingSaveRequest{
+	pcr := &pendingCommitRequest{
 		id:                 id,
 		author:             req.Author,
 		attribution:        req.Attribution,
@@ -219,15 +219,15 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 		unattributed: req.Unattributed,
 	}
 	if earlier := l.saveInProgress(pcr, req.Attach); earlier != nil {
-		l.w.recordSaveRequestOutcome(id, FinalizeResult{Branch: l.w.Branch, Outcome: FinalizeSaveInProgress})
-		l.w.Log.Info("SaveRequest refused: an earlier save of the same author on the GitTarget is in progress",
+		l.w.recordCommitRequestOutcome(id, FinalizeResult{Branch: l.w.Branch, Outcome: FinalizeSaveInProgress})
+		l.w.Log.Info("CommitRequest refused: an earlier save of the same author on the GitTarget is in progress",
 			"request", id.Namespace+"/"+id.Name, "earlier", earlier.id.Namespace+"/"+earlier.id.Name,
 			"author", req.Author, "target", req.GitTargetNamespace+"/"+req.GitTargetName)
 		return
 	}
 	l.pendingCRs[id] = pcr
-	l.w.setSaveRequestPhase(id, PhaseWaitingForWindow)
-	l.w.Log.Info("SaveRequest registered with worker",
+	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
+	l.w.Log.Info("CommitRequest registered with worker",
 		"request", id.Namespace+"/"+id.Name,
 		"author", req.Author,
 		"target", req.GitTargetNamespace+"/"+req.GitTargetName,
@@ -265,8 +265,8 @@ func (l *branchWorkerEventLoop) handleAttachSaveRequest(req *AttachSaveRequest) 
 // is collecting: it closes that window under the earlier request's message first. A request already
 // waiting for its push holds no window, so it races nothing.
 func (l *branchWorkerEventLoop) saveInProgress(
-	pcr *pendingSaveRequest, attach v1alpha3.AttachPolicy,
-) *pendingSaveRequest {
+	pcr *pendingCommitRequest, attach v1alpha3.AttachPolicy,
+) *pendingCommitRequest {
 	now := time.Now()
 	for _, earlier := range l.pendingCRs {
 		if !earlier.sameSaver(pcr) {
@@ -284,31 +284,31 @@ func (l *branchWorkerEventLoop) saveInProgress(
 	return nil
 }
 
-// serviceSaveRequests runs after every loop wake: note foreign windows, resolve waiting requests
+// serviceCommitRequests runs after every loop wake: note foreign windows, resolve waiting requests
 // whose attach deadline passed, attach the next waiting request to an open window, and re-arm the
 // attach timer.
 //
 // Expiry runs BEFORE attach. When a request's deadline and a matching write are ready on the same
 // wake, the request has already run out: it resolves, and the write keeps its own window.
-func (l *branchWorkerEventLoop) serviceSaveRequests() {
+func (l *branchWorkerEventLoop) serviceCommitRequests() {
 	if len(l.pendingCRs) == 0 {
 		l.stopAttachTimer()
 		return
 	}
 	l.noteForeignWindow()
-	l.expireWaitingSaveRequests()
-	l.attachWaitingSaveRequests()
+	l.expireWaitingCommitRequests()
+	l.attachWaitingCommitRequests()
 	l.rearmAttachTimer()
 }
 
 // waiting reports whether a request is still looking for a window it may attach to at now.
-func (p *pendingSaveRequest) waiting(now time.Time) bool {
+func (p *pendingCommitRequest) waiting(now time.Time) bool {
 	return !p.attached && p.attachDeadline.After(now)
 }
 
 // noteForeignWindow records, on every waiting request, that a window it cannot attach to is open.
 //
-// It runs BEFORE attachWaitingSaveRequests and independently of it, because that function
+// It runs BEFORE attachWaitingCommitRequests and independently of it, because that function
 // returns early when the window is already taken — so the scan inside it cannot be the place
 // this is observed. It also runs on every pass rather than at expiry: the foreign window is
 // finalized on its own timer, usually before this request's wait runs out.
@@ -331,7 +331,7 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 			continue
 		}
 		pcr.sawForeignWindow = true
-		l.w.Log.Info("SaveRequest is waiting on a window that belongs to someone else",
+		l.w.Log.Info("CommitRequest is waiting on a window that belongs to someone else",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name,
 			"requestAuthor", pcr.author,
 			"requestTarget", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
@@ -340,15 +340,15 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 	}
 }
 
-// attachWaitingSaveRequests attaches the first-registered waiting request that matches the open
+// attachWaitingCommitRequests attaches the first-registered waiting request that matches the open
 // window, when the window carries none yet. A window carries at most one request; a second waits
 // for the next window, and a request whose deadline has passed takes none.
-func (l *branchWorkerEventLoop) attachWaitingSaveRequests() {
+func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	if l.openWindow == nil || l.openWindow.pendingCR != nil {
 		return
 	}
 	now := time.Now()
-	var first *pendingSaveRequest
+	var first *pendingCommitRequest
 	for _, pcr := range l.pendingCRs {
 		if !pcr.waiting(now) || !pcr.matchesWindow(l.openWindow) {
 			continue
@@ -366,7 +366,7 @@ func (l *branchWorkerEventLoop) attachWaitingSaveRequests() {
 // with the request's own: the request's maxDuration runs from this attach, and so does its first
 // idle interval. A zero maxDuration closes the window right here. The message is the window's to
 // keep from now on, so it moves into the window's charge.
-func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingSaveRequest) {
+func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 	now := time.Now()
 	l.openWindow.pendingMessage = pcr.message
 	id := pcr.id
@@ -381,12 +381,12 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingSaveRequest) {
 	l.openWindow.lastWriteAt = now
 	if pcr.claims(l.openWindow) {
 		l.openWindow.claim, l.openWindow.claimedBy = pcr.unattributed, UserInfo{Username: pcr.author}
-		l.w.Log.Info("SaveRequest claimed a window whose writes name no author",
+		l.w.Log.Info("CommitRequest claimed a window whose writes name no author",
 			"request", id.Namespace+"/"+id.Name, "author", pcr.author, "claim", string(pcr.unattributed),
 			"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName)
 	}
-	l.w.setSaveRequestPhase(id, PhaseCollectingWindow)
-	l.w.Log.Info("SaveRequest attached to open window",
+	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
+	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
 		"author", pcr.author,
 		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
@@ -394,52 +394,52 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingSaveRequest) {
 	l.closeOrArmWindow()
 }
 
-// expireWaitingSaveRequests resolves every request whose attach deadline passed while it was
+// expireWaitingCommitRequests resolves every request whose attach deadline passed while it was
 // still waiting. An attached request is not here: its window's timers close it, and whichever path
 // closes the window resolves it.
-func (l *branchWorkerEventLoop) expireWaitingSaveRequests() {
+func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	now := time.Now()
 	for id, pcr := range l.pendingCRs {
 		if pcr.attached || pcr.attachDeadline.After(now) {
 			continue
 		}
 		// Which of the two refusals this is depends on whether anything was open that this
-		// request could not have: see pendingSaveRequest.expiryOutcome.
+		// request could not have: see pendingCommitRequest.expiryOutcome.
 		outcome := pcr.expiryOutcome()
 		if outcome == FinalizeNoOpenWindow {
 			// NoWindow says the save saw no writes. On a target that refuses them that is not the
 			// cause, and with CommitEmpty the record would say so in Git: see write_gate.go.
 			if err := l.w.requestWriteRefusal(l.w.ctx, pcr); err != nil {
-				l.resolveSaveRequest(id, FinalizeResult{Err: err})
+				l.resolveCommitRequest(id, FinalizeResult{Err: err})
 				continue
 			}
 		}
 		if outcome == FinalizeNoOpenWindow && pcr.commitEmpty {
-			recorded, err := l.recordSaveRequest(pcr)
+			recorded, err := l.recordCommitRequest(pcr)
 			if err != nil {
 				// The request asked for its message to be recorded and it was not: a failure, not
 				// a benign NoWindow that would report Ready=True for a save that left no trace.
-				l.resolveSaveRequest(id, FinalizeResult{Err: err})
+				l.resolveCommitRequest(id, FinalizeResult{Err: err})
 				continue
 			}
 			if recorded {
 				continue // it now rides the record write, and the push resolves it
 			}
 		}
-		l.resolveSaveRequest(id, FinalizeResult{Outcome: outcome})
+		l.resolveCommitRequest(id, FinalizeResult{Outcome: outcome})
 	}
 }
 
-// recordSaveRequest decides an empty commit recording a request's message, for a request that ran
+// recordCommitRequest decides an empty commit recording a request's message, for a request that ran
 // out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record can
 // be made is returned, including a write gate (an empty commit is a write too), so the request fails
 // instead of reporting a save it did not make. Once decided, the request rides the record write
 // like an attached request rides its window: a remote that cannot be reached holds it, and only a
 // failure of the commit itself fails it.
-func (l *branchWorkerEventLoop) recordSaveRequest(pcr *pendingSaveRequest) (bool, error) {
+func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (bool, error) {
 	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
 	if err != nil {
-		l.w.Log.Error(err, "Cannot build the empty commit recording a SaveRequest",
+		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
@@ -454,7 +454,7 @@ func (l *branchWorkerEventLoop) recordSaveRequest(pcr *pendingSaveRequest) (bool
 // gets none, and the refusal is returned (see write_gate.go).
 func (w *BranchWorker) buildRequestRecordWrite(
 	ctx context.Context,
-	pcr *pendingSaveRequest,
+	pcr *pendingCommitRequest,
 ) (*PendingWrite, error) {
 	metadata, err := w.resolveTargetMetadata(ctx, pcr.gitTargetName, pcr.gitTargetNamespace)
 	if err != nil {
@@ -485,41 +485,41 @@ func (w *BranchWorker) buildRequestRecordWrite(
 		},
 		RequestAuthor:      UserInfo{Username: pcr.author},
 		RequestAttribution: pcr.attribution,
-		SaveRequest:        &id,
+		CommitRequest:      &id,
 	}, nil
 }
 
-// handleWithdrawSaveRequest cancels a request the worker has not acted on: one that is only
+// handleWithdrawCommitRequest cancels a request the worker has not acted on: one that is only
 // waiting for a window, or that was never registered at all. A request attached to a window or
 // already committed is held, and withdrawing it is a no-op; the controller reads the held phase and
 // keeps waiting. Either way the worker's answer and the controller's agree.
-func (l *branchWorkerEventLoop) handleWithdrawSaveRequest(req *AttachSaveRequest) {
+func (l *branchWorkerEventLoop) handleWithdrawCommitRequest(req *AttachCommitRequest) {
 	id := req.id()
-	if l.w.hasSaveRequestOutcome(id) {
+	if l.w.hasCommitRequestOutcome(id) {
 		return // already resolved, or already withdrawn.
 	}
 	if pcr, ok := l.pendingCRs[id]; ok && pcr.attached {
-		l.w.Log.Info("SaveRequest withdraw ignored: the worker already holds it",
+		l.w.Log.Info("CommitRequest withdraw ignored: the worker already holds it",
 			"request", id.Namespace+"/"+id.Name)
 		return
 	}
-	l.resolveSaveRequest(id, FinalizeResult{Err: ErrSaveRequestWithdrawn})
+	l.resolveCommitRequest(id, FinalizeResult{Err: ErrCommitRequestWithdrawn})
 	l.rearmAttachTimer()
 }
 
-// resolveSaveRequest records a request's terminal outcome for the controller to
+// resolveCommitRequest records a request's terminal outcome for the controller to
 // poll and forgets it from the pending set.
-func (l *branchWorkerEventLoop) resolveSaveRequest(id saveRequestID, result FinalizeResult) {
+func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result FinalizeResult) {
 	if result.Branch == "" {
 		result.Branch = l.w.Branch
 	}
-	l.w.recordSaveRequestOutcome(id, result)
+	l.w.recordCommitRequestOutcome(id, result)
 	if pcr := l.pendingCRs[id]; pcr != nil && pcr.catchUpNow {
 		l.catchUpAfterSave(pcr, result.Commit)
 	}
 	delete(l.pendingCRs, id)
-	l.w.setSaveRequestPhase(id, "")
-	l.w.Log.Info("SaveRequest resolved",
+	l.w.setCommitRequestPhase(id, "")
+	l.w.Log.Info("CommitRequest resolved",
 		"request", id.Namespace+"/"+id.Name,
 		"outcome", string(result.Outcome),
 		"commit", result.Commit,

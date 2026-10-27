@@ -88,9 +88,9 @@ func (l *branchWorkerEventLoop) decide(pendingWrite PendingWrite) {
 	pendingWrite.decidedAt = l.w.now()
 	l.pendingWrites = append(l.pendingWrites, pendingWrite)
 	l.pendingWritesBytes += pendingWrite.charge
-	if id := pendingWrite.SaveRequest; id != nil {
-		l.w.setSaveRequestPhase(*id, PhaseWaitingForPush)
-		// Bound to its write from here on: see pendingSaveRequest.attached.
+	if id := pendingWrite.CommitRequest; id != nil {
+		l.w.setCommitRequestPhase(*id, PhaseWaitingForPush)
+		// Bound to its write from here on: see pendingCommitRequest.attached.
 		if pcr := l.pendingCRs[*id]; pcr != nil {
 			pcr.attached = true
 		}
@@ -430,7 +430,7 @@ func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err err
 		l.w.Log.Error(err, "Resync commit failed after its caller was answered; dropping it",
 			"resources", len(req.Desired))
 	case pendingWrite.Kind == PendingWriteRequestRecord:
-		l.w.Log.Error(err, "The empty commit recording a SaveRequest failed",
+		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
 			"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName)
 		l.failDecidedRequest(pendingWrite, fmt.Errorf("record the message in an empty commit: %w", err))
 	default:
@@ -476,7 +476,7 @@ func (l *branchWorkerEventLoop) replyToDeferredResyncs(err error) {
 
 // failDecidedRequest fails the request a dropped write carried.
 func (l *branchWorkerEventLoop) failDecidedRequest(pendingWrite PendingWrite, cause error) {
-	if pendingWrite.SaveRequest != nil {
-		l.resolveSaveRequest(*pendingWrite.SaveRequest, FinalizeResult{Branch: l.w.Branch, Err: cause})
+	if pendingWrite.CommitRequest != nil {
+		l.resolveCommitRequest(*pendingWrite.CommitRequest, FinalizeResult{Branch: l.w.Branch, Err: cause})
 	}
 }

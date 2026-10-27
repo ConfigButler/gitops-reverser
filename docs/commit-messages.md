@@ -15,8 +15,8 @@ message only on some branch passes validation and falls back at commit time.
 
 | Input, in precedence order | Message source |
 |---|---|
-| Attached [save request](configuration.md#saverequest) **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage` |
-| Non-empty literal override, including an attached [save request](configuration.md#saverequest) | Exact supplied text |
+| Attached [save request](configuration.md#commitrequest) **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage` |
+| Non-empty literal override, including an attached [save request](configuration.md#commitrequest) | Exact supplied text |
 | Live window of any size | `liveTemplate` |
 | Atomic snapshot or resync | `reconcileTemplate` |
 
@@ -61,7 +61,7 @@ Git author header when attribution ran without resolving an actor. Messages neve
 
 ## Framing a save message
 
-By default a [save request](configuration.md#saverequest)'s message **replaces** the template, so supplying one
+By default a [save request](configuration.md#commitrequest)'s message **replaces** the template, so supplying one
 costs you the resource body `liveTemplate` would have produced: the commit says why, but no longer
 says what. `requestTemplate` composes the two.
 
@@ -95,7 +95,7 @@ than scanning the template's text.
 reading a label some resources do not carry is caught when the target reconciles rather than at
 commit time. If one
 does fail to render in production, the request's message is committed verbatim instead of the
-window being lost, and the commit is counted under `message_source="save_request_fallback"`.
+window being lost, and the commit is counted under `message_source="commit_request_fallback"`.
 Alert on that rate: the commit itself succeeds and no condition moves, so it is the only signal.
 
 ## Kind, scope, and labels

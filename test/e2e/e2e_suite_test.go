@@ -128,17 +128,17 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 	// Diagnostic first, so its numbers reach the artifacts even when the gating
 	// audit invariant below fails the suite.
 	reportAttributionStats()
-	reportSaveRequestOutcomes()
+	reportCommitRequestOutcomes()
 	assertNoAnomalousAuditOutcomes()
 })
 
-// saveRequestOutcomes is the bounded outcome set of gitopsreverser_save_requests_total, in the
+// commitRequestOutcomes is the bounded outcome set of gitopsreverser_commit_requests_total, in the
 // order a reader wants them: the success, the two refusals, the no-op, then the fault.
-var saveRequestOutcomes = []string{
+var commitRequestOutcomes = []string{
 	"committed", "window_mismatch", "no_window", "already_present", "failed",
 }
 
-// reportSaveRequestOutcomes prints the run's SaveRequest outcome distribution.
+// reportCommitRequestOutcomes prints the run's CommitRequest outcome distribution.
 //
 // DIAGNOSTIC, not a gate. A suite-wide "none failed" assertion would first have to establish that
 // the last save had been scraped, and until that is handled a green result would mean less than it
@@ -148,14 +148,14 @@ var saveRequestOutcomes = []string{
 // The breakdown is the point. `committed` is what the happy path looks like and the only value
 // these specs produce: `window_mismatch` needs two authors contending for one branch's window,
 // which nothing here arranges. The per-run reset means these numbers are this run's.
-func reportSaveRequestOutcomes() {
-	By("reporting the run's SaveRequest terminal outcomes")
+func reportCommitRequestOutcomes() {
+	By("reporting the run's CommitRequest terminal outcomes")
 	ensurePrometheusClient()
 	verifyPrometheusAvailable()
 
-	for _, oc := range saveRequestOutcomes {
+	for _, oc := range commitRequestOutcomes {
 		n, err := queryPrometheus(fmt.Sprintf(
-			`sum(max_over_time(gitopsreverser_save_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
+			`sum(max_over_time(gitopsreverser_commit_requests_total{outcome=%q}[2h])) or vector(0)`, oc))
 		if err == nil {
 			_, _ = fmt.Fprintf(GinkgoWriter, "   save request outcome %-16s = %.0f\n", oc, n)
 		}

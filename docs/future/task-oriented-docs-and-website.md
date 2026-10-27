@@ -63,7 +63,7 @@ need them, and say when each capability is required or optional.
 - **Make a change through Kubernetes.** For an end user: create, update, or delete a selected
   resource; follow the change into Git; understand timing and refusal outcomes.
 - **Group changes and explain why.** For an end user: collect related edits, attach intent through
-  a `SaveRequest`, and verify the resulting commit or no-commit outcome. Explain author matching
+  a `CommitRequest`, and verify the resulting commit or no-commit outcome. Explain author matching
   and window timing.
 - **Work alongside other people on the same branch.** For collaborating teams: explain how authors
   and targets share a branch, what splits a commit window, and what happens when edits overlap.
@@ -205,7 +205,7 @@ provider-specific claim when writing it.
 
 Link this guide from normal changes and grouped changes. Keep "who made the change" and "why the
 change was needed" as distinct tasks. Explain the separate admission-based submitter capture used
-by `SaveRequest` where it affects matching, so readers do not assume audit setup controls both.
+by `CommitRequest` where it affects matching, so readers do not assume audit setup controls both.
 
 ## Guide structure
 

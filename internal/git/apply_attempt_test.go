@@ -349,12 +349,12 @@ func TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow(t *testing.T) {
 	}
 }
 
-// TestWriteBusy_ASaveAnnouncedBeforeItsWrites: a registered SaveRequest makes the branch busy, so
+// TestWriteBusy_ASaveAnnouncedBeforeItsWrites: a registered CommitRequest makes the branch busy, so
 // a catch-up cannot land between a save's announcement and its first writes.
 func TestWriteBusy_ASaveAnnouncedBeforeItsWrites(t *testing.T) {
 	loop, _ := applierClaimLoop(t, applierTestTarget("alpha", true))
 	assert.False(t, loop.writeBusy())
-	loop.pendingCRs = map[saveRequestID]*pendingSaveRequest{{}: {}}
+	loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{{}: {}}
 	assert.True(t, loop.writeBusy())
 }
 

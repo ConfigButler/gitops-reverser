@@ -104,11 +104,11 @@ type WorkerManager struct {
 	// the scrape goroutine. Take it BEFORE mu, never the other way round.
 	lifecycleMu sync.Mutex
 	workers     map[BranchKey]*BranchWorker
-	// saveRequests records which worker holds each SaveRequest. It outlives the map above on
+	// commitRequests records which worker holds each CommitRequest. It outlives the map above on
 	// purpose: a retired worker leaves the map before it stops, and keeps answering for the
-	// requests it held. See saveRequestOwners.
-	saveRequests *saveRequestOwners
-	ctx          context.Context
+	// requests it held. See commitRequestOwners.
+	commitRequests *commitRequestOwners
+	ctx            context.Context
 	// mapper is the GVK->GVR resolver injected into every worker so store scans build a
 	// resource-identity inventory. It is set once at startup (SetMapper) before any
 	// worker is created; a nil mapper keeps workers structure-only. It is the LOCAL cluster's
@@ -223,7 +223,7 @@ func NewWorkerManager(
 		limits:             limits.withDefaults(),
 		sensitiveResources: sensitiveResources,
 		workers:            make(map[BranchKey]*BranchWorker),
-		saveRequests:       &saveRequestOwners{},
+		commitRequests:     &commitRequestOwners{},
 		remotes:            make(map[BranchKey]RemoteObservation),
 		replacements:       make(map[BranchKey]struct{}),
 		renderFidelityGate: NewRenderFidelityGate(),
@@ -538,7 +538,7 @@ func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest, gitB
 	worker.replacementPending = func() bool { return m.ReplacementPending(key) }
 	worker.applierAdmitted = m.applierAdmitted
 	worker.renderFidelityGate = m.renderFidelityGate
-	worker.crOwners = m.saveRequests
+	worker.crOwners = m.commitRequests
 
 	if err := worker.Start(m.ctx); err != nil {
 		return fmt.Errorf("failed to start worker for %s: %w", key.String(), err)
@@ -685,7 +685,7 @@ func (m *WorkerManager) removeWorkersLocked(keys []BranchKey, reason string) {
 
 // RetireGitBranch stops the worker writing for gitBranch, if one is live, and returns once it has
 // stopped. Stopping closes the worker's intake, pushes or refuses every pending write and settles
-// every SaveRequest it holds, so a GitBranch being deleted calls this before its finalizer goes.
+// every CommitRequest it holds, so a GitBranch being deleted calls this before its finalizer goes.
 // What the manager kept about the branch goes with it: the next holder starts from the remote.
 func (m *WorkerManager) RetireGitBranch(gitBranch k8stypes.NamespacedName) {
 	m.lifecycleMu.Lock()
@@ -736,12 +736,12 @@ func (m *WorkerManager) WorkerForTarget(target *configv1alpha3.GitTarget) (*Bran
 	return m.WorkerForGitBranch(target.GitBranchKey())
 }
 
-// SaveRequestOwner returns the worker that holds a SaveRequest: the one that accepted its
+// CommitRequestOwner returns the worker that holds a CommitRequest: the one that accepted its
 // attach and has not given it back. It is found whatever has happened to the request's GitTarget
 // since, including a worker retired and still finishing its last push, so a caller that finds no
 // owner knows that no worker can still commit the request.
-func (m *WorkerManager) SaveRequestOwner(namespace, name, uid string) (*BranchWorker, bool) {
-	return m.saveRequests.owner(saveRequestID{Namespace: namespace, Name: name, UID: uid})
+func (m *WorkerManager) CommitRequestOwner(namespace, name, uid string) (*BranchWorker, bool) {
+	return m.commitRequests.owner(commitRequestID{Namespace: namespace, Name: name, UID: uid})
 }
 
 // afterOrphanSelection runs between choosing the workers to retire and retiring them. It is nil in

@@ -30,7 +30,7 @@ Restarting the Pod loses in-memory decisions and save receipts. Redis persistenc
 | Every call to a Git server is bounded; a lost push reply is settled by evidence | [`network_bound.go`](../../internal/git/network_bound.go) | `network_bound_test.go` |
 | One publication report feeds every `GitTarget` on the branch, its held saves, and the backlog metrics | [`publication.go`](../../internal/git/publication.go), [`gittarget_publication.go`](../../internal/controller/gittarget_publication.go) | `publication_test.go`, `gittarget_publication_test.go` |
 | Replay refusal settles only the affected entry | `pending_writes_loop.go`, `branch_worker.go` | [`replay_refusal_test.go`](../../internal/git/replay_refusal_test.go) |
-| Save outcomes follow remote publication; the controller cannot time out a held save | [`save_request_attach_loop.go`](../../internal/git/save_request_attach_loop.go), [`saverequest_controller.go`](../../internal/controller/saverequest_controller.go) | Held-request retry and controller safety-bound tests |
+| Save outcomes follow remote publication; the controller cannot time out a held save | [`commit_request_attach_loop.go`](../../internal/git/commit_request_attach_loop.go), [`commitrequest_controller.go`](../../internal/controller/commitrequest_controller.go) | Held-request retry and controller safety-bound tests |
 | Parent selection and compare-and-swap remain publication guards | [`git_atomic_push.go`](../../internal/git/git_atomic_push.go) | Parent-change tests and `TestGitRoundTripLedger` |
 | New watch streams start with a fresh replay; reconnects resume a cursor only after the stream's own replay completed | [`target_watch.go`](../../internal/watch/target_watch.go) | `runTargetWatch`, `TestRunTargetWatch_ResumesOnlyAfterItsOwnReplayCompleted` |
 | A live event changes the dedup baseline and the cursor only once the worker accepted it | [`target_watch.go`](../../internal/watch/target_watch.go) | `refused_admission_test.go`, `desired_state_change_filter_test.go` |
@@ -144,7 +144,7 @@ and persistence and HA ([HA plan](../future/ha-gittarget-distribution-plan.md)).
 | `gittarget-branch-worker-pending-writes.md` | The steps as built, the pause/resume contract, and the review findings |
 | [`branch-worker-event-model.md`](branch-worker-event-model.md) | Transition semantics and the later boundary for reconstructing execution |
 | [`push-cooldown.md`](push-cooldown.md) | Healthy publication cadence; the success cooldown remains unchanged |
-| [`saverequest-design.md`](../spec/saverequest-design.md) | Current save contract, including retained versus unaccepted requests |
+| [`commitrequest-design.md`](../spec/commitrequest-design.md) | Current save contract, including retained versus unaccepted requests |
 | `ha-gittarget-distribution-plan.md` | Future durable acceptance, publication evidence, storage budgets, and HA |
 
 Parent observation, empty-repository bootstrap policy, configuration freshness, and refusal state

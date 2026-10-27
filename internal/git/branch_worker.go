@@ -213,7 +213,7 @@ type BranchWorker struct {
 	// to read it — and still answer "accepted".
 	stoppingState bool
 	// exitedState is set once the event loop has returned, for whatever reason, and the worker
-	// has settled every SaveRequest it knew. From then on nothing can act on a request, so a
+	// has settled every CommitRequest it knew. From then on nothing can act on a request, so a
 	// withdraw is answered at once instead of being queued for a loop that is gone. Guarded by
 	// pendingResyncsMu, like stoppingState.
 	exitedState bool
@@ -364,27 +364,27 @@ type BranchWorker struct {
 	// Guarded by pendingResyncsMu. See queuedResyncsFor.
 	queuedResyncs map[string]int
 
-	// crOutcomes holds resolved SaveRequest outcomes for the controller to poll
-	// via LookupSaveRequestOutcome. The event loop is the only writer (on its
+	// crOutcomes holds resolved CommitRequest outcomes for the controller to poll
+	// via LookupCommitRequestOutcome. The event loop is the only writer (on its
 	// goroutine), the controller the only reader (on a reconcile goroutine), so the
 	// mutex guards the cross-goroutine handoff. Entries are GC'd by age. The
-	// accessors live in save_request_attach_loop.go alongside the attach logic.
+	// accessors live in commit_request_attach_loop.go alongside the attach logic.
 	crOutcomesMu sync.Mutex
-	crOutcomes   map[saveRequestID]saveRequestOutcomeEntry
-	// crPhases holds where each unresolved SaveRequest stands, for the controller to report
+	crOutcomes   map[commitRequestID]commitRequestOutcomeEntry
+	// crPhases holds where each unresolved CommitRequest stands, for the controller to report
 	// while it waits. Guarded by crOutcomesMu; the event loop is the only writer.
-	crPhases map[saveRequestID]SaveRequestPhase
-	// crApplies holds where the apply each SaveRequest asked for stands (save_apply.go). Guarded by
+	crPhases map[commitRequestID]CommitRequestPhase
+	// crApplies holds where the apply each CommitRequest asked for stands (save_apply.go). Guarded by
 	// crOutcomesMu; the event loop is the only writer.
-	crApplies map[saveRequestID]saveApplyEntry
+	crApplies map[commitRequestID]saveApplyEntry
 	// crQueuedAttaches counts, per request, the attaches on the FIFO that the loop has not handled
 	// yet. An outcome is not collected while any are queued: the outcome is what turns a late attach
 	// into a no-op, so collecting it first would let that attach register a withdrawn request
 	// again, however long the outcome had been kept. Guarded by crOutcomesMu.
-	crQueuedAttaches map[saveRequestID]int
-	// crOwners is the manager's table of which worker holds each request. See saveRequestOwners.
+	crQueuedAttaches map[commitRequestID]int
+	// crOwners is the manager's table of which worker holds each request. See commitRequestOwners.
 	// Set by the WorkerManager before Start; nil for a worker built on its own.
-	crOwners *saveRequestOwners
+	crOwners *commitRequestOwners
 
 	// clock is the time source of the retry schedule; nil is time.Now. See now().
 	clock func() time.Time
@@ -561,7 +561,7 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 	go func() {
 		defer w.wg.Done()
 		w.processEvents()
-		w.settleSaveRequestsAfterExit()
+		w.settleCommitRequestsAfterExit()
 	}()
 
 	return nil
@@ -596,10 +596,10 @@ func (w *BranchWorker) Enqueue(event Event) bool {
 	return w.enqueueRequest(&WriteRequest{Events: []Event{event}})
 }
 
-// EnqueueWithdraw asks the loop to cancel a SaveRequest it has not acted on. It never blocks: a
+// EnqueueWithdraw asks the loop to cancel a CommitRequest it has not acted on. It never blocks: a
 // full queue or a stopping worker drops it, and the controller sends it again on its next poll. A
 // worker whose loop has exited answers at once, because nothing is left that could act on it.
-func (w *BranchWorker) EnqueueWithdraw(req *AttachSaveRequest) {
+func (w *BranchWorker) EnqueueWithdraw(req *AttachCommitRequest) {
 	if req == nil {
 		return
 	}
@@ -620,17 +620,17 @@ func (w *BranchWorker) EnqueueWithdraw(req *AttachSaveRequest) {
 	case w.eventQueue <- WorkItem{Withdraw: req}:
 	default:
 		w.releaseInflightItem()
-		w.Log.V(1).Info("Queue full, SaveRequest withdraw dropped (the controller re-sends)",
+		w.Log.V(1).Info("Queue full, CommitRequest withdraw dropped (the controller re-sends)",
 			"request", req.Namespace+"/"+req.Name)
 	}
 }
 
-// EnqueueAttach adds a SaveRequest attach to this worker's queue. Riding the
+// EnqueueAttach adds a CommitRequest attach to this worker's queue. Riding the
 // same queue as resource events is what makes it process in audit order, after
 // every earlier write. The attach is fire-and-forget: the controller polls the
-// outcome via LookupSaveRequestOutcome and re-sends idempotently, so a queue-
+// outcome via LookupCommitRequestOutcome and re-sends idempotently, so a queue-
 // full drop is recovered by the next poll rather than a synchronous reply.
-func (w *BranchWorker) EnqueueAttach(req *AttachSaveRequest) {
+func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 	if req == nil {
 		return
 	}
@@ -648,14 +648,14 @@ func (w *BranchWorker) EnqueueAttach(req *AttachSaveRequest) {
 		w.pendingResyncsMu.Unlock()
 		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalAttach)
-		w.Log.V(1).Info("Worker is stopping, SaveRequest attach refused (the controller re-sends)")
+		w.Log.V(1).Info("Worker is stopping, CommitRequest attach refused (the controller re-sends)")
 		return
 	}
 	if !w.admitPayload(charge) {
 		w.pendingResyncsMu.Unlock()
 		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalAttach)
-		w.Log.V(1).Info("SaveRequest attach refused while the branch has paused intake "+
+		w.Log.V(1).Info("CommitRequest attach refused while the branch has paused intake "+
 			"(the controller re-sends)", "request", req.Namespace+"/"+req.Name)
 		return
 	}
@@ -666,7 +666,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachSaveRequest) {
 		w.intake.release(charge)
 		w.pendingResyncsMu.Unlock()
 		w.releaseInflightItem()
-		w.Log.Info("SaveRequest attach refused: another branch worker holds the request",
+		w.Log.Info("CommitRequest attach refused: another branch worker holds the request",
 			"request", req.Namespace+"/"+req.Name)
 		return
 	}
@@ -675,7 +675,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachSaveRequest) {
 	select {
 	case w.eventQueue <- WorkItem{Attach: req, charge: charge}:
 		w.pendingResyncsMu.Unlock()
-		w.Log.Info("SaveRequest attach enqueued",
+		w.Log.Info("CommitRequest attach enqueued",
 			"request", req.Namespace+"/"+req.Name,
 			"author", req.Author,
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
@@ -690,7 +690,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachSaveRequest) {
 		w.pendingResyncsMu.Unlock()
 		w.releaseInflightItem()
 		w.recordQueueRefusal(queueRefusalAttach)
-		w.Log.Error(nil, "Event queue full, SaveRequest attach refused (controller will re-send)")
+		w.Log.Error(nil, "Event queue full, CommitRequest attach refused (controller will re-send)")
 	}
 }
 
@@ -1049,15 +1049,15 @@ type branchWorkerEventLoop struct {
 	// See apply_ownership.go.
 	ownershipLogged map[string]struct{}
 
-	// pendingCRs holds SaveRequests registered (via AttachSaveRequest) but not
+	// pendingCRs holds CommitRequests registered (via AttachCommitRequest) but not
 	// yet resolved, keyed by identity. A request is parked here until a same-author
 	// window opens (then it attaches to it) or its attach deadline passes.
 	// Loop-goroutine only.
-	pendingCRs map[saveRequestID]*pendingSaveRequest
-	// savedCatchUps is the SaveRequests, by GitTarget, whose pushed commit asked their applier to
+	pendingCRs map[commitRequestID]*pendingCommitRequest
+	// savedCatchUps is the CommitRequests, by GitTarget, whose pushed commit asked their applier to
 	// catch up at once (catchUp: AfterPush), with that commit, until the appliers are next listed
 	// (takeReasons, save_apply.go).
-	savedCatchUps map[itypes.ResourceReference]map[saveRequestID]string
+	savedCatchUps map[itypes.ResourceReference]map[commitRequestID]string
 	// crSeq numbers registrations, so competing requests attach first come, first served.
 	crSeq uint64
 	// refusalTimer fires at the earliest deadline in refusalPending. See refusal_reapply.go.
@@ -1097,7 +1097,7 @@ type branchWorkerEventLoop struct {
 	flushMark  uint64
 	flushEdits map[itypes.ResourceReference]map[string]time.Time
 
-	// attachTimer fires at the earliest attach deadline of a waiting SaveRequest, so a request
+	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
 	// its window's timers close it.
 	attachTimer *time.Timer
@@ -1165,7 +1165,7 @@ func (l *branchWorkerEventLoop) run() {
 		case <-attachC:
 			l.attachTimer = nil
 			// The work (attach waiting requests, finalize due ones) is done by
-			// serviceSaveRequests below.
+			// serviceCommitRequests below.
 		case <-refusalC:
 			l.refusalTimer = nil
 			l.flushPendingReapply()
@@ -1195,7 +1195,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //
 //   - Release the live events held for a GitTarget whose render fidelity is now established, or drop
 //     them on a divergence or past the hold's bounds (serviceHeldWrites).
-//   - Bind any waiting SaveRequest to an open window, resolve any whose attach deadline has
+//   - Bind any waiting CommitRequest to an open window, resolve any whose attach deadline has
 //     passed, and re-arm the deadline timer.
 //   - Close the open window early if a Git host reported a push (closeWindowForPushHint).
 //   - Drive the pending writes: commit what the wake decided, schedule its push (advance).
@@ -1206,7 +1206,7 @@ func (l *branchWorkerEventLoop) handleQueueItem(item WorkItem) {
 //   - Publish the result, moving the handled item's charge to what the loop holds.
 func (l *branchWorkerEventLoop) endWake(released int64) {
 	l.serviceHeldWrites()
-	l.serviceSaveRequests()
+	l.serviceCommitRequests()
 	l.closeWindowForPushHint()
 	l.advance()
 	l.serviceAppliers()
@@ -1259,9 +1259,9 @@ func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
 func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 	switch {
 	case item.Attach != nil:
-		l.handleAttachSaveRequest(item.Attach)
+		l.handleAttachCommitRequest(item.Attach)
 	case item.Withdraw != nil:
-		l.handleWithdrawSaveRequest(item.Withdraw)
+		l.handleWithdrawCommitRequest(item.Withdraw)
 	case item.ApplyBarrier != nil:
 		l.handleApplyBarrier(item.ApplyBarrier)
 	case item.Resync != nil:
@@ -1309,7 +1309,7 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 			// diagnosable: the common cause is an incoming event whose author is empty
 			// (an unattributed update, e.g. a /status change that carries no audit fact)
 			// arriving against a non-empty window author, which forces a finalize and
-			// can split a SaveRequest collect window. windowAuthor vs eventAuthor makes
+			// can split a CommitRequest collect window. windowAuthor vs eventAuthor makes
 			// that visible at a glance.
 			l.w.Log.Info("Window identity change forces finalize before appending event",
 				"windowAuthor", l.openWindow.Author,
@@ -1345,13 +1345,13 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 		l.windowBytes += eventRetainedCharge(&event)
 
 		if opened {
-			// A waiting SaveRequest gets the new window BEFORE anything can close it: before the
+			// A waiting CommitRequest gets the new window BEFORE anything can close it: before the
 			// target's timers are applied, and before a buffer-limit flush. With idleTimeout or
 			// maxDuration at 0s, or a write that trips the cap, the window would otherwise close in
 			// this very step, and a waiting request would miss the write it was waiting for — or,
 			// waiting on another author, never see the window that refuses it.
 			l.noteForeignWindow()
-			l.attachWaitingSaveRequests()
+			l.attachWaitingCommitRequests()
 			if l.openWindow == nil {
 				return // the attached request's maxDuration: 0s closed it already
 			}
@@ -1430,24 +1430,24 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 		// worker exits, even if a push was just sent. The push commits what was just decided.
 		l.pushPending()
 	}
-	l.failUnpushedSaveRequests()
+	l.failUnpushedCommitRequests()
 	l.drainUnhandledQueueItems()
 }
 
-// failUnpushedSaveRequests settles every SaveRequest still riding a write the exiting loop
+// failUnpushedCommitRequests settles every CommitRequest still riding a write the exiting loop
 // could not push.
 //
 // A request that reached a local commit is resolved by the push and by nothing else, so a
 // shutdown whose final push failed would leave it in flight with no loop left to settle it. The
 // controller would poll until its own safety window expired and then fail closed on a timeout,
 // which says nothing about what happened. Say what happened instead.
-func (l *branchWorkerEventLoop) failUnpushedSaveRequests() {
+func (l *branchWorkerEventLoop) failUnpushedCommitRequests() {
 	for i := range l.pendingWrites {
-		id := l.pendingWrites[i].SaveRequest
+		id := l.pendingWrites[i].CommitRequest
 		if id == nil {
 			continue
 		}
-		l.resolveSaveRequest(*id, FinalizeResult{
+		l.resolveCommitRequest(*id, FinalizeResult{
 			Err: errors.New("worker stopped before the commit reached the remote"),
 		})
 	}
@@ -1458,7 +1458,7 @@ func (l *branchWorkerEventLoop) drainUnhandledQueueItems() { l.w.drainQueue() }
 
 // drainQueue clears items no loop will handle. Each was counted into inflightItems at enqueue and
 // decremented only after handling, so without this the final depth would stay non-zero forever:
-// the loop has stopped, so nothing republishes a corrected value. A buffered SaveRequest attach
+// the loop has stopped, so nothing republishes a corrected value. A buffered CommitRequest attach
 // is dropped, and the request given back unless the worker knows it otherwise; the controller
 // re-sends on its next poll, to whichever worker holds it then.
 func (w *BranchWorker) drainQueue() {
@@ -1495,10 +1495,10 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 }
 
 // finalizeOpenWindowWithReason closes the live event window into one decided write. The attached
-// SaveRequest message overrides the live template.
+// CommitRequest message overrides the live template.
 //
 // The closed window is a decided write (decide): a remote that cannot be reached leaves it pending
-// for the publication retry, and its SaveRequest held. Only a failure of the write itself
+// for the publication retry, and its CommitRequest held. Only a failure of the write itself
 // drops it, and resolves that request Failed (settleFailed).
 func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) {
 	if l.openWindow == nil {
@@ -1573,11 +1573,11 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"pendingWrites", len(l.pendingWrites))
 }
 
-// carryRequestOnWrite carries the attached SaveRequest onto the write so its result follows the
+// carryRequestOnWrite carries the attached CommitRequest onto the write so its result follows the
 // data: it is resolved Committed once this write is pushed (§6.5). The request's
 // whenNothingToCommit rides along, so a window that changed nothing can still record its message.
-func (l *branchWorkerEventLoop) carryRequestOnWrite(pendingWrite *PendingWrite, pendingCR *saveRequestID) {
-	pendingWrite.SaveRequest = pendingCR
+func (l *branchWorkerEventLoop) carryRequestOnWrite(pendingWrite *PendingWrite, pendingCR *commitRequestID) {
+	pendingWrite.CommitRequest = pendingCR
 	if pendingCR == nil {
 		return
 	}
@@ -1596,8 +1596,8 @@ func (l *branchWorkerEventLoop) carryRequestOnWrite(pendingWrite *PendingWrite, 
 // target's scan stays fresh, but it commits nothing, and the push would report that as
 // AlreadyPresent, so only the request fails. See write_gate.go.
 func (l *branchWorkerEventLoop) gateBuiltWindow(
-	pendingCR *saveRequestID, target ResolvedTargetMetadata, reason windowFinalizeReason,
-) (*saveRequestID, bool) {
+	pendingCR *commitRequestID, target ResolvedTargetMetadata, reason windowFinalizeReason,
+) (*commitRequestID, bool) {
 	if err := l.w.targetWriteRefusal(target.Name, target.Namespace, false); err != nil {
 		l.w.Log.V(1).Info("Discarding built window: render fidelity closed while it was finalized",
 			"reason", string(reason), "gitTarget", target.Namespace+"/"+target.Name)
@@ -1605,19 +1605,19 @@ func (l *branchWorkerEventLoop) gateBuiltWindow(
 		return nil, false
 	}
 	if pendingCR != nil && target.Suspend {
-		l.resolveSaveRequest(*pendingCR, FinalizeResult{Err: errTargetSuspended})
+		l.resolveCommitRequest(*pendingCR, FinalizeResult{Err: errTargetSuspended})
 		return nil, true
 	}
 	return pendingCR, true
 }
 
 // dropOpenWindow discards a window whose finalize failed before it was decided, resolving any
-// attached SaveRequest as Failed so the controller does not poll forever.
-func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *saveRequestID, cause error) {
+// attached CommitRequest as Failed so the controller does not poll forever.
+func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
 	l.openWindow = nil
 	l.windowBytes = 0
 	if pendingCR != nil {
-		l.resolveSaveRequest(*pendingCR, FinalizeResult{Branch: l.w.Branch, Err: cause})
+		l.resolveCommitRequest(*pendingCR, FinalizeResult{Branch: l.w.Branch, Err: cause})
 	}
 }
 
@@ -1684,15 +1684,15 @@ func (l *branchWorkerEventLoop) pushPending() {
 	if err != nil {
 		// Leave pendingWrites in place; do NOT advance lastPushAt — the
 		// design specifies lastPushAt only advances on a successful push. A
-		// SaveRequest riding a retained write stays unresolved while we retry.
+		// CommitRequest riding a retained write stays unresolved while we retry.
 		l.publicationFailed(err, "Push failed; pending writes retained for retry")
 		l.settleReplayRefusals(refused)
 		return
 	}
 
-	// The writes are now on the remote: resolve every SaveRequest riding one with
+	// The writes are now on the remote: resolve every CommitRequest riding one with
 	// the pushed commit's own SHA (§6.5) — "Committed" means "on the remote".
-	l.resolvePushedSaveRequests()
+	l.resolvePushedCommitRequests()
 
 	l.pendingWrites = nil
 	l.pendingWritesBytes = 0
@@ -1710,7 +1710,7 @@ func (l *branchWorkerEventLoop) publicationFailed(err error, message string) {
 	l.w.Log.Error(err, message, "pendingWrites", len(l.pendingWrites), "retryAt", l.retry.due)
 }
 
-// resolvePushedSaveRequests settles every SaveRequest carried by a just-pushed write, now
+// resolvePushedCommitRequests settles every CommitRequest carried by a just-pushed write, now
 // that the remote has spoken.
 //
 // Two outcomes, decided by whether the write ended up with a commit of its own. A real SHA is
@@ -1719,27 +1719,27 @@ func (l *branchWorkerEventLoop) publicationFailed(err error, message string) {
 // push confirmed the remote agreed, which is the difference between this and resolving at
 // finalize time. If the remote had moved, the replay would have turned this write into a real
 // commit before we got here, and it would resolve Committed instead.
-func (l *branchWorkerEventLoop) resolvePushedSaveRequests() {
+func (l *branchWorkerEventLoop) resolvePushedCommitRequests() {
 	for i := range l.pendingWrites {
 		pw := l.pendingWrites[i]
-		if pw.SaveRequest == nil {
+		if pw.CommitRequest == nil {
 			continue
 		}
 		if pw.CommitSHA.IsZero() {
-			l.resolveSaveRequest(*pw.SaveRequest, FinalizeResult{Outcome: FinalizeAlreadyPresent})
+			l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{Outcome: FinalizeAlreadyPresent})
 			continue
 		}
 		if pw.emptyCommitted {
 			// Nothing changed, and the request asked to record its message anyway. The outcome
 			// keeps the cause, and the commit proves the message is in Git.
-			l.resolveSaveRequest(*pw.SaveRequest, FinalizeResult{
+			l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
 				Outcome: pw.nothingToCommitOutcome(),
 				Commit:  pw.CommitSHA.String(),
 				Branch:  l.w.Branch,
 			})
 			continue
 		}
-		l.resolveSaveRequest(*pw.SaveRequest, FinalizeResult{
+		l.resolveCommitRequest(*pw.CommitRequest, FinalizeResult{
 			Outcome: FinalizeCommitted,
 			Commit:  pw.CommitSHA.String(),
 			Branch:  l.w.Branch,
@@ -2858,8 +2858,8 @@ func (w *BranchWorker) recordCommitFailure(reason string) {
 
 // Commit window timer sources, reported as the commit_windows_total `timer_source` label.
 const (
-	windowTimerSourceTarget      = "target"
-	windowTimerSourceSaveRequest = "save_request"
+	windowTimerSourceTarget        = "target"
+	windowTimerSourceCommitRequest = "commit_request"
 )
 
 // metricLabel is the commit_windows_total `close_reason` value for this reason. The log field keeps
@@ -2906,7 +2906,7 @@ func (w *BranchWorker) recordWindowClosed(window *openWindow, reason windowFinal
 	if telemetry.GitCommitWindowsTotal != nil {
 		source := windowTimerSourceTarget
 		if window.pendingCR != nil {
-			source = windowTimerSourceSaveRequest
+			source = windowTimerSourceCommitRequest
 		}
 		telemetry.GitCommitWindowsTotal.Add(ctx, 1, metric.WithAttributes(append(target,
 			attribute.String("close_reason", reason.metricLabel()),

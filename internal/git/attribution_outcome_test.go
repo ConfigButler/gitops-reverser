@@ -157,30 +157,30 @@ func TestOpenWindow_ResolvedWindowsStillSplitByAuthor(t *testing.T) {
 
 // THE REGRESSION THIS DESIGN EXISTS TO AVOID.
 //
-// A SaveRequest that could not be attributed carries an empty author, and so does a window
+// A CommitRequest that could not be attributed carries an empty author, and so does a window
 // whose attribution ran and named nobody — the sentinel is a git-signature rendering only and
 // never reaches the window's Author. The two therefore still match on the author, and the
 // outcomes must not be allowed to push them apart: the request's outcome comes from command
 // authorship and the window's from mirrored-resource attribution, which are configured
 // independently, so they routinely differ. See the full cross-subsystem matrix in
 // TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems.
-func TestPendingSaveRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *testing.T) {
+func TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *testing.T) {
 	window := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
 	require.Empty(t, window.Author,
 		"an unresolved window carries no author; the sentinel is applied at the write path")
 
-	request := &pendingSaveRequest{
-		author:             "", // an unnamed SaveRequest claims no actor
+	request := &pendingCommitRequest{
+		author:             "", // an unnamed CommitRequest claims no actor
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
 	}
 	assert.True(t, request.matchesWindow(window),
-		"an unnamed SaveRequest must attach to the unresolved window it was meant for")
+		"an unnamed CommitRequest must attach to the unresolved window it was meant for")
 
 	// The default deployment: command-author capture is off, so the request says "not
 	// attempted" while the window says "unresolved". Neither names an actor, so they match.
-	notAttempted := &pendingSaveRequest{
+	notAttempted := &pendingCommitRequest{
 		author:             "",
 		attribution:        AttributionNotAttempted,
 		gitTargetName:      "target",
@@ -191,10 +191,10 @@ func TestPendingSaveRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *testi
 			"requiring the two subsystems' outcomes to be equal drops the user's commit message")
 }
 
-func TestPendingSaveRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
+func TestPendingCommitRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 	resolvedWindow := newOpenWindow(attributedEvent("jane@acme.com", AttributionResolved), nil)
 
-	unresolvedRequest := &pendingSaveRequest{
+	unresolvedRequest := &pendingCommitRequest{
 		author:             "",
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "target",
@@ -203,7 +203,7 @@ func TestPendingSaveRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 	assert.False(t, unresolvedRequest.matchesWindow(resolvedWindow),
 		"an unattributed request must not claim a named actor's window")
 
-	resolvedRequest := &pendingSaveRequest{
+	resolvedRequest := &pendingCommitRequest{
 		author:             "jane@acme.com",
 		attribution:        AttributionResolved,
 		gitTargetName:      "target",
@@ -211,7 +211,7 @@ func TestPendingSaveRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 	}
 	assert.True(t, resolvedRequest.matchesWindow(resolvedWindow))
 
-	otherActor := &pendingSaveRequest{
+	otherActor := &pendingCommitRequest{
 		author:             "bob@acme.com",
 		attribution:        AttributionResolved,
 		gitTargetName:      "target",
@@ -221,9 +221,9 @@ func TestPendingSaveRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 		"a resolved request still matches on the actor")
 }
 
-func TestPendingSaveRequest_StillScopedToOneGitTarget(t *testing.T) {
+func TestPendingCommitRequest_StillScopedToOneGitTarget(t *testing.T) {
 	window := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
-	request := &pendingSaveRequest{
+	request := &pendingCommitRequest{
 		author:             "",
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "other-target",
@@ -260,11 +260,11 @@ func TestRenderEventCommitMessage_UnresolvedUsernameStaysEmptyInTemplates(t *tes
 
 // A request that names its submitter claims a window whose writes name no author only when it was
 // allowed to, and never a window whose writes name an actor, nor one on another GitTarget.
-func TestPendingSaveRequest_ClaimsOnlyAnUnattributedWindowWhenAllowed(t *testing.T) {
+func TestPendingCommitRequest_ClaimsOnlyAnUnattributedWindowWhenAllowed(t *testing.T) {
 	unattributed := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
 	named := newOpenWindow(attributedEvent("bob@acme.com", AttributionResolved), nil)
-	request := func(claim UnattributedClaim, target string) *pendingSaveRequest {
-		return &pendingSaveRequest{
+	request := func(claim UnattributedClaim, target string) *pendingCommitRequest {
+		return &pendingCommitRequest{
 			author:             "jane@acme.com",
 			attribution:        AttributionResolved,
 			gitTargetName:      target,
@@ -291,12 +291,12 @@ func TestPendingSaveRequest_ClaimsOnlyAnUnattributedWindowWhenAllowed(t *testing
 }
 
 func TestWithTakeOverNote_EndsTheMessageWithATrailer(t *testing.T) {
-	id := &saveRequestID{Namespace: "team-a", Name: "save-1"}
+	id := &commitRequestID{Namespace: "team-a", Name: "save-1"}
 	assert.Equal(t,
-		"save: edit\n\nAuthor-Source: SaveRequest team-a/save-1; no audit record names who made these changes\n",
+		"save: edit\n\nAuthor-Source: CommitRequest team-a/save-1; no audit record names who made these changes\n",
 		withTakeOverNote("save: edit\n", id), "the message's trailing newline is kept")
 	assert.Equal(t,
-		"save: edit\n\nAuthor-Source: SaveRequest team-a/save-1; no audit record names who made these changes",
+		"save: edit\n\nAuthor-Source: CommitRequest team-a/save-1; no audit record names who made these changes",
 		withTakeOverNote("save: edit", id))
 }
 

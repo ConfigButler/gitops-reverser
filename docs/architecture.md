@@ -173,7 +173,7 @@ the Flux `Kustomization` applier and the Argo CD `Application` applier, its auto
 **Redis/Valkey is optional but advised.** The default configured-author mode runs without it: a plain
 `helm install` comes up healthy and watches initialize from current state on startup. When an endpoint
 is configured, Redis stores cursors for reconnecting running watches and the coordination records used by
-SaveRequest author capture and HA. Attribution does not require it on its own: its facts travel on a
+CommitRequest author capture and HA. Attribution does not require it on its own: its facts travel on a
 selectable transport, Redis Streams by default and an in-process ring with
 `--author-attribution-transport=memory`, which is refused with more than one replica. HA will require
 Redis as the shared store across replicas.
@@ -240,7 +240,7 @@ optional and only add *who* did something:
 | **Discovery** (CRD/APIService) | *what types exist* | yes | the API surface: served GVRs, scope, preferred version, subresources; rules resolve against it |
 | **Watch** (per claimed `(GVR, scope)`) | *what changed* | yes | the object body, ordered per type; the only object-state source, with deletes reconciled via `sendInitialEvents` replay + mark-and-sweep |
 | **Audit webhook** (`/audit-webhook/<audit-route>`) | *who changed mirrored state* | no | a post-persist attribution fact, partitioned by source provider and joined to the watch event by resourceVersion ([Optional Attribution](#optional-attribution)) |
-| **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `SaveRequest`, captured at admission and keyed 1:1 by UID ([SaveRequest Finalize](#saverequest-finalize)) |
+| **Validating admission webhook** (`/validate-operator-types`) | *who issued a command* | no | the submitter of a `CommitRequest`, captured at admission and keyed 1:1 by UID ([CommitRequest Finalize](#commitrequest-finalize)) |
 
 With both optional sources off, the product still mirrors state correctly, and every commit is authored
 by the committer.
@@ -263,14 +263,14 @@ the write reaches etcd**:
 Audit avoids both: kube-apiserver posts a `ResponseComplete` event *after* the write persisted, carrying
 the resourceVersion that joins it to the watch event.
 
-The one place admission *is* the right source is the `SaveRequest`, and only for its **command** meaning
+The one place admission *is* the right source is the `CommitRequest`, and only for its **command** meaning
 (*who issued the save*) and not for mirroring the object. That holds because it is **our own type with a
 memory model we control**: the controller reconciles off its own watch, which only delivers persisted
 objects, so the author is captured at admission and read back 1:1 by UID: no resourceVersion join, no
 persistence proof from audit needed. (We still can't guarantee a create is never blocked, but it holds
-across our edge cases.) If a `WatchRule` also selects SaveRequests, that *mirroring* runs through the
+across our edge cases.) If a `WatchRule` also selects CommitRequests, that *mirroring* runs through the
 normal pipeline and is audit-attributed like any other resource. See
-[SaveRequest Finalize](#saverequest-finalize).
+[CommitRequest Finalize](#commitrequest-finalize).
 
 ### Proving it on new Kubernetes versions
 
@@ -290,7 +290,7 @@ capture audit and admission with **no** resulting watch event.
 
 You configure GitOps Reverser through ten CRDs (group `configbutler.ai`, version `v1alpha3`).
 `WatchRule` and `ClusterWatchRule` choose which Kubernetes resources enter the pipeline.
-`SaveRequest` can ask for the current window to be saved. `GitTarget` joins one source cluster to one
+`CommitRequest` can ask for the current window to be saved. `GitTarget` joins one source cluster to one
 Git destination. `KubeProvider` supplies the source connection and authorization boundary;
 `GitProvider` supplies the repository, credentials, commit settings, and push policy, and a
 `GitBranch` holds one branch of that repository for every `GitTarget` that writes it. A
@@ -304,7 +304,7 @@ graph LR
     subgraph CONTROL["Control plane: operator cluster"]
         WR[WatchRule] -->|gitTargetRef| GT[GitTarget]
         CWR[ClusterWatchRule] -->|gitTargetRef| GT
-        CR[SaveRequest] -->|gitTargetRef| GT
+        CR[CommitRequest] -->|gitTargetRef| GT
         GT -->|applierClaimRef| TR["FluxClaim /\nArgoCDClaim"]
         GT -->|kubeProviderRef| CP[KubeProvider]
         GT -->|gitBranchRef| GB[GitBranch]
@@ -352,7 +352,7 @@ records the apply operation it started.
 |---|---|---|
 | `WatchRule` | namespaced | which NAMESPACED resources, in which source namespaces, route to a GitTarget |
 | `ClusterWatchRule` | cluster | which CLUSTER SCOPED resources route to a GitTarget |
-| `SaveRequest` | namespaced | a one shot "save the open window now" signal |
+| `CommitRequest` | namespaced | a one shot "save the open window now" signal |
 | `GitTarget` | namespaced | one materialization from a `KubeProvider` to `(GitBranch, path)` |
 | `KubeProvider` | namespaced | one source-cluster connection plus namespace access policy |
 | `GitBranch` | namespaced | one repository branch, held for every `GitTarget` that writes it |
@@ -404,10 +404,10 @@ One `KubeProvider` grant answers two questions in different planes:
   own Kubernetes RBAC. The operator reads no `Namespace` objects in a source cluster for
   authorization.
 
-### SaveRequest
+### CommitRequest
 
-- **Source**: [api/v1alpha3/saverequest_types.go](../api/v1alpha3/saverequest_types.go)
-- **Controller**: [internal/controller/saverequest_controller.go](../internal/controller/saverequest_controller.go)
+- **Source**: [api/v1alpha3/commitrequest_types.go](../api/v1alpha3/commitrequest_types.go)
+- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 
 A one shot "save now" signal that finalizes the open commit window for a same namespace `GitTarget`
 instead of waiting for the silence timer. The **entire spec is immutable**. Key fields:
@@ -431,7 +431,7 @@ instead of waiting for the silence timer. The **entire spec is immutable**. Key 
 - `status.branch` / `status.commit`: set when the commit was pushed (`Pushed=True`).
 
 How attribution and finalization interact is described under
-[SaveRequest Finalize](#saverequest-finalize).
+[CommitRequest Finalize](#commitrequest-finalize).
 
 ### GitTarget
 
@@ -704,7 +704,7 @@ Following the ConfigMap edit:
    [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go), and the
    [BranchWorker](../internal/git/branch_worker.go) appends it to the open commit window for
    `(author, GitTarget)`.
-5. **Commit + push.** When the window closes (5s of silence, a `SaveRequest`, or a buffer limit), the
+5. **Commit + push.** When the window closes (5s of silence, a `CommitRequest`, or a buffer limit), the
    manifest aware writer patches `team-a/.../app-config.yaml` in place, commits as the resolved author,
    and pushes via [PushAtomic](../internal/git/git_atomic_push.go) (retrying with fetch/reset/replay if
    the remote moved).
@@ -722,7 +722,7 @@ See [State Ingestion and Not Losing Deletes](#state-ingestion-and-not-losing-del
 
 ### Normal commit flow
 
-Most writes are closed by the commit window timer. A `SaveRequest` is the explicit "save now" path: it
+Most writes are closed by the commit window timer. A `CommitRequest` is the explicit "save now" path: it
 does not create new state, and it does not bypass watch. It only asks the branch worker to close a matching
 open window early.
 
@@ -743,7 +743,7 @@ flowchart TD
     TIMER -->|silence timer| BASE
     TIMER -->|buffer limit or resync boundary| BASE
 
-    CR[SaveRequest persisted] --> ADMISSION[Admission submitter lookup<br/>named or unnamed]
+    CR[CommitRequest persisted] --> ADMISSION[Admission submitter lookup<br/>named or unnamed]
     ADMISSION --> ATTACH[Attach to matching open window]
     ATTACH -->|same author + GitTarget| BASE
     ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
@@ -756,10 +756,10 @@ flowchart TD
 ```
 
 The important boundary is the open window: it accepts only the same author and `GitTarget`. A
-`SaveRequest` from another author never closes someone else's window; it resolves as a benign no-commit
+`CommitRequest` from another author never closes someone else's window; it resolves as a benign no-commit
 instead. The one exception is opt-in, on a cluster that has never sent an audit fact: there no write
 can name its author, and a request may claim a window whose writes name none (step 2 of the
-`SaveRequest` flow).
+`CommitRequest` flow).
 
 ### Remote moved while we were writing
 
@@ -784,7 +784,7 @@ flowchart TD
     CHECK -->|attempts exhausted or fetch fails| RETAIN[Keep pending writes for later retry]
 ```
 
-For a `SaveRequest`, success is reported only after the push reaches the remote. If the push had to
+For a `CommitRequest`, success is reported only after the push reaches the remote. If the push had to
 replay on top of someone else's commit, `status.commit` is the refreshed post-replay commit, not the stale
 local commit from before the retry.
 
@@ -818,7 +818,7 @@ flowchart TD
 A delivery is handled on the worker's own queue, so it is never judged while a push is in flight:
 the push has recorded its commit before the delivery is read. A rollback onto one of the worker's
 older commits is foreign, because the advertisement names a tip other than the last one observed.
-A delivery also closes the open commit window, unless a `SaveRequest` holds it, so its
+A delivery also closes the open commit window, unless a `CommitRequest` holds it, so its
 publication finds the move.
 
 A Git-side push usually reaches the worker through the flush itself: the push of the pending writes
@@ -838,7 +838,7 @@ again is what stamps the owner labels or tracking annotation on the new object. 
 worker's own leaves nothing pending.
 
 Three states still hold an apply back, because in them no flush can be made: a registered
-`SaveRequest` (a save defines its own commit boundary, and the apply waits for it), a parent
+`CommitRequest` (a save defines its own commit boundary, and the apply waits for it), a parent
 recovery, and a checkout a failed write left dirty. An apply also waits until every initial
 snapshot of the `GitTarget`s its applier covers is published (a `GitTarget` with no planned
 collection yet, or with a blocked watch, holds its applier the same way), and an empty tip (a
@@ -1116,9 +1116,9 @@ queued behind it on the same `(GitTarget, GVR, scope)` goroutine. That cost, and
 is in [Watch Event Ordering](#watch-event-ordering) and
 [attribution-removal-wait-options.md](design/attribution-removal-wait-options.md).
 
-The SaveRequest controller does **not** read this audit index. A SaveRequest's submitter is named by
+The CommitRequest controller does **not** read this audit index. A CommitRequest's submitter is named by
 the `/validate-operator-types` validating admission webhook instead, captured synchronously at admission,
-never joined from an audit fact (see [SaveRequest Finalize](#saverequest-finalize)).
+never joined from an audit fact (see [CommitRequest Finalize](#commitrequest-finalize)).
 
 ### Author and committer identity in Git
 
@@ -1194,7 +1194,7 @@ CommitDate: Mon Jun 30 12:00:05 2026 +0000
 - **Signature construction**: [internal/git/commit.go](../internal/git/commit.go) (`authorName` / `authorEmail`)
 
 The operator never talks to the identity provider. It reads two fixed keys from the request's `user.extra`
-map: the audit attribution path and the SaveRequest admission path resolve the **same** two keys:
+map: the audit attribution path and the CommitRequest admission path resolve the **same** two keys:
 
 | `user.extra` key | OIDC claim it carries | Used for |
 |---|---|---|
@@ -1513,7 +1513,7 @@ move a live worker; it replaces it, and the replacement starts with no clone, no
 observation.
 
 A `GitBranch` carries a finalizer. Deleting it releases the claim, then stops its worker, which
-closes the worker's intake, pushes or refuses every pending write and settles every `SaveRequest`
+closes the worker's intake, pushes or refuses every pending write and settles every `CommitRequest`
 it holds; only then does the finalizer go. Nothing deletes the branch on the remote.
 
 `GitBranch.status.remote` is a **branch** fact, and it is worth being exact about that, because the
@@ -1529,7 +1529,7 @@ once a minute, and comes back when that floor lifts.
 ### Everything about a branch happens on that branch's queue
 
 Reading or writing a branch's repository state is the branch worker's job, and the worker does it on
-one FIFO queue, on one goroutine. Live events, resyncs, `SaveRequest` attaches, periodic
+one FIFO queue, on one goroutine. Live events, resyncs, `CommitRequest` attaches, periodic
 refreshes and push-receiver deliveries all enter the same queue and are served in order. Which
 writes are decided and which of them are published is therefore a fact one goroutine holds, which
 is what lets the worker flush before an apply request goes out. Nothing else opens a connection on a
@@ -1554,9 +1554,9 @@ accumulate in one open commit window, which accepts only one `(author, GitTarget
 
 The window finalizes when its `idleTimeout` passes with no new matching event, its `maxDuration` runs
 out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an `attach: Next`
-`SaveRequest` closes it, a resync, an atomic batch, a push-receiver delivery or shutdown arrives,
+`CommitRequest` closes it, a resync, an atomic batch, a push-receiver delivery or shutdown arrives,
 or an apply comes due for an applier on the branch. The timers
-are the GitTarget's `spec.commit.window` until a `SaveRequest` attaches and replaces them. Successful local commits
+are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
 bursts. The one exception is an apply's flush: the writes decided before the apply came due are
 pushed at once, cooldown or not, because the apply waits for them.
@@ -1591,7 +1591,7 @@ the newer tip changed, and a write with no action left settles at once without a
 keeps the upserts that changed the tree and the documents its sweep removed: a replay plans each
 upsert onto the new tree and removes each document if it is still there and the prune mode still
 sweeps, and never sweeps again, so a document the newer tip added survives. A save is the exception:
-a write carrying a `SaveRequest` keeps every object it captured, and the push decides its outcome.
+a write carrying a `CommitRequest` keeps every object it captured, and the push decides its outcome.
 See [the pending-writes design](design/gittarget-branch-worker-pending-writes.md#a-write-carries-the-actions-decided-on-its-tree).
 
 A branch whose remote has been **deleted** takes the same path. The advertisement does not carry the
@@ -1760,15 +1760,15 @@ unsafely: logged per-resource, counted in the resync summary as `placementSkippe
 
 ***
 
-## SaveRequest finalize
+## CommitRequest finalize
 
-- **Controller**: [internal/controller/saverequest_controller.go](../internal/controller/saverequest_controller.go)
+- **Controller**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 - **Admission handler**:
   [internal/webhook/validate_operator_types_handler.go](../internal/webhook/validate_operator_types_handler.go)
 - **Admission author cache**:
   [internal/queue/command_author_store.go](../internal/queue/command_author_store.go)
 
-A `SaveRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
+A `CommitRequest` finalizes the open commit window for its GitTarget. The request author is resolved from
 the `/validate-operator-types` validating admission webhook, which captures the authenticated submitter at
 admission (keyed by the object's UID) before the object is visible. The lookup is **present-or-never**: if
 the record is missing, the request is marked `AuthorAttributed=False`, claims no actor, and still attaches
@@ -1776,17 +1776,17 @@ immediately. That is not a failure:
 
 1. The controller stamps the in-progress conditions (`Reconciling=True`) and settles
    `AuthorAttributed` synchronously from the admission author cache. There is no audit wait on this path.
-2. The controller eagerly **attaches** the request to the worker (`AttachSaveRequest`), which
+2. The controller eagerly **attaches** the request to the worker (`AttachCommitRequest`), which
    waits for a window until `registration + attachTimeout`. The worker binds it to an open window only
    when the author state and GitTarget match, first come first served, and replaces the window's timers
    with the request's own, so time spent waiting never shortens the collection. A request that names its
    submitter may also claim a window on its `GitTarget` whose writes name no author, when it asks
    (`spec.window.author`), the grant admitting it allows it (`unattributedWindows` in the `GitTarget`'s
-   `spec.allowedSaveRequests`), and the
+   `spec.allowedCommitRequests`), and the
    `GitTarget`'s `KubeProvider` has never received an audit fact (`AuditFactsReceived` is not `True`).
    With `SavedBy` the window takes the request's message, the commit names no author, and the message
    ends with a `Saved-By` trailer; with `TakeOver` the submitter authors the commit, and the message ends
-   with an `Author-Source: SaveRequest <namespace>/<name>` trailer. Once the provider has received a
+   with an `Author-Source: CommitRequest <namespace>/<name>` trailer. Once the provider has received a
    fact, a write that names no author means its fact went missing, and its window stays another's. A
    request that asks for more than its `GitTarget` allows fails at first sight with
    `TakeOverNotAllowed`. It **never finalizes
@@ -1805,7 +1805,7 @@ immediately. That is not a failure:
    `AlreadyPresent` therefore means the remote confirmed there was nothing to add, not that a local plan
    found no diff.
 
-The SaveRequest submitter is not recoverable from object state alone, so without an admission record the
+The CommitRequest submitter is not recoverable from object state alone, so without an admission record the
 request cannot claim an actor. The final Git author remains the attached watch window's author: configured
 committer when attribution was disabled, or the explicit unresolved author when live attribution ran but
 could not resolve. There is no audit-fact join for the request itself: its submitter is captured at admission
@@ -1842,14 +1842,14 @@ Controllers watch their dependencies so dependents reconcile quickly after spec 
   at all (the installation's `inCluster` consent, and which namespace holds its audit route), and
   projects its readiness to dependent targets. A provider created, deleted or moved to another route
   wakes the others carrying that route, so an `AuditRouteConflict` clears without waiting for a requeue.
-- `SaveRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
+- `CommitRequestReconciler` runs with `MaxConcurrentReconciles=1` and attributes/attaches as above; its
   optional `AuthorLookup` is the command-author cache populated by the `/validate-operator-types` webhook
   (wired whenever the admission webhook is enabled, independent of `--author-attribution`, and nil
   otherwise, so the request claims no actor).
 
 Dependency watches use narrow predicates to avoid status-only heartbeat churn: a `KubeProvider` also
 admits a `Ready` transition, and a `Namespace` admits only label changes. `GitProvider`, `GitBranch`,
-`GitTarget`, and `SaveRequest` carry immutability constraints where a spec change would orphan a
+`GitTarget`, and `CommitRequest` carry immutability constraints where a spec change would orphan a
 materialized subtree or invalidate an in-flight finalize.
 
 ***
@@ -1880,7 +1880,7 @@ flowchart TD
     Hq -->|no| J[Configured-author: no fact streams or index; audit webhook skipped]
     I --> K[Setup + register Watch Manager]
     J --> K
-    K --> L[Register GitProvider + GitReceiver + KubeProvider + GitBranch + GitTarget<br/>+ FluxClaim + ArgoCDClaim + SaveRequest controllers; admission webhooks]
+    K --> L[Register GitProvider + GitReceiver + KubeProvider + GitBranch + GitTarget<br/>+ FluxClaim + ArgoCDClaim + CommitRequest controllers; admission webhooks]
     L --> M[Add cert watchers + health checks]
     M --> N[mgr.Start]
 ```
@@ -1918,7 +1918,7 @@ The families follow the architecture, which is why this section is a map rather 
 |---|---|---|
 | `resource_condition` | the kstatus trio of every object a human declares | [Configuration state](interpreting-metrics.md#configuration-state) |
 | `watch_*` | ingest: events, sessions, replays, recoveries, resolved types, open streams | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push) |
-| `git_*`, `save_requests_total` | the branch worker: documents, windows, commits, pushes, fetches, refusals, losses, the retained backlog | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push), [Tuning commit windows](interpreting-metrics.md#tuning-commit-windows) |
+| `git_*`, `commit_requests_total` | the branch worker: documents, windows, commits, pushes, fetches, refusals, losses, the retained backlog | [Pipeline](interpreting-metrics.md#pipeline-watch-to-push), [Tuning commit windows](interpreting-metrics.md#tuning-commit-windows) |
 | `placement*` | where a new document lands, and the ones refused | [New-file placement](interpreting-metrics.md#new-file-placement) |
 | `apply_*`, `receiver_deliveries_total` | apply requests, the apply window and the push receiver | [Apply requests](interpreting-metrics.md#apply-requests-and-the-push-receiver) |
 | `audit_*`, `attribution_*` | the optional author lookup: the door, the fact pipeline, the join | [Audit attribution](interpreting-metrics.md#audit-attribution-optional) |
@@ -2046,7 +2046,7 @@ Deeper dives live under [docs/design/](design/):
   transport seam, the in-process index, and what running without Redis costs.
 - [Watch event ordering under the attribution grace window](spec/watch-event-ordering-and-attribution-grace.md)
 - [Reconcile via watchlist mark and sweep](spec/reconcile-via-watchlist-mark-and-sweep.md)
-- [SaveRequest design](spec/saverequest-design.md)
+- [CommitRequest design](spec/commitrequest-design.md)
 
 **Types, discovery, status, and the Git write side:**
 

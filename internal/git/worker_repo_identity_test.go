@@ -261,7 +261,7 @@ func TestEnqueue_RefusesOnceTheWorkerIsStopping(t *testing.T) {
 		"and a resync must be answered rather than left waiting on a reply that never comes")
 	// The two fire-and-forget paths report nothing, so they must at least leave no trace: an
 	// increment here would be work the depth gauge counts and nothing will ever finish.
-	worker.EnqueueAttach(&AttachSaveRequest{Namespace: "ns", Name: "cr"})
+	worker.EnqueueAttach(&AttachCommitRequest{Namespace: "ns", Name: "cr"})
 	worker.EnqueueRefresh(&RefreshRequest{})
 
 	assert.Equal(t, inflight, worker.inflightItems.Load(),

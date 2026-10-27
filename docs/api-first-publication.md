@@ -47,7 +47,7 @@ flowchart LR
     AUDIT["Optional audit facts<br/>actor attribution"] -.-> WATCH
     GT["GitTarget<br/>source, branch, path, commit window"] --> WATCH
     WATCH --> QUEUE["One FIFO per provider and branch"]
-    CR["SaveRequest<br/>close a matching window"] --> QUEUE
+    CR["CommitRequest<br/>close a matching window"] --> QUEUE
     QUEUE --> WINDOW["Open window<br/>one author and one target"]
     QUEUE --> SNAP["Snapshot / atomic write"]
     WINDOW --> PENDING["Retained PendingWrite records"]
@@ -68,10 +68,10 @@ flowchart LR
 | `BranchWorker` | Owns branch ordering, local repository operations, and publication |
 | Open window | Coalesces consecutive events from one author for one target |
 | `PendingWrite` | Retains captured content and resolved write metadata until publication |
-| `SaveRequest` | Claims a matching window and reports its eventual outcome |
+| `CommitRequest` | Claims a matching window and reports its eventual outcome |
 
 The watch stream supplies object state. Audit facts supply authorship when attribution is enabled.
-Admission captures the submitter of a `SaveRequest`. These inputs have separate jobs; mirroring
+Admission captures the submitter of a `CommitRequest`. These inputs have separate jobs; mirroring
 continues without actor attribution. See the [attribution contract](spec/attribution.md).
 
 The queue and retained writes are in memory. They are sufficient for replay during the worker's
@@ -165,7 +165,7 @@ sequenceDiagram
 The idle timeout restarts on every matching edit, so continuous edits keep a window open until its
 `maxDuration` (`1m` by default, counted from the window opening) or another closing condition, such
 as an identity change or the byte threshold. A five-second idle timeout therefore does not promise
-publication within five seconds of the first edit. A `SaveRequest` that attaches replaces both
+publication within five seconds of the first edit. A `CommitRequest` that attaches replaces both
 timers with its own `idleTimeout` and `maxDuration`, both counted from the attach; an omitted
 `idleTimeout` leaves `maxDuration` alone to close the window. Its `attachTimeout` is separate: it
 runs from the worker's registration of the request and only bounds the wait for a window to attach
@@ -282,7 +282,7 @@ are never held by the same worker.
 
 ## Story 3: save now, and know what reached Git
 
-A `SaveRequest` attaches to a matching author-and-target window and closes it. It does not
+A `CommitRequest` attaches to a matching author-and-target window and closes it. It does not
 bypass the push cooldown. Two settings with separate clocks set the timing: `attachTimeout` runs
 from the worker's registration of the request and bounds the wait for a window, and `maxDuration`
 runs from the attach and bounds the collection that follows. Both default to `2s` and accept `0s`
@@ -290,7 +290,7 @@ to `5m`. A repeat attach restarts neither clock.
 
 ```mermaid
 sequenceDiagram
-    participant C as SaveRequest controller
+    participant C as CommitRequest controller
     participant W as Branch worker
     participant G as Git remote
 
@@ -321,7 +321,7 @@ long a down remote takes. For a request the worker has not acted on within
 reports whatever the worker answers: failed when the worker cancelled it, or the real outcome when
 the worker resolved it first. A request reported failed is therefore never committed later. The
 worker keeps resolved outcomes for `15m`.
-See the [request contract](spec/saverequest-design.md).
+See the [request contract](spec/commitrequest-design.md).
 
 The two-second `attachTimeout` is not a guarantee that an earlier API edit has reached the
 worker. Attribution can wait up to three seconds per event, and queueing adds more. A request
@@ -477,7 +477,7 @@ the earlier attribution and commit-window waits, cooldown, and recovery performe
 the cycle. It cannot by itself answer “how long from my API edit until Git accepted it?”
 
 A flat recovery counter also cannot prove progress: the worker may be retaining work while it
-waits out its backoff. Check queue depth, failure logs, and `SaveRequest` outcomes alongside rates.
+waits out its backoff. Check queue depth, failure logs, and `CommitRequest` outcomes alongside rates.
 
 A resync's fetch lands under `forced_recheck` whether or not the branch happened to hold retained
 writes, so a growing `publication` series means live publication is fetching again and nothing

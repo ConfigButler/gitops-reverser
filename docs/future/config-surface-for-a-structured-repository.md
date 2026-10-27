@@ -4,7 +4,7 @@
 > Date: 2026-07-24
 > Absorbs and extends the API-surface block left unbuilt by the status and configuration-model
 > review — `spec.suspend`, `spec.interval` and the reconcile-request annotation, the
-> `SaveRequest` lifecycle, and the `ClusterWatchRule` scope question — which is now sequenced in
+> `CommitRequest` lifecycle, and the `ClusterWatchRule` scope question — which is now sequenced in
 > [`gittarget-api-wave.md`](../design/gittarget-api-wave.md).
 
 ## The one-sentence finding
@@ -239,7 +239,7 @@ Still open from the companion review, all API-surface, all cheaper now than afte
 - **F6** — `spec.suspend` on GitTarget / WatchRule / ClusterWatchRule / GitProvider;
   `spec.interval` on GitProvider at minimum; jitter the requeue;
   `reconcile.configbutler.ai/requestedAt` + `status.lastHandledReconcileAt`.
-- **F10** — SaveRequest lifecycle: `ttlSecondsAfterFinished` or an ownerRef, plus the
+- **F10** — CommitRequest lifecycle: `ttlSecondsAfterFinished` or an ownerRef, plus the
   `delete` verb. Today they accumulate in etcd forever and the controller cannot reap them.
 - **F9** — verify the stored `scope: Namespaced` status-write path on the minimum supported
   Kubernetes version (one envtest).
@@ -398,7 +398,7 @@ still `v1alpha3` and while there are no users.
 3. **F6** — `spec.suspend` on the four reconciled kinds; `spec.interval` on GitProvider;
    requeue jitter; `reconcile.configbutler.ai/requestedAt` + `status.lastHandledReconcileAt`.
 4. **B3** — `spec.placement.mode: Infer|Declared|Strict`.
-5. **F10** — SaveRequest TTL/ownerRef + the `delete` verb.
+5. **F10** — CommitRequest TTL/ownerRef + the `delete` verb.
 
 ### Wave 2 — legibility, non-breaking, ships any time after
 

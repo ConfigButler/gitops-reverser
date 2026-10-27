@@ -12,7 +12,7 @@ The short version:
 - `WatchRule` defines which namespaced resources should produce Git writes, and in which source
   namespaces
 - `ClusterWatchRule` does the same for cluster-scoped resources
-- `SaveRequest` optionally saves: it closes its author's commit window on its own timers, with
+- `CommitRequest` optionally saves: it closes its author's commit window on its own timers, with
   its own message if it has one
 - `FluxClaim` and `ArgoCDClaim` hold the Flux `Kustomization` or Argo CD `Application` that
   applies a folder back, so GitOps Reverser decides when it applies
@@ -35,7 +35,7 @@ The usual flow is:
 3. Create a `GitTarget` that points at the `GitBranch`, the `KubeProvider` to mirror from, and a
    folder in the repository.
 4. Create one or more `WatchRule` or `ClusterWatchRule` objects that point at that target.
-5. Create a `SaveRequest` only when you want a save: your writes in one commit, on the request's
+5. Create a `CommitRequest` only when you want a save: your writes in one commit, on the request's
    timers rather than the target's, and optionally with your message.
 6. Only when Flux or Argo CD also applies that same folder back to the cluster: hold its
    `Kustomization` or `Application` with an applier claim, name the applier claim on the `GitTarget`, and
@@ -119,7 +119,7 @@ The destination fields are immutable: to move a target, delete it and create a n
 | `commit.window.idleTimeout` | `5s` | Close a commit window after this much silence. `0s` commits every write on its own. See [the commit window](#the-commit-window-speccommitwindow) |
 | `commit.window.maxDuration` | `1m` | Close a commit window this long after it opened, however much keeps arriving |
 | `commit.message` | the built-in templates | How commits are phrased. See [commit messages](commit-messages.md) |
-| `allowedSaveRequests` | `[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"Keep"}]` | The namespaces whose `SaveRequest`s may save this target's windows, and how much each may claim of a window whose writes name no author. See [who may save](#who-may-save-specallowedsaverequests) |
+| `allowedCommitRequests` | `[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"Keep"}]` | The namespaces whose `CommitRequest`s may save this target's windows, and how much each may claim of a window whose writes name no author. See [who may save](#who-may-save-specallowedcommitrequests) |
 | `allowedRemoteSaveRequests` | none admitted | The `RemoteSaveRequest`s, by source namespace and labels, that may name this target and save its windows. See [`RemoteSaveRequest`](#remotesaverequest) |
 | `placement.byType` | the built-in path | Per-type path templates for new documents. See [where new resources are written](#where-new-resources-are-written-specplacement) |
 | `placement.default` | the built-in path | Catch-all path template for types with no `byType` entry |
@@ -174,11 +174,11 @@ The references are immutable: to hold another `Application`, delete the applier 
 | `applicationRef` | **required** | The `Application`, with automated sync off, that syncs the folders of the `GitTarget`s naming this applier claim. See [who applies this folder](#who-applies-this-folder-specapplierclaimref) |
 | `catchUpAfter` | `0s` | As a `FluxClaim`'s: how long the `Application`'s last sync stays behind the branch after a push of GitOps Reverser's own before a sync of the tip is asked for. Off by default, since a sync runs the `Application`'s hooks and Argo CD's refresh already compares the live state against the tip. Otherwise `10s` to `24h` |
 
-### `SaveRequest` (namespaced): save now
+### `CommitRequest` (namespaced): save now
 
 | Field | Default | What it does |
 |---|---|---|
-| `gitTargetRef` | **required** | The target whose commit window the request attaches to: in this namespace, or `namespace` names another, whose `allowedSaveRequests` must admit this one |
+| `gitTargetRef` | **required** | The target whose commit window the request attaches to: in this namespace, or `namespace` names another, whose `allowedCommitRequests` must admit this one |
 | `message` | the target's templates | Commit message, committed verbatim unless `requestTemplate` frames it |
 | `window.attach` | `CurrentOrNext` | Which window to attach to: the author's current or next one, or only the next. See [the request window](#the-request-window-specwindow) |
 | `window.author` | `Own` | Whose window to attach to: `Own`, or also claim a window whose writes name no author with `SavedBy` or `TakeOver`. See [saving where writes name no author](#saving-where-writes-name-no-author) |
@@ -483,7 +483,7 @@ admits no new work under the revoked permission. Work it already held may comple
 
 - **A `GitBranch` no grant admits any more** gives up its branch the way a deleted one does, but
   keeps its finalizer. Its branch worker closes its intake, pushes or refuses each pending write and
-  settles every `SaveRequest`; an event that arrives afterwards is refused. The `GitBranch` reports
+  settles every `CommitRequest`; an event that arrives afterwards is refused. The `GitBranch` reports
   `Stalled=True` with the grant's reason. Nobody holds the branch until a waiting `GitBranch` takes
   it on its own reconcile, which checks its grant first, so a candidate revoked by the same edit
   never holds it. The new holder starts a worker of its own, with none of the old one's work. Writes
@@ -554,7 +554,7 @@ kind: ClusterRole
 metadata: {name: gitops-reverser-tenant}
 rules:
   - apiGroups: [configbutler.ai]
-    resources: [gitbranches, gittargets, watchrules, fluxclaims, argocdclaims, saverequests]
+    resources: [gitbranches, gittargets, watchrules, fluxclaims, argocdclaims, commitrequests]
     verbs: [get, list, watch, create, update, patch, delete]
 ---
 apiVersion: v1
@@ -585,7 +585,7 @@ Role also needs whatever team A's own workloads require.
 | Identity | Manages | Cannot |
 |---|---|---|
 | The platform's reconciler | `GitProvider`, `KubeProvider` and their grants; Namespaces and their labels; tenant RBAC; platform `GitBranch`es such as `main` | |
-| `team-a/tenant-reconciler` | `GitBranch`, `GitTarget`, `WatchRule`, applier claims and `SaveRequest`s in `team-a` | Create or edit a provider; label a Namespace; change RBAC |
+| `team-a/tenant-reconciler` | `GitBranch`, `GitTarget`, `WatchRule`, applier claims and `CommitRequest`s in `team-a` | Create or edit a provider; label a Namespace; change RBAC |
 
 The last column is what makes the grants hold: a tenant cannot grant itself a label, and cannot
 create the second provider the limit describes. Flux's multi-tenancy lockdown
@@ -1261,7 +1261,7 @@ at, and `Ready`;
 ### Deleting a `GitBranch`
 
 A `GitBranch` carries a finalizer. Deleting it stops new intake for every `GitTarget` on the
-branch, pushes or refuses each pending write, gives each attached `SaveRequest` its outcome, and
+branch, pushes or refuses each pending write, gives each attached `CommitRequest` its outcome, and
 only then removes the finalizer and lets another `GitBranch` hold the branch. **Nothing deletes the
 branch on the remote.**
 
@@ -1422,7 +1422,7 @@ kubectl annotate gittarget -n <namespace> <name> \
 The kstatus trio is also on Prometheus, so the same answer is alertable without a kubeconfig:
 `gitopsreverser_resource_condition{kind="GitTarget", type="Ready", status="False"} == 1` names every
 target that has not been accepted, and `reason` says which gate refused. The metric covers `Ready`,
-`Reconciling` and `Stalled` for every object on this page except `SaveRequest`; the per-kind axis
+`Reconciling` and `Stalled` for every object on this page except `CommitRequest`; the per-kind axis
 conditions above stay on the object, where `kubectl describe` reads them. See
 [interpreting-metrics.md](interpreting-metrics.md#configuration-state).
 
@@ -1444,8 +1444,8 @@ spec:
       liveTemplate: "chore: sync {{.Count}} resource{{if ne .Count 1}}s{{end}}"
 ```
 
-Configure [automatic messages](commit-messages.md), submit a [save message](#saverequest),
-and interpret its [conditions](#saverequest).
+Configure [automatic messages](commit-messages.md), submit a [save message](#commitrequest),
+and interpret its [conditions](#commitrequest).
 
 #### The commit window (`spec.commit.window`)
 
@@ -1460,7 +1460,7 @@ timers, whichever comes first:
 
 `idleTimeout` may not exceed `maxDuration`. A window takes the target's timers when it opens, so
 editing them affects windows that open afterward, never one already running. A
-[`SaveRequest`](#the-request-window-specwindow) that attaches to a window replaces both timers
+[`CommitRequest`](#the-request-window-specwindow) that attaches to a window replaces both timers
 for that window.
 
 One branch worker holds one live window, bound to an author and target. Interleaved authors or
@@ -1484,7 +1484,7 @@ ever update.
 
 Three templates decide how a commit is phrased: `liveTemplate` for a live window,
 `reconcileTemplate` for an atomic snapshot or resync, and `requestTemplate` for a window a
-[save request](#saverequest) attached to. Each is a Go template over a documented context,
+[save request](#commitrequest) attached to. Each is a Go template over a documented context,
 checked when the target reconciles rather than at commit time, and each has a built-in default, so a
 target that sets none still writes useful messages.
 
@@ -1600,7 +1600,7 @@ commit seconds later. That is deliberate: a local commit that is never pushed wo
 operator's checkout and surface later, out of order, when you resume. Suspend is a valve on new
 work, not an undo.
 
-A `SaveRequest` that ends on a suspended target fails with `FinalizeFailed` and the reason, rather
+A `CommitRequest` that ends on a suspended target fails with `FinalizeFailed` and the reason, rather
 than resolving `Ready=True` with nothing written. The exception is `WindowMismatch`: a request that
 only saw another author's window still reports that. One whose commit was already made locally when
 you set `suspend` is pushed with it and resolves normally.
@@ -1899,7 +1899,7 @@ spec:
 due, the branch worker closes the open commit window, publishes the writes decided up to that
 moment at once, and asks for the tip that publication produced. An edit decided after that is
 recorded in the apply window, so an apply that writes over it is withheld from Git and repaired. A
-registered `SaveRequest` (a save sets its own commit boundary), a
+registered `CommitRequest` (a save sets its own commit boundary), a
 parent branch being recovered, or a checkout a failed write left dirty holds the request back. No
 applier is asked for anything until every initial snapshot of every `GitTarget` naming its applier claim
 is published, and nothing is asked while the remote does not carry the branch. The rule is the same
@@ -1910,7 +1910,7 @@ for a `Kustomization` and an `Application`.
 | `ForeignCommit` | The branch gained a commit GitOps Reverser did not push. The pending writes are replayed onto it and pushed first, so the request names that pushed commit | Every applier declared on the branch, once per applier |
 | `Refusal` | An eligible refused edit, with `spec.onRefusal: Reapply` | This target's applier |
 | `Repair` | An apply reverted an API edit made after the flush; Git kept the edit | That applier |
-| `CatchUp` | To adopt: the API created an object in the folder, or a resync added an object to Git. To converge: once when the operator starts, once when a `GitTarget` first names the applier claim, once the applier claim's `catchUpAfter` has passed since a push of GitOps Reverser's own, and after a `SaveRequest` with [`catchUp: AfterPush`](#applying-a-save-at-once) pushed a commit | To adopt, that folder's applier; to converge, every applier declared on the branch at start, the newly named one, the one left behind, or the requesting `GitTarget`'s |
+| `CatchUp` | To adopt: the API created an object in the folder, or a resync added an object to Git. To converge: once when the operator starts, once when a `GitTarget` first names the applier claim, once the applier claim's `catchUpAfter` has passed since a push of GitOps Reverser's own, and after a `CommitRequest` with [`catchUp: AfterPush`](#applying-a-save-at-once) pushed a commit | To adopt, that folder's applier; to converge, every applier declared on the branch at start, the newly named one, the one left behind, or the requesting `GitTarget`'s |
 
 An API edit asks for no apply, and neither does a push of GitOps Reverser's own, at once: the cluster
 already runs what they hold. Only the applier's own state is left behind, which `catchUpAfter`
@@ -2963,16 +2963,16 @@ types in `clusterResources` do, and for those types its source credential's Kube
 cluster admin can create one, and no default grant, the chart's included, gives `clusterResources`.
 Use it sparingly.
 
-## `SaveRequest`
+## `CommitRequest`
 
-`SaveRequest` is a one-shot "save" signal for a `GitTarget`. It does not create or change watch
+`CommitRequest` is a one-shot "save" signal for a `GitTarget`. It does not create or change watch
 rules. It attaches to its author's commit window, gives that window its message, and decides when
 the window closes, instead of the target's timers.
 
 The important fields are:
 
 - `spec.gitTargetRef`: the target whose window to attach to, by `name`, in the request's own
-  namespace unless `namespace` names another; see [who may save](#who-may-save-specallowedsaverequests)
+  namespace unless `namespace` names another; see [who may save](#who-may-save-specallowedcommitrequests)
 - `spec.message`: optional literal commit message, preserved verbatim
 - `spec.window`: which window to attach to and when it closes; see
   [the request window](#the-request-window-specwindow)
@@ -2983,7 +2983,7 @@ Example:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   name: save-now
   namespace: default
@@ -3000,7 +3000,7 @@ spec:
     maxDuration: "2s"
 ```
 
-The entire spec is immutable. Create a new `SaveRequest` for each save attempt.
+The entire spec is immutable. Create a new `CommitRequest` for each save attempt.
 
 A present message accepts 1–1024 Unicode characters, including newline. All other ASCII control
 characters, including tab, carriage return, and DEL, are rejected, as is whitespace-only text.
@@ -3071,15 +3071,15 @@ attach to it: the outcome is `WindowMismatch` no matter how long the request wai
 that sends no audit events at all, see
 [saving where writes name no author](#saving-where-writes-name-no-author).
 
-### Who may save: `spec.allowedSaveRequests`
+### Who may save: `spec.allowedCommitRequests`
 
-A `GitTarget` says which namespaces' `SaveRequest`s may save its windows in
-`spec.allowedSaveRequests`, a grant list like the others (see [the grants](#the-grants)):
+A `GitTarget` says which namespaces' `CommitRequest`s may save its windows in
+`spec.allowedCommitRequests`, a grant list like the others (see [the grants](#the-grants)):
 
-- **Omitted:** the `SaveRequest`s in the `GitTarget`'s own namespace, as one grant with
+- **Omitted:** the `CommitRequest`s in the `GitTarget`'s own namespace, as one grant with
   `from: Same` that claims nothing of a window whose writes name no author.
-- **`[]`:** no `SaveRequest`.
-- **A list:** the `SaveRequest`s at least one grant admits. The list replaces the default, so the
+- **`[]`:** no `CommitRequest`.
+- **A list:** the `CommitRequest`s at least one grant admits. The list replaces the default, so the
   own namespace keeps access only if a grant admits it.
 
 ```yaml
@@ -3089,7 +3089,7 @@ metadata:
   name: shared
   namespace: platform
 spec:
-  allowedSaveRequests:
+  allowedCommitRequests:
     - consumerNamespaces: {from: Same}
     - consumerNamespaces:
         from: Selector
@@ -3110,7 +3110,7 @@ a window that names no actor. A request whose submitter was captured at admissio
 such a window, and its save ends `WindowMismatch`. Two settings let it claim one, and both default to
 claiming nothing:
 
-- the `unattributedWindows` of the grant in the `GitTarget`'s `spec.allowedSaveRequests` that admits
+- the `unattributedWindows` of the grant in the `GitTarget`'s `spec.allowedCommitRequests` that admits
   the request's namespace says how much it may claim: `Keep` (the default), `SavedBy`, or `TakeOver`;
 - the request's `spec.window.author` says what this save asks for: `Own` (the default), `SavedBy`,
   or `TakeOver`.
@@ -3119,7 +3119,7 @@ claiming nothing:
 |---|---|
 | `Own` | nothing: it attaches only to its submitter's own window |
 | `SavedBy` | gives the window its message; the commit names no author, and its message ends with `Saved-By: <submitter>` |
-| `TakeOver` | takes the window over; the submitter authors the commit, and its message ends with `Author-Source: SaveRequest <namespace>/<name>; no audit record names who made these changes` |
+| `TakeOver` | takes the window over; the submitter authors the commit, and its message ends with `Author-Source: CommitRequest <namespace>/<name>; no audit record names who made these changes` |
 
 A grant's `TakeOver` allows both claims, and `SavedBy` allows only `SavedBy`. A request that asks for
 more than the grants admitting it allow fails when it is first seen, before it attaches:
@@ -3144,7 +3144,7 @@ finalize and the push the request is still in flight, and the controller keeps r
 attach until it reads an outcome; the worker recognizes the re-send as the same request, so a
 request never resolves `NoWindow` while its commit waits out the push cooldown. Applying resources
 and a request together gives no ordering guarantee between controllers and watch streams. See the
-[request contract](spec/saverequest-design.md).
+[request contract](spec/commitrequest-design.md).
 
 ### When there is nothing to commit
 
@@ -3176,7 +3176,7 @@ A crash between the push and the status write can record the message twice: the 
 repeated request only while it runs.
 
 Progress and outcome are reported through kstatus-compatible **conditions** (no `phase` string).
-`kubectl get saverequest` shows `Ready`, its `Reason` and the `Commit`; `-o wide` adds
+`kubectl get commitrequest` shows `Ready`, its `Reason` and the `Commit`; `-o wide` adds
 `AuthorAttributed` and `Pushed`. Automation must stop on either `Ready=True` or `Stalled=True`;
 `kubectl wait --for=condition=Ready` alone keeps waiting on terminal failures. `Ready=True` includes
 successful no-commit outcomes. Require `Pushed=True` and `status.commit` for evidence that the
@@ -3241,7 +3241,7 @@ deleted only after its `Applied` condition is settled.
 
 ### Finished requests are deleted after 48 hours
 
-Every save leaves one `SaveRequest` behind. When a request finishes (`Ready=True` or
+Every save leaves one `CommitRequest` behind. When a request finishes (`Ready=True` or
 `Stalled=True`), the controller writes the time it will be deleted onto it:
 
 ```yaml
@@ -3259,7 +3259,7 @@ contract, so it is also how you change the outcome for one request:
 - Set it yourself when you create the request to choose the time up front. The controller never
   replaces a value that is already there.
 
-The period comes from `--save-request-ttl` (Helm: `controllerManager.saveRequestTTL`, default
+The period comes from `--commit-request-ttl` (Helm: `controllerManager.commitRequestTTL`, default
 `48h`). Changing it only affects requests that finish afterwards. `0` writes no annotation, so new
 requests are kept. A request that finished before this feature existed has no annotation and is
 never deleted.
@@ -3269,7 +3269,7 @@ never deleted.
 A `RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`) is a save made on a **source cluster**, next
 to the edits it saves, by someone who may have no access to the cluster GitOps Reverser runs in. It
 names one `GitTarget` on the cluster GitOps Reverser runs in, and saves its creator's commit window
-there: the window gets its message and closes on its timers, as with a [`SaveRequest`](#saverequest).
+there: the window gets its message and closes on its timers, as with a [`CommitRequest`](#commitrequest).
 
 ```yaml
 apiVersion: source.configbutler.ai/v1alpha1
@@ -3312,7 +3312,7 @@ credential needs there, in the `source.configbutler.ai` group:
 | Value | What GitOps Reverser does | The credential needs |
 | --- | --- | --- |
 | `Disabled` (default) | nothing | nothing |
-| `Enabled` | serves the requests and writes their status, and deletes a finished request `--save-request-ttl` after it finished (`0` keeps it) | `get`, `list`, `watch` and `delete` on `remotesaverequests`; `update` on `remotesaverequests/status` |
+| `Enabled` | serves the requests and writes their status, and deletes a finished request `--commit-request-ttl` after it finished (`0` keeps it) | `get`, `list`, `watch` and `delete` on `remotesaverequests`; `update` on `remotesaverequests/status` |
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
@@ -3338,7 +3338,7 @@ An admitted `RemoteSaveRequest` therefore saves its creator's whole window, edit
 request's own namespace included: a grant in `allowedRemoteSaveRequests` authorizes exactly that. The
 request's namespace decides only whether a grant admits it.
 
-As with a `SaveRequest`, a second request of the same author on the same `GitTarget`, made while the
+As with a `CommitRequest`, a second request of the same author on the same `GitTarget`, made while the
 first still waits for a window or collects one, is refused at once with `SaveInProgress`: a window
 carries one message, and the two would race for it.
 
@@ -3358,7 +3358,7 @@ loses the save's author without an error.
 `spec.window.attachTimeout` (default `5s`) counts from when GitOps Reverser picks the request up,
 which is after the request's own audit event arrived, so it only covers the spread between the
 request's event and its edits'. `maxDuration` (default `2s`) and `idleTimeout` close the attached
-window as for a `SaveRequest`.
+window as for a `CommitRequest`.
 
 ### Its status
 
@@ -3378,7 +3378,7 @@ A request is served again after GitOps Reverser restarts. It keeps what its stat
 author found when it was first served, and an outcome already decided, in which case only its apply,
 if it asked for one, is followed.
 
-A finished `RemoteSaveRequest` is deleted `--save-request-ttl` (default `48h`) after it finished;
+A finished `RemoteSaveRequest` is deleted `--commit-request-ttl` (default `48h`) after it finished;
 `0` keeps it.
 
 ## Audit ingestion settings
@@ -3585,7 +3585,7 @@ Move to hand-managed resources when you want:
 - more than one `GitTarget`
 - more than one watch rule
 - cluster-scoped watching with `ClusterWatchRule`
-- ad hoc save requests with `SaveRequest`
+- ad hoc save requests with `CommitRequest`
 - direct control over `GitProvider.spec.commit`
 - direct control over encryption settings
 

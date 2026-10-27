@@ -103,28 +103,28 @@ func TestGrantLists_APIServerDefaultsOmittedAndKeepsEmpty(t *testing.T) {
 		assert.Empty(t, obj.Spec.AllowedApplierClaims)
 	})
 
-	target := func(name string, grants []configbutleraiv1alpha3.GitTargetSaveRequestGrant) *configbutleraiv1alpha3.GitTarget {
+	target := func(name string, grants []configbutleraiv1alpha3.GitTargetCommitRequestGrant) *configbutleraiv1alpha3.GitTarget {
 		gt := &configbutleraiv1alpha3.GitTarget{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name},
-			Spec:       configbutleraiv1alpha3.GitTargetSpec{Path: "apps", AllowedSaveRequests: grants},
+			Spec:       configbutleraiv1alpha3.GitTargetSpec{Path: "apps", AllowedCommitRequests: grants},
 		}
 		gt.Spec.GitBranchRef.Name = "main"
 		gt.Spec.KubeProviderRef.Name = "local"
 		return gt
 	}
 
-	t.Run("an omitted GitTarget allowedSaveRequests reads back as the default", func(t *testing.T) {
+	t.Run("an omitted GitTarget allowedCommitRequests reads back as the default", func(t *testing.T) {
 		obj := target("omitted", nil)
 		require.NoError(t, c.Create(ctx, obj))
 		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(obj), obj))
-		assert.Equal(t, configbutleraiv1alpha3.DefaultGitTargetSaveRequestGrants(), obj.Spec.AllowedSaveRequests)
+		assert.Equal(t, configbutleraiv1alpha3.DefaultGitTargetCommitRequestGrants(), obj.Spec.AllowedCommitRequests)
 	})
 
-	t.Run("an empty GitTarget allowedSaveRequests stays empty through an update", func(t *testing.T) {
-		obj := target("deny-all", []configbutleraiv1alpha3.GitTargetSaveRequestGrant{})
+	t.Run("an empty GitTarget allowedCommitRequests stays empty through an update", func(t *testing.T) {
+		obj := target("deny-all", []configbutleraiv1alpha3.GitTargetCommitRequestGrant{})
 		require.NoError(t, c.Create(ctx, obj))
 		relabel(t, obj)
-		require.NotNil(t, obj.Spec.AllowedSaveRequests, "an update must not turn [] into the default")
-		assert.Empty(t, obj.Spec.AllowedSaveRequests)
+		require.NotNil(t, obj.Spec.AllowedCommitRequests, "an update must not turn [] into the default")
+		assert.Empty(t, obj.Spec.AllowedCommitRequests)
 	})
 }

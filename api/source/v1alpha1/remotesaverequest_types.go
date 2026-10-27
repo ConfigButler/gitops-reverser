@@ -6,13 +6,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// A RemoteSaveRequest is the source-cluster twin of a configbutler.ai SaveRequest, for the people who edit
+// A RemoteSaveRequest is the source-cluster twin of a configbutler.ai CommitRequest, for the people who edit
 // a source cluster and cannot reach the cluster GitOps Reverser runs in. It is its own kind, in its own
-// group, rather than a SaveRequest with another schema: its GitTarget is on another cluster than the
+// group, rather than a CommitRequest with another schema: its GitTarget is on another cluster than the
 // request, its author comes from the source cluster's audit events rather than from admission, and it
 // is installed alone. docs/future/source-side-save-plan.md has the reasoning.
 //
-// The spec is immutable, compared as SaveRequestSpec compares it: durations as durations, so a typed
+// The spec is immutable, compared as CommitRequestSpec compares it: durations as durations, so a typed
 // client's re-spelling of "1m" as "1m0s" is not a change.
 
 // RemoteSaveRequestSpec defines the desired state of RemoteSaveRequest. It

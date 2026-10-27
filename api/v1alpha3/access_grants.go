@@ -219,16 +219,16 @@ type KubeProviderApplierClaimGrant struct {
 	ApplierNamespaces []ScopeNamespace `json:"applierNamespaces"`
 }
 
-// GitTargetSaveRequestGrant admits the SaveRequests of some namespaces to save
-// a GitTarget's commit windows, and bounds what they may claim of a window
-// whose writes name no author.
-type GitTargetSaveRequestGrant struct {
-	// ConsumerNamespaces are the namespaces whose SaveRequests this grant
+// GitTargetCommitRequestGrant admits the CommitRequests of some namespaces to
+// save a GitTarget's commit windows, and bounds what they may claim of a
+// window whose writes name no author.
+type GitTargetCommitRequestGrant struct {
+	// ConsumerNamespaces are the namespaces whose CommitRequests this grant
 	// admits. from: "Same" is this GitTarget's namespace.
 	// +required
 	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
 
-	// UnattributedWindows says how much an admitted SaveRequest may claim of a
+	// UnattributedWindows says how much an admitted CommitRequest may claim of a
 	// commit window whose writes name no author, when it asks in
 	// spec.window.author. It acts only while the GitTarget's KubeProvider has
 	// never received an audit fact; on a cluster that has, a write naming no
@@ -251,10 +251,10 @@ type GitTargetSaveRequestGrant struct {
 	UnattributedWindows UnattributedWindowPolicy `json:"unattributedWindows,omitempty"`
 }
 
-// SaveRequestAdmission is what a GitTarget's allowedSaveRequests give a
-// SaveRequest.
+// CommitRequestAdmission is what a GitTarget's allowedCommitRequests give a
+// CommitRequest.
 // +kubebuilder:object:generate=false
-type SaveRequestAdmission struct {
+type CommitRequestAdmission struct {
 	// Admitted reports whether some grant admits the request's namespace.
 	Admitted bool
 	// UnattributedWindows is the most the admitting grants allow the request to
@@ -262,15 +262,15 @@ type SaveRequestAdmission struct {
 	UnattributedWindows UnattributedWindowPolicy
 }
 
-// AdmitsSaveRequest reports what spec.allowedSaveRequests gives a SaveRequest in namespace, by the
+// AdmitsCommitRequest reports what spec.allowedCommitRequests gives a CommitRequest in namespace, by the
 // labels that namespace carries in the control cluster.
-func (t *GitTarget) AdmitsSaveRequest(namespace string, nsLabels map[string]string) (SaveRequestAdmission, error) {
-	grants := t.saveRequestGrants()
+func (t *GitTarget) AdmitsCommitRequest(namespace string, nsLabels map[string]string) (CommitRequestAdmission, error) {
+	grants := t.commitRequestGrants()
 	admitting, err := admitAll(consumersOf(grants), t.Namespace, namespace, nsLabels)
 	if err != nil || len(admitting) == 0 {
-		return SaveRequestAdmission{}, err
+		return CommitRequestAdmission{}, err
 	}
-	out := SaveRequestAdmission{Admitted: true, UnattributedWindows: UnattributedWindowsKeep}
+	out := CommitRequestAdmission{Admitted: true, UnattributedWindows: UnattributedWindowsKeep}
 	for _, i := range admitting {
 		policy := grants[i].UnattributedWindows
 		if policy != "" && !out.UnattributedWindows.Allows(WindowAuthor(policy)) {
@@ -280,9 +280,9 @@ func (t *GitTarget) AdmitsSaveRequest(namespace string, nsLabels map[string]stri
 	return out, nil
 }
 
-// DescribeAllowedSaveRequests names the namespaces spec.allowedSaveRequests admits.
-func (t *GitTarget) DescribeAllowedSaveRequests() string {
-	return describeAdmitted(consumersOf(t.saveRequestGrants()), t.Namespace)
+// DescribeAllowedCommitRequests names the namespaces spec.allowedCommitRequests admits.
+func (t *GitTarget) DescribeAllowedCommitRequests() string {
+	return describeAdmitted(consumersOf(t.commitRequestGrants()), t.Namespace)
 }
 
 // SourceNamespace is a namespace of a source cluster, by exact name, or "*"
@@ -369,10 +369,10 @@ func DefaultKubeProviderApplierClaimGrants() []KubeProviderApplierClaimGrant {
 	}}
 }
 
-// DefaultGitTargetSaveRequestGrants is GitTarget.spec.allowedSaveRequests when it is omitted:
-// SaveRequests in the GitTarget's own namespace, claiming nothing of an unattributed window.
-func DefaultGitTargetSaveRequestGrants() []GitTargetSaveRequestGrant {
-	return []GitTargetSaveRequestGrant{{
+// DefaultGitTargetCommitRequestGrants is GitTarget.spec.allowedCommitRequests when it is omitted:
+// CommitRequests in the GitTarget's own namespace, claiming nothing of an unattributed window.
+func DefaultGitTargetCommitRequestGrants() []GitTargetCommitRequestGrant {
+	return []GitTargetCommitRequestGrant{{
 		ConsumerNamespaces:  ConsumerNamespaces{From: GrantFromSame},
 		UnattributedWindows: UnattributedWindowsKeep,
 	}}
@@ -401,13 +401,13 @@ func (p *KubeProvider) applierClaimGrants() []KubeProviderApplierClaimGrant {
 	return orDefault(p.Spec.AllowedApplierClaims, DefaultKubeProviderApplierClaimGrants)
 }
 
-// saveRequestGrants is spec.allowedSaveRequests as the API server serves it.
-func (t *GitTarget) saveRequestGrants() []GitTargetSaveRequestGrant {
-	return orDefault(t.Spec.AllowedSaveRequests, DefaultGitTargetSaveRequestGrants)
+// commitRequestGrants is spec.allowedCommitRequests as the API server serves it.
+func (t *GitTarget) commitRequestGrants() []GitTargetCommitRequestGrant {
+	return orDefault(t.Spec.AllowedCommitRequests, DefaultGitTargetCommitRequestGrants)
 }
 
-// consumers is the admitting half of a GitTargetSaveRequestGrant.
-func (g *GitTargetSaveRequestGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }
+// consumers is the admitting half of a GitTargetCommitRequestGrant.
+func (g *GitTargetCommitRequestGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }
 
 // consumers is the admitting half of a GitProviderGitBranchGrant.
 func (g *GitProviderGitBranchGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }

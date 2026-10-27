@@ -59,7 +59,7 @@ func retainTwoWrites(t *testing.T, loop *branchWorkerEventLoop) {
 	req.Message = "save: lands in a folder that is refused before it is pushed"
 	serviceAttach(loop, req)
 	require.Len(t, loop.pendingWrites, 1)
-	require.NotNil(t, loop.pendingWrites[0].SaveRequest)
+	require.NotNil(t, loop.pendingWrites[0].CommitRequest)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("kept-behind-it", "bob", replayRefusalTargetB)},
@@ -91,7 +91,7 @@ func assertOnlyTheRefusedWriteWasDropped(
 	require.Len(t, *refusals, 1, "the refusal is reported on the target's status, once")
 	assert.Equal(t, itypes.NewResourceReference(ledgerTargetName, "default"), (*refusals)[0].target)
 
-	res, resolved := f.worker.LookupSaveRequestOutcome("default", crName, "uid-"+crName)
+	res, resolved := f.worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
 	require.True(t, resolved, "the refused write's save is answered rather than held")
 	require.Error(t, res.Err, "and it fails: its write will never land")
 	assert.Contains(t, res.Err.Error(), "kustomization.yaml", "naming what refused it")
@@ -140,7 +140,7 @@ func TestReplayRefusal_AnotherFailureStillHoldsEveryWrite(t *testing.T) {
 
 	require.Len(t, loop.pendingWrites, 2, "an aborted replay settles nothing")
 	assert.Empty(t, *refusals, "and reports no refusal it did not finish deciding")
-	_, resolved := f.worker.LookupSaveRequestOutcome("default", crName, "uid-"+crName)
+	_, resolved := f.worker.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
 	assert.False(t, resolved, "the save stays held")
 	assert.True(t, loop.retry.pending(), "the retry is scheduled")
 

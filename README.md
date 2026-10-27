@@ -53,7 +53,7 @@ What sets it apart:
   a commit names the identity the API server authenticated, and no field lets anyone type a name in.
   It needs kube-apiserver flags, so managed control planes that hide them cannot use it. See
   [attribution](docs/spec/attribution.md#authorship-is-established-never-asserted).
-- **A commit can say why.** Changes are grouped into commit windows, and a `SaveRequest` lets the
+- **A commit can say why.** Changes are grouped into commit windows, and a `CommitRequest` lets the
   person making a change explain **why** it was necessary. See [commit windows](#commit-windows).
 
 ## How it works
@@ -94,7 +94,7 @@ renders: the operator cannot tell authored resources from generated ones. See
 ### Commit windows
 
 Changes for the same target and author share a commit window, and each window becomes one commit.
-When a window closes is yours to tune: its timers are set per `GitTarget`, and a `SaveRequest` can
+When a window closes is yours to tune: its timers are set per `GitTarget`, and a `CommitRequest` can
 bring its own timers along with the commit message.
 
 ![Kubernetes resource changes flow through GitOps Reverser's commit window into Git](docs/images/commit-window.excalidraw.svg)

@@ -75,7 +75,7 @@ of the generated CRD and point `crdDir` at the copy.
 These came out of the same review. Each one is behavior that a shorter or rearranged description
 can easily misstate.
 
-- **A SaveRequest's message can be wrapped.** The message is never evaluated as a template.
+- **A CommitRequest's message can be wrapped.** The message is never evaluated as a template.
   When the GitTarget sets `spec.commit.message.requestTemplate`, that template frames the message
   as `RequestMessage`; without one, the message is committed as written. See
   [`commit_executor.go`](../../internal/git/commit_executor.go).

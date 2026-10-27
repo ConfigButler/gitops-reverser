@@ -14,7 +14,7 @@ These samples are quick starting points for common GitOps Reverser setups.
 - `clusterwatchrule.yaml`: Minimal `ClusterWatchRule` for cluster-scoped resources.
 - `fluxclaim.yaml`, `argocdclaim.yaml`: An applier claim holding the Flux `Kustomization` or
   the Argo CD `Application` that applies `example-target`'s folder, for its `spec.applierClaimRef`.
-- `saverequest.yaml`: Minimal `SaveRequest` — an on-demand "save" signal that finalizes a
+- `commitrequest.yaml`: Minimal `CommitRequest` — an on-demand "save" signal that finalizes a
   `GitTarget`'s open commit window. It uses `metadata.generateName`, so apply it with
   `kubectl create -f`: `kubectl apply` refuses a generated name.
 

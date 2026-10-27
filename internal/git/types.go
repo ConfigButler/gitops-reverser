@@ -37,7 +37,7 @@ const (
 	//
 	// Deliberately the EMPTY string so it is also the ZERO VALUE: the many paths that never assign
 	// Attribution (reconcile, resync, bootstrap) all mean exactly this. Any other value makes the
-	// zero value a silent fourth state, which is the bug that stopped every SaveRequest
+	// zero value a silent fourth state, which is the bug that stopped every CommitRequest
 	// attaching. TestAttributionZeroValueIsNotAttempted pins it.
 	AttributionNotAttempted AttributionOutcome = ""
 	// AttributionResolved means an audit fact named the actor.
@@ -272,7 +272,7 @@ const (
 	// content-derived mark-and-sweep against the worktree (upsert every desired
 	// resource, drop every watched managed document the snapshot did not contain).
 	PendingWriteResync PendingWriteKind = "resync"
-	// PendingWriteRequestRecord carries no content. It records a SaveRequest's message
+	// PendingWriteRequestRecord carries no content. It records a CommitRequest's message
 	// in an empty commit when the request ran out of time to attach, and asked for that with
 	// whenNothingToCommit: CommitEmpty. It is not a window: only writes open windows.
 	PendingWriteRequestRecord PendingWriteKind = "request_record"
@@ -376,7 +376,7 @@ type PendingWrite struct {
 	Committed *bool
 
 	// AllowEmpty makes a grouped window commit even when its events changed nothing, because the
-	// SaveRequest attached to it asked for whenNothingToCommit: CommitEmpty. A suspended target
+	// CommitRequest attached to it asked for whenNothingToCommit: CommitEmpty. A suspended target
 	// still writes nothing.
 	AllowEmpty bool
 	// RequestAuthor and RequestAttribution author a PendingWriteRequestRecord, which has no
@@ -384,11 +384,11 @@ type PendingWrite struct {
 	// window's author is.
 	RequestAuthor      UserInfo
 	RequestAttribution AttributionOutcome
-	// TakenOver says the SaveRequest attached to this grouped write took over a window whose
+	// TakenOver says the CommitRequest attached to this grouped write took over a window whose
 	// writes named no author: RequestAuthor and RequestAttribution, the submitter's, author the
 	// commit, and its message ends with an Author-Source trailer (withTakeOverNote).
 	TakenOver bool
-	// SavedBy is the submitter of the SaveRequest that gave this grouped write its message without
+	// SavedBy is the submitter of the CommitRequest that gave this grouped write its message without
 	// claiming its writes, which named no author: the commit stays unattributed, and its message ends
 	// with a Saved-By trailer naming them (withSavedByNote). Zero when no request did.
 	SavedBy UserInfo
@@ -398,10 +398,10 @@ type PendingWrite struct {
 	// message". Re-stamped on a rebase-replay, where the same write may now change files.
 	emptyCommitted bool
 
-	// SaveRequest, when set, is the SaveRequest attached to this write: it is
+	// CommitRequest, when set, is the CommitRequest attached to this write: it is
 	// resolved Committed (with CommitSHA) once this write is pushed. It rides the write through the
 	// push cooldown and the conflict rebase-replay, so the result follows the data.
-	SaveRequest *saveRequestID
+	CommitRequest *commitRequestID
 	// committedMessageSource is the message source this write actually committed under, stamped by
 	// executePendingWrites the way CommitSHA is and for the same reason: publishCommitsForPush runs
 	// after the push, and recomputing the source from the write cannot know that a requestTemplate
@@ -411,7 +411,7 @@ type PendingWrite struct {
 	// actionsDecided is set once the write was planned on the tree it was first committed on. A
 	// write carries the actions that plan decided, never a picture of the cluster to plan again
 	// (docs/design/applier-echoes.md, F2): from then on Events holds only the objects whose plan
-	// changed that tree, except in a save (SaveRequest), which keeps every object it captured,
+	// changed that tree, except in a save (CommitRequest), which keeps every object it captured,
 	// and a resync carries resyncActions instead of its snapshot. A replay applies those actions to
 	// the newer tip, and plans nothing else again. Loop-goroutine only.
 	actionsDecided bool
@@ -454,18 +454,18 @@ type PendingWrite struct {
 type WorkItem struct {
 	// Request is a resource-write request.
 	Request *WriteRequest
-	// Attach is a SaveRequest attach: bind a message to the author's window and
+	// Attach is a CommitRequest attach: bind a message to the author's window and
 	// let its timers close that window.
-	Attach *AttachSaveRequest
+	Attach *AttachCommitRequest
 	// Resync is the FIFO position of a streaming-snapshot resync request (M8): a synchronous
 	// request/reply that materialises a GitTarget's complete desired set.
 	Resync *resyncMarker
 	// Refresh asks the worker to re-prove where its branch is on the remote. It is the only
 	// work item that never writes anything: see RefreshRequest.
 	Refresh *RefreshRequest
-	// Withdraw cancels a SaveRequest the worker has not acted on yet. It rides the same FIFO as
+	// Withdraw cancels a CommitRequest the worker has not acted on yet. It rides the same FIFO as
 	// the attach, so it is always handled after every attach sent before it.
-	Withdraw *AttachSaveRequest
+	Withdraw *AttachCommitRequest
 	// ApplyBarrier is one answer to the barrier an apply window took (apply_barrier.go). A stream's
 	// answer rides the FIFO behind every event that stream routed before it.
 	ApplyBarrier *ApplyBarrier
@@ -753,7 +753,7 @@ type Event struct {
 	UserInfo UserInfo
 
 	// Attribution is the authority for author rendering, the author_kind metric, and
-	// SaveRequest window matching. None may infer the outcome from UserInfo: an empty username
+	// CommitRequest window matching. None may infer the outcome from UserInfo: an empty username
 	// cannot distinguish "attribution is off" from "it ran and found nothing". attachAuthor is
 	// the only assignment outside tests.
 	Attribution AttributionOutcome
@@ -832,7 +832,7 @@ type CommitterConfig struct {
 type CommitMessageConfig struct {
 	LiveTemplate      string
 	ReconcileTemplate string
-	// RequestTemplate frames a SaveRequest's message. Empty — the default — commits that
+	// RequestTemplate frames a CommitRequest's message. Empty — the default — commits that
 	// message verbatim, which is the behaviour every target had before the field existed.
 	RequestTemplate string
 }
@@ -992,7 +992,7 @@ type LiveCommitMessageData struct {
 	// Resources is the per-resource list, deduplicated by file path so the
 	// final state is what's being committed.
 	Resources []ResourceRef
-	// RequestMessage is the message an attached SaveRequest supplied, unaltered. It is empty for
+	// RequestMessage is the message an attached CommitRequest supplied, unaltered. It is empty for
 	// every window no request attached to, which is the ordinary case and why liveTemplate may
 	// reference it freely.
 	//

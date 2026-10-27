@@ -56,7 +56,7 @@ func windowOutcomeAttributionMissed(t *testing.T) git.AttributionOutcome {
 	return outcome
 }
 
-// TestSaveRequest_OutcomesAgree is the cross-subsystem half of the P0 regression test.
+// TestCommitRequest_OutcomesAgree is the cross-subsystem half of the P0 regression test.
 //
 // The gap that let the blocker through was that every existing test set both sides of the
 // comparison to the same literal, so nothing ever checked that the two INDEPENDENT producers
@@ -66,12 +66,12 @@ func windowOutcomeAttributionMissed(t *testing.T) git.AttributionOutcome {
 //
 // The default deployment is the first row: --admission-webhook defaults to false, so the
 // controller emits attributionNotAttempted, while --author-attribution=false leaves the window's
-// outcome at the zero value. When those two were different strings, no SaveRequest could
+// outcome at the zero value. When those two were different strings, no CommitRequest could
 // attach to any window and the user's commit message was silently dropped.
-func TestSaveRequest_OutcomesAgree(t *testing.T) {
+func TestCommitRequest_OutcomesAgree(t *testing.T) {
 	tests := []struct {
 		name           string
-		requestSide    saveRequestAttribution
+		requestSide    commitRequestAttribution
 		windowSide     git.AttributionOutcome
 		wantNamesActor bool
 	}{
@@ -102,7 +102,7 @@ func TestSaveRequest_OutcomesAgree(t *testing.T) {
 			requestOutcome := tc.requestSide.gitOutcome()
 			assert.Equal(t, tc.wantNamesActor, requestOutcome.NamesActor())
 			assert.Equal(t, requestOutcome.NamesActor(), tc.windowSide.NamesActor(),
-				"the SaveRequest side produced %q and the window side produced %q; they must "+
+				"the CommitRequest side produced %q and the window side produced %q; they must "+
 					"agree on whether an actor was named, or the request cannot attach and the "+
 					"user's commit message is silently dropped",
 				requestOutcome, tc.windowSide)
@@ -116,17 +116,17 @@ func TestAttributionOutcome_OffLeavesZeroOutcome(t *testing.T) {
 	assert.Equal(t, git.AttributionNotAttempted, windowOutcomeAttributionOff(),
 		"configured-author mode must leave the event's outcome at AttributionNotAttempted")
 	assert.Equal(t, git.AttributionNotAttempted, attributionNotAttempted.gitOutcome(),
-		"a SaveRequest with command-author capture off must carry AttributionNotAttempted")
+		"a CommitRequest with command-author capture off must carry AttributionNotAttempted")
 	assert.Equal(t, git.AttributionUnresolved, windowOutcomeAttributionMissed(t),
 		"attribution that ran and found nothing must be AttributionUnresolved, not the zero value")
 }
 
-// TestSaveRequestAttribution_GitOutcome keeps every controller outcome's projection explicit,
+// TestCommitRequestAttribution_GitOutcome keeps every controller outcome's projection explicit,
 // including the defensive zero value.
-func TestSaveRequestAttribution_GitOutcome(t *testing.T) {
+func TestCommitRequestAttribution_GitOutcome(t *testing.T) {
 	tests := []struct {
 		name  string
-		input saveRequestAttribution
+		input commitRequestAttribution
 		want  git.AttributionOutcome
 	}{
 		{name: "unset is not attempted", input: attributionUnset, want: git.AttributionNotAttempted},
@@ -142,11 +142,11 @@ func TestSaveRequestAttribution_GitOutcome(t *testing.T) {
 	}
 }
 
-// TestSaveRequestAttribution_UnsetStatusIsCaptureDisabled keeps an unset decision visible and safe.
-func TestSaveRequestAttribution_UnsetStatusIsCaptureDisabled(t *testing.T) {
-	var request configv1alpha3.SaveRequest
+// TestCommitRequestAttribution_UnsetStatusIsCaptureDisabled keeps an unset decision visible and safe.
+func TestCommitRequestAttribution_UnsetStatusIsCaptureDisabled(t *testing.T) {
+	var request configv1alpha3.CommitRequest
 
-	setSaveRequestAttributed(&request, attributionUnset)
+	setCommitRequestAttributed(&request, attributionUnset)
 
 	requireCondition(t, request, ConditionTypeAuthorAttributed, metav1.ConditionFalse, crReasonAuthorCaptureDisabled)
 }

@@ -1147,7 +1147,7 @@ core logic.
 >
 > Running it against `config/samples` already surfaced a real constraint:
 > `manifestedit` derives manifest identity from a concrete `metadata.name`, so a
-> `generateName`-only object (`saverequest.yaml`) is classified non-KRM. That
+> `generateName`-only object (`commitrequest.yaml`) is classified non-KRM. That
 > is correct given today's identity rules and is exactly the kind of gap the
 > analyzer is meant to make visible.
 

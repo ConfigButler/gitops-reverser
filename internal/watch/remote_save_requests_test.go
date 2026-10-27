@@ -35,11 +35,11 @@ type saveFinalizer struct {
 	mu       sync.Mutex
 	result   git.FinalizeResult
 	apply    git.SaveApply
-	attaches []git.AttachSaveRequest
+	attaches []git.AttachCommitRequest
 }
 
-func (f *saveFinalizer) ServiceSaveRequest(
-	_ context.Context, attach git.AttachSaveRequest,
+func (f *saveFinalizer) ServiceCommitRequest(
+	_ context.Context, attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -47,14 +47,14 @@ func (f *saveFinalizer) ServiceSaveRequest(
 	return f.result, true, nil
 }
 
-func (f *saveFinalizer) WithdrawSaveRequest(
-	_ context.Context, _ git.AttachSaveRequest,
+func (f *saveFinalizer) WithdrawCommitRequest(
+	_ context.Context, _ git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
-	return git.FinalizeResult{Err: git.ErrSaveRequestWithdrawn}, true, nil
+	return git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn}, true, nil
 }
 
-func (f *saveFinalizer) LookupSaveRequestApply(
-	_ context.Context, _ git.AttachSaveRequest,
+func (f *saveFinalizer) LookupCommitRequestApply(
+	_ context.Context, _ git.AttachCommitRequest,
 ) (git.SaveApply, bool, error) {
 	return f.apply, true, nil
 }
@@ -333,8 +333,8 @@ type replacingFinalizer struct {
 	replacement *configv1alpha3.GitTarget
 }
 
-func (f *replacingFinalizer) ServiceSaveRequest(
-	ctx context.Context, attach git.AttachSaveRequest,
+func (f *replacingFinalizer) ServiceCommitRequest(
+	ctx context.Context, attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
 	var current configv1alpha3.GitTarget
 	if err := f.client.Get(ctx, client.ObjectKey{Namespace: "team-a", Name: "app"}, &current); err != nil {
@@ -353,7 +353,7 @@ func (f *replacingFinalizer) ServiceSaveRequest(
 		f.replacement = nil
 		return git.FinalizeResult{Phase: git.PhaseWaitingForWorker}, false, nil
 	}
-	return f.saveFinalizer.ServiceSaveRequest(ctx, attach)
+	return f.saveFinalizer.ServiceCommitRequest(ctx, attach)
 }
 
 // A GitTarget recreated while a save waits for its worker admitted nothing: the save is attached to it
@@ -636,7 +636,7 @@ func TestRemoteSaveRequest_RecordsEachOutcome(t *testing.T) {
 		{Outcome: git.FinalizeSaveInProgress}:              {saveReasonSaveInProgress, metav1.ConditionFalse},
 		{Outcome: "Unknown"}:                               {saveReasonFailed, metav1.ConditionFalse},
 		{Err: errors.New("boom")}:                          {saveReasonFailed, metav1.ConditionFalse},
-		{Err: git.ErrSaveRequestWithdrawn}:                 {saveReasonFailed, metav1.ConditionFalse},
+		{Err: git.ErrCommitRequestWithdrawn}:               {saveReasonFailed, metav1.ConditionFalse},
 	} {
 		request := newRemoteSaveRequest(sourcev1alpha1.CatchUpAsDefinedOnClaim)
 		status := &sourcev1alpha1.RemoteSaveRequestStatus{}

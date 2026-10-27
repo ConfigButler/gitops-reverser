@@ -23,7 +23,7 @@ sequenceDiagram
     Note over W: window 1 closes (identity_change), window 2 opens: Bob
     A->>W: edit cm/c
     Note over W: window 2 closes, window 3 opens: Alice
-    A->>W: SaveRequest "fix(shop): cart limit"
+    A->>W: CommitRequest "fix(shop): cart limit"
     Note over W: attaches to window 3 only
 ```
 
@@ -56,7 +56,7 @@ sequenceDiagram
     Note over W: Bob's window opens; Alice's stays open
     A->>W: edit cm/c
     Note over W: joins Alice's window
-    A->>W: SaveRequest
+    A->>W: CommitRequest
     Note over W: Alice's window: cm/a + cm/c, her message
 ```
 

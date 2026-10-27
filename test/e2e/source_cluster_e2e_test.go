@@ -36,7 +36,7 @@ import (
 //     the GitTarget mirrors that workspace, and its FluxClaim holds the Kustomization through the
 //     install's own provider. It shows the startup converge landing in the workspace, an edit made
 //     there withheld from the apply's revert by the REMOTE object's managedFields, two
-//     SaveRequests that take over their edits' windows (the workspace sends no audit facts) and
+//     CommitRequests that take over their edits' windows (the workspace sends no audit facts) and
 //     report the apply, and a RemoteSaveRequest created in the workspace itself.
 //
 // The whole suite is gated by skipUnlessSourceClusterEnabled() (env E2E_ENABLE_SOURCE_CLUSTER),
@@ -822,7 +822,7 @@ spec:
 				p.targetName,
 				"--type=merge",
 				"-p",
-				`{"spec":{"allowedSaveRequests":[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"TakeOver"}]}}`,
+				`{"spec":{"allowedCommitRequests":[{"consumerNamespaces":{"from":"Same"},"unattributedWindows":"TakeOver"}]}}`,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			names := []string{"sc-flux-save-1", "sc-flux-save-2"}
@@ -832,10 +832,10 @@ spec:
 				applyCatchUpSave(testNs, name, p.targetName)
 				r.editThroughAPI(timingConfigMap, value)
 				Eventually(func(g Gomega) {
-					g.Expect(saveRequestCondition(g, testNs, name, "Ready")).To(Equal("True"))
-					g.Expect(saveRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Ready")].reason}`)).
-						To(Equal(saveRequestReasonCommitted))
-					commits[name] = saveRequestField(g, testNs, name, "{.status.commit}")
+					g.Expect(commitRequestCondition(g, testNs, name, "Ready")).To(Equal("True"))
+					g.Expect(commitRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Ready")].reason}`)).
+						To(Equal(commitRequestReasonCommitted))
+					commits[name] = commitRequestField(g, testNs, name, "{.status.commit}")
 					g.Expect(commits[name]).NotTo(BeEmpty())
 				}, 2*time.Minute, 2*time.Second).Should(Succeed())
 				committed, inGit := r.committedValue(Default, timingConfigMap)
@@ -843,26 +843,26 @@ spec:
 				Expect(committed).To(Equal(value), "the save's commit holds its edit")
 				message, err := gitRun(p.repo.CheckoutDir, "show", "-s", "--format=%B", commits[name])
 				Expect(err).NotTo(HaveOccurred())
-				Expect(message).To(ContainSubstring("Author-Source: SaveRequest "+testNs+"/"+name),
+				Expect(message).To(ContainSubstring("Author-Source: CommitRequest "+testNs+"/"+name),
 					"the commit says its author is the request's submitter")
 			}
 
 			last := commits[names[len(names)-1]]
 			Eventually(func(g Gomega) {
 				for _, name := range names {
-					applied := saveRequestCondition(g, testNs, name, "Applied")
-					reason := saveRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Applied")].reason}`)
+					applied := commitRequestCondition(g, testNs, name, "Applied")
+					reason := commitRequestField(g, testNs, name, `{.status.conditions[?(@.type=="Applied")].reason}`)
 					if applied == "False" {
-						StopTrying(fmt.Sprintf("SaveRequest %s is Applied=False (%s): only a commit the branch "+
+						StopTrying(fmt.Sprintf("CommitRequest %s is Applied=False (%s): only a commit the branch "+
 							"lost may be", name, reason)).Now()
 					}
-					g.Expect(applied).To(Equal("True"), "SaveRequest %s Applied (%s)", name, reason)
+					g.Expect(applied).To(Equal("True"), "CommitRequest %s Applied (%s)", name, reason)
 					g.Expect(reason).To(Equal("Applied"))
 					// A later save's commit holds the earlier one's, so one apply may settle both.
-					g.Expect(saveRequestField(g, testNs, name, "{.status.appliedRevision}")).
+					g.Expect(commitRequestField(g, testNs, name, "{.status.appliedRevision}")).
 						To(Or(ContainSubstring(commits[name]), ContainSubstring(last)))
 				}
-				g.Expect(saveRequestField(g, testNs, names[len(names)-1], "{.status.appliedRevision}")).
+				g.Expect(commitRequestField(g, testNs, names[len(names)-1], "{.status.appliedRevision}")).
 					To(ContainSubstring(last))
 				g.Expect(fluxLastAppliedRevision(g, ksName)).To(ContainSubstring(last))
 			}, echoApplyBudget, 2*time.Second).Should(Succeed())
@@ -1032,13 +1032,13 @@ spec:
 	}, 3*time.Minute, 2*time.Second).Should(Succeed(), "the Kustomization must apply its folder into the workspace")
 }
 
-// applyCatchUpSave creates the SaveRequest name on gitTarget, asking its applier to catch up once
+// applyCatchUpSave creates the CommitRequest name on gitTarget, asking its applier to catch up once
 // it is pushed. It waits 45s for its window: a write from a cluster with no audit stream reaches the
 // window only after the attribution grace.
 func applyCatchUpSave(namespace, name, gitTarget string) {
 	GinkgoHelper()
 	_, err := kubectlRunWithStdin(namespace, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   name: %s
   namespace: %s
@@ -1052,5 +1052,5 @@ spec:
     attachTimeout: "45s"
     maxDuration: "4s"
 `, name, namespace, gitTarget, name), "apply", "-f", "-")
-	Expect(err).NotTo(HaveOccurred(), "failed to create SaveRequest %s", name)
+	Expect(err).NotTo(HaveOccurred(), "failed to create CommitRequest %s", name)
 }

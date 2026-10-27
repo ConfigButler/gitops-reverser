@@ -1,6 +1,6 @@
 # Plan: saving from the source cluster
 
-A `SaveRequest` saves the writes in its author's open commit window. It lives in the control
+A `CommitRequest` saves the writes in its author's open commit window. It lives in the control
 cluster, where the operator runs, while the edits it saves happen on the source cluster. This plan
 adds a second way to save: a small request created **on the source cluster**, next to the edits,
 attributed from that cluster's audit stream like the edits are.
@@ -10,10 +10,10 @@ opt-in, for a source cluster that cannot send audit events at all. There it is t
 put its author's name on the commit.
 
 Status: implemented on `feat/gitops-api-asks-converge-root-ca`. The two request kinds are a pair:
-`SaveRequest` (`configbutler.ai/v1alpha3`, formerly `CommitRequest`) on the control cluster, and
+`CommitRequest` (`configbutler.ai/v1alpha3`, formerly `CommitRequest`) on the control cluster, and
 `RemoteSaveRequest` (`source.configbutler.ai/v1alpha1`, `internal/watch/remote_save_requests.go`) on
 the source cluster. Each names its GitTarget, which admits it in a grant list:
-`spec.allowedSaveRequests` (by control-cluster namespace; omitted, its own namespace) and
+`spec.allowedCommitRequests` (by control-cluster namespace; omitted, its own namespace) and
 `spec.allowedRemoteSaveRequests` (by source namespace and labels; omitted, none). A KubeProvider
 also serves its cluster's remote requests only with `spec.remoteSaveRequests: Enabled`, and the
 GitTarget must mirror that cluster. The takeover is opt-in, as described below, bounded per grant.
@@ -28,7 +28,7 @@ implementation: see [After the API review](#after-the-api-review).
 
 1. **Build the source-side save first.** It gives the right author wherever the source cluster has
    audit, and an honestly unresolved one where it does not.
-2. **It is a new kind, defined by GitOps Reverser.** A `SaveRequest` with another schema, or a
+2. **It is a new kind, defined by GitOps Reverser.** A `CommitRequest` with another schema, or a
    kind gitops-api defines and translates, were both considered. See
    [Why a new kind](#why-a-new-kind).
 3. **The takeover is the second step.** Some people cannot configure their API server's audit, so
@@ -39,16 +39,16 @@ implementation: see [After the API review](#after-the-api-review).
 
 ## Why: two identity domains
 
-Today the save and the edits are attributed in two places: the `SaveRequest`'s author comes from
+Today the save and the edits are attributed in two places: the `CommitRequest`'s author comes from
 the control cluster's admission webhook, the edits' authors from the source cluster's audit events.
 They match only when one person has the same username in both.
 
-gitops-api makes them match. Its server impersonates the human when it creates the `SaveRequest`,
+gitops-api makes them match. Its server impersonates the human when it creates the `CommitRequest`,
 so the admission webhook records the same Dex email that kcp's audit records for the edits, and the
 ordinary author rule attaches. gitops-api does not need a takeover. What it pays for that is
 elsewhere:
 
-- **A grant into the control cluster.** Every tenant's identity may `create saverequests` in its
+- **A grant into the control cluster.** Every tenant's identity may `create commitrequests` in its
   `tenant-<account>` namespace there. It is the one place a tenant reaches outside its kcp
   workspace.
 - **A server on the save path.** The browser cannot reach that namespace, so every save goes through
@@ -86,21 +86,21 @@ author can read it.
   person who made the edits.
 - **On a source with no audit**, the save names nobody, like the edits. A request that names no actor
   may attach to a window that names none, which is today's rule
-  (`TestPendingSaveRequest_UnresolvedRequestAttachesToUnresolvedWindow`). The save gets its message
+  (`TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow`). The save gets its message
   and its timers, and the author in Git stays unresolved. The window still holds everyone's
   unattributed writes, but nobody is named as their author.
 
 ### Why a new kind
 
-gitops-api could define its own kind and translate it into a `SaveRequest`, but it cannot learn who
+gitops-api could define its own kind and translate it into a `CommitRequest`, but it cannot learn who
 created the object: watching the workspace shows the object and nothing about its creator. Only the audit stream
 says that, and GitOps Reverser is what reads it. A translation would also spend part of the attach
 wait on an extra hop, and add a second status to keep in step.
 
-Reusing `SaveRequest` with a different schema would be worse than a separate kind:
+Reusing `CommitRequest` with a different schema would be worse than a separate kind:
 
 - **Another shape.** It names a GitTarget on another cluster than the one it is created on.
-- **Another trust model.** Its author comes from audit; a `SaveRequest`'s comes from admission.
+- **Another trust model.** Its author comes from audit; a `CommitRequest`'s comes from admission.
 - **One name for two things** invites the confusion that `tenant-<account>` already costs gitops-api.
 - **Installed alone.** A workspace gets one small CRD instead of the whole `configbutler.ai` set, so
   nobody is offered GitTargets that nothing reads. gitops-api installs CRDs into workspaces through its
@@ -121,10 +121,10 @@ only". See [After the API review](#after-the-api-review).
 On a source with audit, a request is attributed only once its audit fact has joined its watch event,
 and the edits it saves wait in the same audit pipeline (kcp batches audit with a `batchMaxWait` of
 1s). The request's wait for a window starts when the branch worker registers it, which is after the
-request itself was attributed. That is how a `SaveRequest`'s `attachTimeout` is anchored today
-(`handleAttachSaveRequest` in `internal/git/save_request_attach_loop.go`). The timeout then covers
+request itself was attributed. That is how a `CommitRequest`'s `attachTimeout` is anchored today
+(`handleAttachCommitRequest` in `internal/git/commit_request_attach_loop.go`). The timeout then covers
 only the spread between the request's stream and the edits' streams. Its
-default can still be set for a source with audit, rather than copied from `SaveRequest`'s `2s`.
+default can still be set for a source with audit, rather than copied from `CommitRequest`'s `2s`.
 
 ### An unresolved save on a source that has audit
 
@@ -197,10 +197,10 @@ do. Only the GitTarget's owner knows which it is, so the GitTarget decides.
 ### What the GitTarget allows
 
 An enum, because there are two levels of trust worth offering: `unattributedWindows`, on each grant
-in the GitTarget's `spec.allowedSaveRequests`. A request claims only what the grant admitting its
+in the GitTarget's `spec.allowedCommitRequests`. A request claims only what the grant admitting its
 namespace allows; admitted by several, it may claim the most any of them allows. (The first version
 was one field, `spec.commit.unattributedWindows`, for requests in the GitTarget's own namespace;
-it moved into the grants when a `SaveRequest` could name a GitTarget in another namespace.)
+it moved into the grants when a `CommitRequest` could name a GitTarget in another namespace.)
 
 - **`"Keep"`** (the default): a save attaches only to its author's window, as today. On a cluster
   with no audit, a save from the control cluster finds no window of its own.
@@ -217,7 +217,7 @@ it moved into the grants when a `SaveRequest` could name a GitTarget in another 
   message ends with a trailer that says the name was taken on trust:
 
   ```text
-  Author-Source: SaveRequest team-a/save-1; no audit record names who made these changes
+  Author-Source: CommitRequest team-a/save-1; no audit record names who made these changes
   ```
 
 A grant on the KubeProvider was considered and set aside: the provider's owner usually does not know
@@ -259,7 +259,7 @@ The two cover different clusters:
 
 A source-side save cannot offer `"TakeOver"`: on a cluster with no audit, nothing records who created
 it either, so it has no name to give. The name has to come from the control cluster's admission
-webhook, which is why a takeover is always made by a control-cluster `SaveRequest`.
+webhook, which is why a takeover is always made by a control-cluster `CommitRequest`.
 
 ## What happens to `cf3b97be`
 
@@ -268,7 +268,7 @@ writes name no author, authoring the commit as the submitter, and the `Author-So
 ways forward before the branch merges:
 
 - **Turn it into the opt-in here.** Add `spec.commit.unattributedWindows` on the GitTarget and
-  `spec.window.author` on the `SaveRequest`, the controller's check and refusal, `"SavedBy"`, and
+  `spec.window.author` on the `CommitRequest`, the controller's check and refusal, `"SavedBy"`, and
   tests for each row above. The source-cluster e2e's save spec then sets both.
 - **Take it out here**, and build the takeover in its own PR after the source-side save.
 
@@ -276,8 +276,8 @@ ways forward before the branch merges:
 
 1. The source-side kind's name and API group. Proposed: `RemoteSaveRequest` in
    `source.configbutler.ai/v1alpha1`. "Save" is the word its user means and the one the project
-   already uses for what a request asks; `SimpleSaveRequest` was considered and set aside, since
-   it is a different kind with another trust model, not a simpler `SaveRequest`. Its spec carries
+   already uses for what a request asks; `SimpleCommitRequest` was considered and set aside, since
+   it is a different kind with another trust model, not a simpler `CommitRequest`. Its spec carries
    no Git terms (a message, a wait, a catch-up), and its status still reports each GitTarget's
    commit, so a save stays traceable. Its own group makes "never mirror it" and "install it alone"
    one check each.
@@ -285,7 +285,7 @@ ways forward before the branch merges:
 3. The reason name for an unresolved save on a source that has audit (`AuthorUnresolved` above).
 4. Whether the operator should hold a second save on a GitTarget until the first has resolved.
 5. Names for the takeover: `spec.commit.unattributedWindows` on the GitTarget and
-   `spec.window.author` on the `SaveRequest`, each `"Keep"`/`"Own"`, `"SavedBy"`, `"TakeOver"`.
+   `spec.window.author` on the `CommitRequest`, each `"Keep"`/`"Own"`, `"SavedBy"`, `"TakeOver"`.
 6. `cf3b97be`: turn it into the opt-in on this branch, or take it out and build the takeover later?
 
 ## After the API review
@@ -319,8 +319,8 @@ also removed a cold-start failure: with no named target, discovery that had not 
 keeps the author found when it was first served (its status writes moved its resourceVersion, so its
 audit fact no longer matches), and keeps an outcome already decided, following only its apply.
 
-A `SaveRequest` gained a cross-namespace `spec.gitTargetRef`, and with it
-`GitTarget.spec.allowedSaveRequests`: a grant list like the others, defaulting to one `from: Same`
+A `CommitRequest` gained a cross-namespace `spec.gitTargetRef`, and with it
+`GitTarget.spec.allowedCommitRequests`: a grant list like the others, defaulting to one `from: Same`
 grant, whose grants also carry the `unattributedWindows` bound. The GitTarget that admitted a request
 is recorded by UID (`status.gitTargetUID`), so a GitTarget created after the request under the same
 name must admit it before anything is attached.

@@ -111,7 +111,7 @@ spec:
             - --branch-worker-queue-depth={{ int .Values.controllerManager.branchWorkerQueueDepth }}
             - --branch-buffer-max-size={{ .Values.controllerManager.branchBufferMaxSize }}
             - --git-refresh-interval={{ .Values.git.refreshInterval }}
-            - --save-request-ttl={{ .Values.controllerManager.saveRequestTTL }}
+            - --commit-request-ttl={{ .Values.controllerManager.commitRequestTTL }}
             {{- if .Values.servers.receiver.enabled }}
             - --receiver-bind-address={{ .Values.servers.receiver.bindAddress }}
             {{- end }}

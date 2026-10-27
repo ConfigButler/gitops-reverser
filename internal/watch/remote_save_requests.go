@@ -30,7 +30,7 @@ import (
 // A RemoteSaveRequest is a save made on a source cluster, next to the edits it saves
 // (docs/future/source-side-save-plan.md). The server watches them on every KubeProvider whose
 // spec.remoteSaveRequests is "Enabled", through that provider's identity, and serves each one the way
-// the SaveRequest controller serves a SaveRequest: it attaches the request to its creator's commit
+// the CommitRequest controller serves a CommitRequest: it attaches the request to its creator's commit
 // window on the GitTarget its spec.gitTargetRef names, polls the branch worker for the outcome, and
 // writes it back to the request's status on the source cluster.
 //
@@ -94,12 +94,12 @@ const (
 	saveReasonLost              = "Lost"
 )
 
-// SaveFinalizer is what serves a save once it is attached: the SaveRequest service of the event
+// SaveFinalizer is what serves a save once it is attached: the CommitRequest service of the event
 // router, which owns the branch workers.
 type SaveFinalizer interface {
-	ServiceSaveRequest(ctx context.Context, attach git.AttachSaveRequest) (git.FinalizeResult, bool, error)
-	WithdrawSaveRequest(ctx context.Context, attach git.AttachSaveRequest) (git.FinalizeResult, bool, error)
-	LookupSaveRequestApply(ctx context.Context, attach git.AttachSaveRequest) (git.SaveApply, bool, error)
+	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
+	WithdrawCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
+	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
 }
 
 // RemoteSaveRequestServer serves the RemoteSaveRequests of every KubeProvider that enables them. It runs on the
@@ -495,8 +495,8 @@ func (s *RemoteSaveRequestServer) admit(
 // remoteSaveRequestAttach is the attach of a request to its GitTarget's window.
 func remoteSaveRequestAttach(
 	request *sourcev1alpha1.RemoteSaveRequest, author string, attribution git.AttributionOutcome,
-) git.AttachSaveRequest {
-	attach := git.AttachSaveRequest{
+) git.AttachCommitRequest {
+	attach := git.AttachCommitRequest{
 		Namespace:          request.Namespace,
 		Name:               request.Name,
 		UID:                string(request.UID),
@@ -533,13 +533,13 @@ func remoteSaveRequestAttach(
 // replacement admitted nothing, and its grants may not admit the request.
 func (s *RemoteSaveRequestServer) finalize(
 	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
-	attach git.AttachSaveRequest, readmit func() (string, string, string, error),
+	attach git.AttachCommitRequest, readmit func() (string, string, string, error),
 ) bool {
 	bound := time.Now().Add(attach.AttachTimeout + attach.MaxDuration + remoteSaveRequestPushAllowance)
 	for {
-		ask := s.Finalizer.ServiceSaveRequest
+		ask := s.Finalizer.ServiceCommitRequest
 		if time.Now().After(bound) {
-			ask = s.Finalizer.WithdrawSaveRequest
+			ask = s.Finalizer.WithdrawCommitRequest
 		}
 		result, done, err := ask(ctx, attach)
 		if err == nil && done {
@@ -572,7 +572,7 @@ func recordSaveOutcome(
 	status.Branch = result.Branch
 	if result.Err != nil {
 		message := result.Err.Error()
-		if errors.Is(result.Err, git.ErrSaveRequestWithdrawn) {
+		if errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
 			message = "the save was not served in time and was withdrawn"
 		}
 		failSave(request, status, saveReasonFailed, message)
@@ -612,7 +612,7 @@ func failSave(
 // Applied condition; a save its worker knows nothing of for remoteSaveRequestApplyLost is Lost.
 func (s *RemoteSaveRequestServer) followApply(
 	ctx context.Context, request *sourcev1alpha1.RemoteSaveRequest, status *sourcev1alpha1.RemoteSaveRequestStatus,
-	attach git.AttachSaveRequest, write func(),
+	attach git.AttachCommitRequest, write func(),
 ) {
 	if apimeta.FindStatusCondition(status.Conditions, "Applied") == nil {
 		setSaveCondition(request, status, "Applied", metav1.ConditionUnknown, saveReasonApplying,
@@ -621,7 +621,7 @@ func (s *RemoteSaveRequestServer) followApply(
 	}
 	started := time.Now()
 	for {
-		apply, known, err := s.Finalizer.LookupSaveRequestApply(ctx, attach)
+		apply, known, err := s.Finalizer.LookupCommitRequestApply(ctx, attach)
 		switch {
 		case err == nil && known && (apply.Done || apply.Applied):
 			status.AppliedRevision = apply.AppliedRevision

@@ -31,12 +31,12 @@ A client that wants the server to allocate the name sends a collection `POST`
 with `metadata.generateName` and without `metadata.name`:
 
 ```text
-POST /apis/configbutler.ai/v1alpha3/namespaces/voter-production/saverequests
+POST /apis/configbutler.ai/v1alpha3/namespaces/voter-production/commitrequests
 ```
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   namespace: voter-production
   generateName: coffee-save-
@@ -50,7 +50,7 @@ The successful API response contains the final server-allocated identity:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   namespace: voter-production
   generateName: coffee-save-
@@ -94,16 +94,16 @@ Example audit event shape:
   "level": "RequestResponse",
   "stage": "ResponseComplete",
   "verb": "create",
-  "requestURI": "/apis/configbutler.ai/v1alpha3/namespaces/voter-production/saverequests",
+  "requestURI": "/apis/configbutler.ai/v1alpha3/namespaces/voter-production/commitrequests",
   "objectRef": {
     "apiGroup": "configbutler.ai",
     "apiVersion": "v1alpha1",
-    "resource": "saverequests",
+    "resource": "commitrequests",
     "namespace": "voter-production"
   },
   "requestObject": {
     "apiVersion": "configbutler.ai/v1alpha3",
-    "kind": "SaveRequest",
+    "kind": "CommitRequest",
     "metadata": {
       "namespace": "voter-production",
       "generateName": "coffee-save-"
@@ -111,7 +111,7 @@ Example audit event shape:
   },
   "responseObject": {
     "apiVersion": "configbutler.ai/v1alpha3",
-    "kind": "SaveRequest",
+    "kind": "CommitRequest",
     "metadata": {
       "namespace": "voter-production",
       "generateName": "coffee-save-",
@@ -139,14 +139,14 @@ This keeps the URL-level audit reference authoritative when it is complete, but
 still handles server-named objects whose final identity only appears in the
 response body.
 
-## `SaveRequest` example
+## `CommitRequest` example
 
-`SaveRequest` objects are intentionally suitable for generated names because
+`CommitRequest` objects are intentionally suitable for generated names because
 each object is a one-shot save signal:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3
-kind: SaveRequest
+kind: CommitRequest
 metadata:
   namespace: voter-production
   generateName: save-

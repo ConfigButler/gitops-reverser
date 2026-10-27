@@ -69,13 +69,13 @@ rules:
   resources:
   - argocdclaims/status
   - clusterwatchrules/status
+  - commitrequests/status
   - fluxclaims/status
   - gitbranches/status
   - gitproviders/status
   - gitreceivers/status
   - gittargets/status
   - kubeproviders/status
-  - saverequests/status
   - watchrules/status
   verbs:
   - get
@@ -99,21 +99,21 @@ rules:
 - apiGroups:
   - configbutler.ai
   resources:
-  - gitreceivers
-  - kubeproviders
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - configbutler.ai
-  resources:
-  - saverequests
+  - commitrequests
   verbs:
   - delete
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - configbutler.ai
+  resources:
+  - gitreceivers
+  - kubeproviders
+  verbs:
+  - get
+  - list
   - watch
 - apiGroups:
   - source.configbutler.ai

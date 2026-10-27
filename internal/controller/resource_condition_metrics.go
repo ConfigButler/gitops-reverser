@@ -19,10 +19,10 @@ import (
 // bounds the series count and is the whole basis on which §7.1 of the metrics plan allows their
 // names as labels.
 //
-// SaveRequest is deliberately absent. It is created once per save, so it is data-shaped rather
+// CommitRequest is deliberately absent. It is created once per save, so it is data-shaped rather
 // than config-shaped: a gauge per object would churn series continuously — created, Ready,
 // finalized, deleted — and churn is the one cost Prometheus handles worst. Its state is answerable
-// from git_commits_total{message_source="save_request"} and from the object's own conditions, and
+// from git_commits_total{message_source="commit_request"} and from the object's own conditions, and
 // if a fleet view is ever wanted the right shape is a counter of terminal outcomes, because those
 // are events rather than state. Its reconciler does not use this status helper either, so the
 // exclusion holds at both ends.
@@ -45,7 +45,7 @@ const (
 // Which is why the kind does NOT come off statusObject, the accessor interface the status session
 // takes. That interface is about writing a status, and anything can be given the two methods it
 // asks for; hanging the kind on it would turn this list into an implication — implement the
-// accessors over in api/v1alpha3 and you are on the metric — and SaveRequest would arrive here by
+// accessors over in api/v1alpha3 and you are on the metric — and CommitRequest would arrive here by
 // a route nobody reviewing that file would see.
 func conditionMetricKind(obj client.Object) string {
 	switch obj.(type) {

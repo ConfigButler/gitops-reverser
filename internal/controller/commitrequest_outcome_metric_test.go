@@ -29,12 +29,12 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/watch"
 )
 
-const saveRequestsMetric = "gitopsreverser_save_requests_total"
+const commitRequestsMetric = "gitopsreverser_commit_requests_total"
 
 // outcomeCount reads one bounded outcome's counter value, and reports whether the series exists.
 func outcomeCount(t *testing.T, reader *sdkmetric.ManualReader, outcome string) (int64, bool) {
 	t.Helper()
-	return telemetry.CollectInt64Sum(reader, saveRequestsMetric, map[string]string{"outcome": outcome})
+	return telemetry.CollectInt64Sum(reader, commitRequestsMetric, map[string]string{"outcome": outcome})
 }
 
 // outcomeCountForTarget reads one outcome's counter for one GitTarget identity. The empty pair is
@@ -45,7 +45,7 @@ func outcomeCountForTarget(
 	outcome, namespace, name string,
 ) (int64, bool) {
 	t.Helper()
-	return telemetry.CollectInt64Sum(reader, saveRequestsMetric, map[string]string{
+	return telemetry.CollectInt64Sum(reader, commitRequestsMetric, map[string]string{
 		"outcome":             outcome,
 		"gittarget_namespace": namespace,
 		"gittarget_name":      name,
@@ -54,20 +54,20 @@ func outcomeCountForTarget(
 
 // The reason the label was added: two targets' saves must be tellable apart, so an operator can
 // alert on one tenant's target rather than on the fleet.
-func TestSaveRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
+func TestCommitRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	for _, target := range []string{"team-a-config", "team-b-config"} {
-		cr := newSaveRequest("save-" + target)
+		cr := newCommitRequest("save-" + target)
 		cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target}
-		c := newSaveRequestClient(t, nil, cr)
+		c := newCommitRequestClient(t, nil, cr)
 		f := &fakeFinalizer{
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
-		r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
-		reconcileSaveRequest(t, r, "save-"+target)
+		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+		reconcileCommitRequest(t, r, "save-"+target)
 	}
 
 	for _, target := range []string{"team-a-config", "team-b-config"} {
@@ -79,19 +79,19 @@ func TestSaveRequestMetric_TwoTargetsAreDistinguishable(t *testing.T) {
 
 // Cardinality is bounded by configuration rather than by saves: repeated saves against one target
 // reuse one series. That is the property that makes the label affordable.
-func TestSaveRequestMetric_RepeatedSavesReuseOneSeries(t *testing.T) {
+func TestCommitRequestMetric_RepeatedSavesReuseOneSeries(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
 	for i := range 3 {
 		name := fmt.Sprintf("save-repeat-%d", i)
-		c := newSaveRequestClient(t, nil, newSaveRequest(name))
+		c := newCommitRequestClient(t, nil, newCommitRequest(name))
 		f := &fakeFinalizer{
 			result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 			resolved: true,
 		}
-		r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
-		reconcileSaveRequest(t, r, name)
+		r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+		reconcileCommitRequest(t, r, name)
 	}
 
 	value, ok := outcomeCountForTarget(t, reader, crOutcomeCommitted, "default", "team-a-config")
@@ -101,33 +101,33 @@ func TestSaveRequestMetric_RepeatedSavesReuseOneSeries(t *testing.T) {
 
 // The bound on the label. spec.gitTargetRef is whatever the client wrote, so a request naming a
 // target that does not exist must NOT mint a series under that name: anyone with create rights on
-// saverequests could otherwise grow the metric without limit. The requested reference stays on
+// commitrequests could otherwise grow the metric without limit. The requested reference stays on
 // the conditions and in the logs, which is where an unbounded string belongs.
-func TestSaveRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
+func TestCommitRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	cr := newSaveRequest("save-bogus")
+	cr := newCommitRequest("save-bogus")
 	cr.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: "no-such-target"}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	cr.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(cr.Spec).resolveTimeout()))
-	c := newSaveRequestClient(t, nil, cr)
-	// A service error is what EventRouter.ServiceSaveRequest returns when the GitTarget Get fails,
+	c := newCommitRequestClient(t, nil, cr)
+	// A service error is what EventRouter.ServiceCommitRequest returns when the GitTarget Get fails,
 	// and a missing GitTarget has no worker to hold the request, so the withdraw resolves at once.
 	f := &fakeFinalizer{
 		err:              errors.New("get GitTarget default/no-such-target: not found"),
-		withdrawResult:   git.FinalizeResult{Err: git.ErrSaveRequestWithdrawn},
+		withdrawResult:   git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn},
 		withdrawResolved: true,
 	}
-	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileSaveRequest(t, r, "save-bogus")
+	reconcileCommitRequest(t, r, "save-bogus")
 
 	value, ok := outcomeCountForTarget(t, reader, crOutcomeFailed, "", "")
 	require.True(t, ok, "an unresolved target must still be counted, under the fallback identity")
 	assert.Equal(t, int64(1), value)
 
-	_, minted := telemetry.CollectInt64Sum(reader, saveRequestsMetric, map[string]string{
+	_, minted := telemetry.CollectInt64Sum(reader, commitRequestsMetric, map[string]string{
 		"gittarget_name": "no-such-target",
 	})
 	assert.False(t, minted, "a name that resolved to nothing must never become a label value")
@@ -136,7 +136,7 @@ func TestSaveRequestMetric_UnresolvableTargetTakesTheFallback(t *testing.T) {
 // The mapping is derived from FinalizeResult rather than from the condition reasons, so pin it
 // directly. The default arm matters most: an unmapped outcome must count as failed, because a bug
 // that increments nothing is a bug nobody sees.
-func TestSaveRequestOutcome_MapsEveryFinalizeResult(t *testing.T) {
+func TestCommitRequestOutcome_MapsEveryFinalizeResult(t *testing.T) {
 	tests := []struct {
 		name   string
 		result git.FinalizeResult
@@ -159,14 +159,14 @@ func TestSaveRequestOutcome_MapsEveryFinalizeResult(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, saveRequestOutcome(tc.result, tc.err))
+			assert.Equal(t, tc.want, commitRequestOutcome(tc.result, tc.err))
 		})
 	}
 }
 
 // Every terminal outcome must reach the counter through a real reconcile, not only through the
 // mapping function. A value with no raise site is a label nobody can alert on.
-func TestSaveRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.T) {
+func TestCommitRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.T) {
 	tests := []struct {
 		name   string
 		result git.FinalizeResult
@@ -199,11 +199,11 @@ func TestSaveRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.T)
 			reader, err := telemetry.InitTestExporter()
 			require.NoError(t, err)
 
-			c := newSaveRequestClient(t, nil, newSaveRequest("save-outcome"))
+			c := newCommitRequestClient(t, nil, newCommitRequest("save-outcome"))
 			f := &fakeFinalizer{result: tc.result, err: tc.err, resolved: true}
-			r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+			r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-			reconcileSaveRequest(t, r, "save-outcome")
+			reconcileCommitRequest(t, r, "save-outcome")
 
 			value, ok := outcomeCount(t, reader, tc.want)
 			require.True(t, ok, "outcome %q published no series", tc.want)
@@ -215,7 +215,7 @@ func TestSaveRequestMetric_EveryOutcomeIsReachableThroughReconcile(t *testing.T)
 // The trap the recording site exists to avoid. applyFinalizeResultToStatus is called once per
 // attempt inside writeTerminalStatus's conflict-retry loop, so recording there would over-report
 // exactly the contended request. Two conflicts, one increment.
-func TestSaveRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
+func TestCommitRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -231,20 +231,20 @@ func TestSaveRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
 			if conflicts > 0 {
 				conflicts--
 				return apierrors.NewConflict(
-					schema.GroupResource{Group: "configbutler.ai", Resource: "saverequests"},
+					schema.GroupResource{Group: "configbutler.ai", Resource: "commitrequests"},
 					obj.GetName(), errors.New("simulated"))
 			}
 			return c.SubResource(subResource).Update(ctx, obj, opts...)
 		},
 	}
-	c := newSaveRequestClient(t, &fns, withInProgress(newSaveRequest("save-conflict")))
+	c := newCommitRequestClient(t, &fns, withInProgress(newCommitRequest("save-conflict")))
 	f := &fakeFinalizer{
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
-	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileSaveRequest(t, r, "save-conflict")
+	reconcileCommitRequest(t, r, "save-conflict")
 
 	value, ok := outcomeCount(t, reader, crOutcomeCommitted)
 	require.True(t, ok)
@@ -254,8 +254,8 @@ func TestSaveRequestMetric_ConflictRetriesIncrementOnce(t *testing.T) {
 // The documented limit, asserted as behavior rather than left to be discovered. A status write that
 // fails permanently is not retried into a terminal state, so the next reconcile re-decides and
 // increments again. This is why the instrument promises one increment per terminal DECISION
-// ATTEMPT and not one per SaveRequest; deduplicating would need a durable marker on the object.
-func TestSaveRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testing.T) {
+// ATTEMPT and not one per CommitRequest; deduplicating would need a durable marker on the object.
+func TestCommitRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -270,15 +270,15 @@ func TestSaveRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testing
 			return apierrors.NewInternalError(errors.New("status write is down"))
 		},
 	}
-	c := newSaveRequestClient(t, &fns, withInProgress(newSaveRequest("save-lost")))
+	c := newCommitRequestClient(t, &fns, withInProgress(newCommitRequest("save-lost")))
 	f := &fakeFinalizer{
 		result:   git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "abc", Branch: "main"},
 		resolved: true,
 	}
-	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileSaveRequest(t, r, "save-lost")
-	reconcileSaveRequest(t, r, "save-lost")
+	reconcileCommitRequest(t, r, "save-lost")
+	reconcileCommitRequest(t, r, "save-lost")
 
 	value, ok := outcomeCount(t, reader, crOutcomeCommitted)
 	require.True(t, ok)
@@ -289,24 +289,24 @@ func TestSaveRequestMetric_FailedStatusWriteThenRedeliveryCountsTwice(t *testing
 // refusePrunedGitTargetRef reaches a terminal state without passing through writeTerminalStatus.
 // It is rare and migration-only, which is exactly the kind of terminal state that must not be
 // missing from the counter.
-func TestSaveRequestMetric_PrunedGitTargetRefCountsFailed(t *testing.T) {
+func TestCommitRequestMetric_PrunedGitTargetRefCountsFailed(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	pruned := &configv1alpha3.SaveRequest{
+	pruned := &configv1alpha3.CommitRequest{
 		ObjectMeta: metav1.ObjectMeta{Name: "save-pruned", Namespace: "default", UID: types.UID("uid-save-pruned")},
-		Spec: configv1alpha3.SaveRequestSpec{
+		Spec: configv1alpha3.CommitRequestSpec{
 			GitTargetRef: meta.NamespacedObjectReference{Name: ""},
 			Message:      "save: pruned",
 		},
 	}
-	c := newSaveRequestClient(t, nil, pruned)
+	c := newCommitRequestClient(t, nil, pruned)
 	f := &fakeFinalizer{}
-	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileSaveRequest(t, r, "save-pruned")
+	reconcileCommitRequest(t, r, "save-pruned")
 
-	got := fetchSaveRequest(t, c, "save-pruned")
+	got := fetchCommitRequest(t, c, "save-pruned")
 	requireCondition(t, got, ConditionTypeReady, metav1.ConditionFalse, crReasonGitTargetRefPruned)
 
 	value, ok := outcomeCountForTarget(t, reader, crOutcomeFailed, "", "")
@@ -315,41 +315,41 @@ func TestSaveRequestMetric_PrunedGitTargetRefCountsFailed(t *testing.T) {
 	require.Empty(t, f.calls, "a request naming no GitTarget must never reach the finalizer")
 }
 
-// A recreated SaveRequest is a new incarnation of the same save, and each one is its own
+// A recreated CommitRequest is a new incarnation of the same save, and each one is its own
 // decision. Counting per incarnation is what makes a rate over the counter meaningful.
-func TestSaveRequestMetric_RecreatedRequestCountsPerIncarnation(t *testing.T) {
+func TestCommitRequestMetric_RecreatedRequestCountsPerIncarnation(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
-	c := newSaveRequestClient(t, nil, newSaveRequest("save-again"))
+	c := newCommitRequestClient(t, nil, newCommitRequest("save-again"))
 	f := &fakeFinalizer{
 		result:   git.FinalizeResult{Outcome: git.FinalizeWindowMismatch, Branch: "main"},
 		resolved: true,
 	}
-	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: f, AuthorLookup: attributedAlice()}
 
-	reconcileSaveRequest(t, r, "save-again")
+	reconcileCommitRequest(t, r, "save-again")
 
 	// Delete and recreate under a fresh UID, as a second save from the same editor would.
-	first := fetchSaveRequest(t, c, "save-again")
+	first := fetchCommitRequest(t, c, "save-again")
 	require.NoError(t, c.Delete(context.Background(), &first))
-	recreated := newSaveRequest("save-again")
+	recreated := newCommitRequest("save-again")
 	recreated.UID = types.UID("uid-save-again-2")
 	require.NoError(t, c.Create(context.Background(), recreated))
 
-	reconcileSaveRequest(t, r, "save-again")
+	reconcileCommitRequest(t, r, "save-again")
 
 	value, ok := outcomeCount(t, reader, crOutcomeWindowMismatch)
 	require.True(t, ok)
 	assert.Equal(t, int64(2), value)
 }
 
-// TestSaveRequestMetric_AMissingWorkerKeepsTheTargetLabels runs the real EventRouter against a
+// TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels runs the real EventRouter against a
 // GitTarget that exists but whose branch worker never starts. The request waits in
 // WaitingForWorker, then fails closed at the safety bound, and that failure must be counted under
 // its GitTarget: the target DID resolve, so the empty fallback pair would hide a real tenant's
 // failed save from every per-target dashboard and alert.
-func TestSaveRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
+func TestCommitRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 
@@ -360,28 +360,28 @@ func TestSaveRequestMetric_AMissingWorkerKeepsTheTargetLabels(t *testing.T) {
 			GitBranchRef:    meta.NamespacedObjectReference{Name: gitBranchNameForTest("team-a-provider", "main")},
 		},
 	}
-	fresh := newSaveRequest("save-fresh")
+	fresh := newCommitRequest("save-fresh")
 	fresh.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target.Name}
 	fresh.CreationTimestamp = metav1.Now()
-	stale := newSaveRequest("save-stale")
+	stale := newCommitRequest("save-stale")
 	stale.Spec.GitTargetRef = meta.NamespacedObjectReference{Name: target.Name}
 	// Older than the resolve timeout, so the poll gives up on this pass rather than requeueing.
 	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * resolveRequestWindow(stale.Spec).resolveTimeout()))
-	c := newSaveRequestClient(t, nil, fresh, stale, target, gitBranchOn("team-a-provider", "default", "main"))
+	c := newCommitRequestClient(t, nil, fresh, stale, target, gitBranchOn("team-a-provider", "default", "main"))
 	workers := git.NewWorkerManager(c, logr.Discard(), git.BranchWorkerLimits{}, itypes.SensitiveResourcePolicy{})
 	router := watch.NewEventRouter(workers, nil, c, logr.Discard())
-	r := &SaveRequestReconciler{Client: c, APIReader: c, Finalizer: router, AuthorLookup: attributedAlice()}
+	r := &CommitRequestReconciler{Client: c, APIReader: c, Finalizer: router, AuthorLookup: attributedAlice()}
 
 	// Inside the safety window: pending, and the status says why.
-	res := reconcileSaveRequest(t, r, fresh.Name)
+	res := reconcileCommitRequest(t, r, fresh.Name)
 	assert.Positive(t, res.RequeueAfter, "a missing worker is polled, not resolved")
 	reconciling := apimeta.FindStatusCondition(
-		fetchSaveRequest(t, c, fresh.Name).Status.Conditions, ConditionTypeReconciling)
+		fetchCommitRequest(t, c, fresh.Name).Status.Conditions, ConditionTypeReconciling)
 	require.NotNil(t, reconciling)
 	assert.Equal(t, string(git.PhaseWaitingForWorker), reconciling.Reason)
 
 	// Past it: failed, under the GitTarget that resolved.
-	reconcileSaveRequest(t, r, stale.Name)
+	reconcileCommitRequest(t, r, stale.Name)
 
 	value, ok := outcomeCountForTarget(t, reader, crOutcomeFailed, "default", target.Name)
 	require.True(t, ok, "the failure is counted under the GitTarget it resolved to")

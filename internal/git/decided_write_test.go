@@ -76,7 +76,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 
 	_, resolved := outcome(t, f.worker)
 	require.False(t, resolved, "the save is held, not failed: its write can still land")
-	assert.Equal(t, PhaseWaitingForPush, f.worker.LookupSaveRequestPhase("default", crName, "uid-"+crName))
+	assert.Equal(t, PhaseWaitingForPush, f.worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 	require.Len(t, loop.pendingWrites, 2, "the window is decided and kept pending")
 	assert.False(t, loop.pendingWrites[1].committedOnce)
 	require.True(t, loop.retry.pending(), "the failure armed the publication retry")
@@ -328,7 +328,7 @@ func TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast(t 
 	assert.Equal(t, string(second), fileAt(t, replayed[1], gitPath), "the second applies it again")
 	assert.Equal(t, "set value to 2", replayed[1].Message)
 
-	outcome, ok := f.worker.LookupSaveRequestOutcome(save.Namespace, save.Name, save.UID)
+	outcome, ok := f.worker.LookupCommitRequestOutcome(save.Namespace, save.Name, save.UID)
 	require.True(t, ok)
 	assert.Equal(t, FinalizeCommitted, outcome.Outcome, "the save resolves on its own write's commit")
 	assert.Equal(t, replayed[1].Hash.String(), outcome.Commit)

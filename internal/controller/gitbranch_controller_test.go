@@ -266,7 +266,7 @@ func TestGitBranch_AMissingOrUnreadyGitProvider(t *testing.T) {
 }
 
 // TestGitBranch_DeletionStopsTheWorkerAndReleasesTheBranch: the finalizer stops the branch worker
-// (which publishes or refuses its pending writes and settles its SaveRequests), releases the
+// (which publishes or refuses its pending writes and settles its CommitRequests), releases the
 // claim, and goes. The next candidate then takes the branch.
 func TestGitBranch_DeletionStopsTheWorkerAndReleasesTheBranch(t *testing.T) {
 	f := newGitBranchFixture(t,

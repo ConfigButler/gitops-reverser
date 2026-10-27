@@ -72,7 +72,7 @@ The repository has useful foundations, but it is not HA today.
   content under the write/prune policy, but cannot recover lost intermediate events or accepted
   save decisions. Persisted cursors alone do not establish lossless failover.
 - BranchWorker keeps open commit windows, local commits, unpushed writes, and
-  SaveRequest outcomes in memory. Its local clone is disposable.
+  CommitRequest outcomes in memory. Its local clone is disposable.
 - The pending-writes plan provides ordered pending writes, one materializer, one retry schedule,
   isolated replay refusals, and an intake budget: during a retry, admission closes on everything
   accepted and not yet published, queued payloads and empty records included, and producers offer
@@ -223,7 +223,7 @@ accepted the push requires publication recovery before repeating an operation or
 
 Status projection progresses independently after completion. Retain checkpoints, payload
 references, pending effects, and receipts needed by every unfinished step. Acknowledging delivery
-or deleting a `SaveRequest` must not remove the only deduplication evidence while commands can
+or deleting a `CommitRequest` must not remove the only deduplication evidence while commands can
 still be redelivered. Receipt collection needs a stated projection and redelivery boundary.
 
 The local clone remains disposable. Recovery reconstructs the recorded workflow, uses the
@@ -418,7 +418,7 @@ durations rather than relying on undocumented defaults.
 - On startup, claim pending records, rebuild workers from remote Git, then
   establish watches from their durable cursors or fresh replay.
 - Enforce journal ownership epochs and reject stale writers at the durable transition boundary.
-- Project recorded `SaveRequest` outcomes into Kubernetes status by UID. Recover the terminal
+- Project recorded `CommitRequest` outcomes into Kubernetes status by UID. Recover the terminal
   receipt and any pending projection after failover, without deciding the save outcome again.
 
 Exit criterion: failover and supported rolling upgrades preserve the single-active contract,

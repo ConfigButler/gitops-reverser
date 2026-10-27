@@ -42,9 +42,9 @@ func TestGrantDefaultsMatchCRDs(t *testing.T) {
 		assertCRDDefault(t, "configbutler.ai_kubeproviders.yaml", "allowedApplierClaims",
 			DefaultKubeProviderApplierClaimGrants())
 	})
-	t.Run("GitTarget allowedSaveRequests", func(t *testing.T) {
-		assertCRDDefault(t, "configbutler.ai_gittargets.yaml", "allowedSaveRequests",
-			DefaultGitTargetSaveRequestGrants())
+	t.Run("GitTarget allowedCommitRequests", func(t *testing.T) {
+		assertCRDDefault(t, "configbutler.ai_gittargets.yaml", "allowedCommitRequests",
+			DefaultGitTargetCommitRequestGrants())
 	})
 }
 
@@ -77,11 +77,11 @@ func TestGrantLists_EmptySurvivesSerialization(t *testing.T) {
 		}
 	}
 
-	raw, err := json.Marshal(GitTargetSpec{AllowedSaveRequests: []GitTargetSaveRequestGrant{}})
+	raw, err := json.Marshal(GitTargetSpec{AllowedCommitRequests: []GitTargetCommitRequestGrant{}})
 	require.NoError(t, err)
 	var targetFields map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(raw, &targetFields))
-	assert.JSONEq(t, "[]", string(targetFields["allowedSaveRequests"]), "GitTarget spec.allowedSaveRequests")
+	assert.JSONEq(t, "[]", string(targetFields["allowedCommitRequests"]), "GitTarget spec.allowedCommitRequests")
 
 	var decoded GitBranchSpec
 	require.NoError(t, json.Unmarshal([]byte(`{"allowedGitTargets":[]}`), &decoded))

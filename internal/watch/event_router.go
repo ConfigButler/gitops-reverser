@@ -73,8 +73,8 @@ func NewEventRouter(
 	}
 }
 
-// ServiceSaveRequest is the controller's attach-then-poll seam (§6.4.3): it
-// resolves the worker that holds the request, or else the GitTarget's branch worker, registers the SaveRequest attach
+// ServiceCommitRequest is the controller's attach-then-poll seam (§6.4.3): it
+// resolves the worker that holds the request, or else the GitTarget's branch worker, registers the CommitRequest attach
 // idempotently on that worker's FIFO event queue (attach it to the author's window
 // with its message and timers), and returns the request's current
 // outcome. resolved=false means the worker has not finished — the controller
@@ -88,16 +88,16 @@ func NewEventRouter(
 // It is reported as pending and NOT as an error, because the GitTarget did resolve: the controller
 // reads a service error as "the target never resolved" and would count the request's eventual
 // failure without its GitTarget labels. A GitTarget that cannot be read is that error.
-func (r *EventRouter) ServiceSaveRequest(
+func (r *EventRouter) ServiceCommitRequest(
 	ctx context.Context,
-	attach git.AttachSaveRequest,
+	attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
-	worker, branch, err := r.saveRequestWorker(ctx, attach)
+	worker, branch, err := r.commitRequestWorker(ctx, attach)
 	if err != nil {
 		return git.FinalizeResult{}, false, err
 	}
 	if worker == nil {
-		r.Log.V(1).Info("ServiceSaveRequest: no branch worker for the GitTarget yet; will retry",
+		r.Log.V(1).Info("ServiceCommitRequest: no branch worker for the GitTarget yet; will retry",
 			"gitTarget", attach.GitTargetNamespace+"/"+attach.GitTargetName)
 		return git.FinalizeResult{Branch: branch, Phase: git.PhaseWaitingForWorker}, false, nil
 	}
@@ -105,17 +105,17 @@ func (r *EventRouter) ServiceSaveRequest(
 	// Idempotent register (the worker keys by request identity and keeps the first
 	// finalize deadline), then poll the outcome.
 	worker.EnqueueAttach(&attach)
-	result, resolved := worker.LookupSaveRequestOutcome(attach.Namespace, attach.Name, attach.UID)
+	result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID)
 	if !resolved {
 		// Report where the worker says the request stands, so the controller never has to infer
 		// a phase from having sent the attach.
-		result.Phase = worker.LookupSaveRequestPhase(attach.Namespace, attach.Name, attach.UID)
+		result.Phase = worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
 		result.Held = heldBecause(worker, result.Phase)
 	}
 	return result, resolved, nil
 }
 
-// WithdrawSaveRequest is the controller's fail-closed seam: it cancels a request the worker has
+// WithdrawCommitRequest is the controller's fail-closed seam: it cancels a request the worker has
 // not acted on, and reports the worker's answer, so the controller never fails a request the worker
 // could still commit.
 //
@@ -126,14 +126,14 @@ func (r *EventRouter) ServiceSaveRequest(
 //   - Nothing holds it, and the GitTarget is gone or names no worker: nothing can commit the
 //     request, so it resolves at once as withdrawn. The controller sends no attach after it starts
 //     withdrawing, so a worker that starts later never sees it.
-func (r *EventRouter) WithdrawSaveRequest(
+func (r *EventRouter) WithdrawCommitRequest(
 	ctx context.Context,
-	attach git.AttachSaveRequest,
+	attach git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
-	worker, branch, err := r.saveRequestWorker(ctx, attach)
+	worker, branch, err := r.commitRequestWorker(ctx, attach)
 	if errors.Is(err, errGitTargetGone) {
 		// No worker holds the request, and its GitTarget can never start one.
-		return git.FinalizeResult{Err: git.ErrSaveRequestWithdrawn}, true, nil
+		return git.FinalizeResult{Err: git.ErrCommitRequestWithdrawn}, true, nil
 	}
 	if err != nil {
 		return git.FinalizeResult{}, false, err
@@ -142,32 +142,32 @@ func (r *EventRouter) WithdrawSaveRequest(
 		return git.FinalizeResult{
 			Branch: branch,
 			Phase:  git.PhaseWaitingForWorker,
-			Err:    git.ErrSaveRequestWithdrawn,
+			Err:    git.ErrCommitRequestWithdrawn,
 		}, true, nil
 	}
 
-	if result, resolved := worker.LookupSaveRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
+	if result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
 		return result, true, nil
 	}
-	phase := worker.LookupSaveRequestPhase(attach.Namespace, attach.Name, attach.UID)
+	phase := worker.LookupCommitRequestPhase(attach.Namespace, attach.Name, attach.UID)
 	if phase.Held() {
 		return git.FinalizeResult{Branch: branch, Phase: phase, Held: heldBecause(worker, phase)}, false, nil
 	}
 	worker.EnqueueWithdraw(&attach)
 	// A worker whose loop has exited answers the withdraw at once.
-	if result, resolved := worker.LookupSaveRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
+	if result, resolved := worker.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID); resolved {
 		return result, true, nil
 	}
 	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
 }
 
-// LookupSaveRequestApply reports where the apply a SaveRequest asked for stands, from the
+// LookupCommitRequestApply reports where the apply a CommitRequest asked for stands, from the
 // branch worker of its GitTarget, and false while that worker knows nothing of it or none runs.
-func (r *EventRouter) LookupSaveRequestApply(
+func (r *EventRouter) LookupCommitRequestApply(
 	ctx context.Context,
-	attach git.AttachSaveRequest,
+	attach git.AttachCommitRequest,
 ) (git.SaveApply, bool, error) {
-	worker, _, err := r.saveRequestWorker(ctx, attach)
+	worker, _, err := r.commitRequestWorker(ctx, attach)
 	if errors.Is(err, errGitTargetGone) {
 		return git.SaveApply{Done: true, Applied: true, Reason: git.SaveApplyApplierGone,
 			Message: "the GitTarget is gone, so its applier is asked for nothing"}, true, nil
@@ -181,14 +181,14 @@ func (r *EventRouter) LookupSaveRequestApply(
 
 // heldBecause is why a request waiting for its push has not reached the remote: the worker's
 // publication report while it cannot publish, empty otherwise.
-func heldBecause(worker *git.BranchWorker, phase git.SaveRequestPhase) string {
+func heldBecause(worker *git.BranchWorker, phase git.CommitRequestPhase) string {
 	if phase != git.PhaseWaitingForPush {
 		return ""
 	}
 	return worker.Publication().Message()
 }
 
-// saveRequestWorker finds the worker to ask about a SaveRequest, and the branch it serves.
+// commitRequestWorker finds the worker to ask about a CommitRequest, and the branch it serves.
 //
 // The worker that holds the request comes first, whatever its GitTarget says now: a shared worker
 // outlives a deleted target, and a retired one finishes its last push after the manager stopped
@@ -196,11 +196,11 @@ func heldBecause(worker *git.BranchWorker, phase git.SaveRequestPhase) string {
 // nil while that worker has not started. A GitTarget that is gone is errGitTargetGone, and so is one
 // that replaced the GitTarget that admitted the request (attach.GitTargetUID): the replacement admitted
 // nothing.
-func (r *EventRouter) saveRequestWorker(
+func (r *EventRouter) commitRequestWorker(
 	ctx context.Context,
-	attach git.AttachSaveRequest,
+	attach git.AttachCommitRequest,
 ) (*git.BranchWorker, string, error) {
-	if owner, ok := r.WorkerManager.SaveRequestOwner(attach.Namespace, attach.Name, attach.UID); ok {
+	if owner, ok := r.WorkerManager.CommitRequestOwner(attach.Namespace, attach.Name, attach.UID); ok {
 		return owner, owner.Branch, nil
 	}
 

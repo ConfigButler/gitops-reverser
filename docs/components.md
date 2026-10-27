@@ -23,7 +23,7 @@ the target watches supply *state*, the branch worker owns *Git*, and audit only 
 ```mermaid
 flowchart TB
     subgraph CFG["Config plane (operator's own cluster)"]
-        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · GitBranch · KubeProvider · SaveRequest<br/>FluxClaim · ArgoCDClaim"]
+        CRD["api/v1alpha3<br/>GitTarget · WatchRule · ClusterWatchRule<br/>GitProvider · GitBranch · KubeProvider · CommitRequest<br/>FluxClaim · ArgoCDClaim"]
         CTRL["internal/controller<br/>reconcilers"]
         ADM["internal/webhook<br/>admission handlers"]
         AUTHZ["internal/authz<br/>namespace admission"]
@@ -78,7 +78,7 @@ The operator's own API surface and the reconcilers behind it.
 |---|---|---|
 | CRD types | [`api/v1alpha3/`](../api/v1alpha3/) | the ten kinds users apply |
 | Reconcilers | [`internal/controller/`](../internal/controller/) | one per kind, plus shared condition and status helpers |
-| Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `SaveRequest` submitter |
+| Admission handlers | [`internal/webhook/`](../internal/webhook/) | the always-allow observer and `validate-operator-types`, which captures a `CommitRequest` submitter |
 | Access grants | [`internal/authz/`](../internal/authz/) | one admission decision per act, read from the grant lists on the referenced object (`allowedGitBranches`, `allowedGitTargets`, `allowedApplierClaims`) with the scope that applies, in their own package because several call sites need the same answer |
 | Rule store | [`internal/rulestore/`](../internal/rulestore/) | compiled `WatchRule` and `ClusterWatchRule` cache the data plane reads |
 
@@ -137,7 +137,7 @@ Optional, and deliberately unable to affect *what* is written. It only names the
 | Fact transport | [`internal/queue/fact_stream.go`](../internal/queue/fact_stream.go) | Redis Streams by default, an in-process ring with `--author-attribution-transport=memory` (which frees attribution from Redis, but not the watch resume cursors) |
 | Fact index and follower | [`internal/queue/fact_index.go`](../internal/queue/fact_index.go) | a bounded, TTL'd in-process index, followed per type while at least one watch needs it |
 | Author resolver | [`internal/watch/author_resolver.go`](../internal/watch/author_resolver.go) | joins a watch event to a fact within a bounded grace window |
-| Command author store | [`internal/queue/command_author_store.go`](../internal/queue/command_author_store.go) | the `SaveRequest` submitter captured at admission |
+| Command author store | [`internal/queue/command_author_store.go`](../internal/queue/command_author_store.go) | the `CommitRequest` submitter captured at admission |
 
 ### Support and tooling
 

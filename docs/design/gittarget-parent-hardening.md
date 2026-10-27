@@ -87,7 +87,7 @@ older API-wave plan as part of any of these changes.
 Recovery can hold work for minutes, so a request must not be failed on a controller clock while the
 worker still holds it. That is already fixed on this branch: the controller waits for any request
 the worker holds (`CollectingWindow`, `WaitingForPush`), and fails an unheld one only after
-withdrawing it from the worker (`docs/spec/saverequest-design.md`). The §4.4 tests must still
+withdrawing it from the worker (`docs/spec/commitrequest-design.md`). The §4.4 tests must still
 include a request retained through a recovery longer than `attachTimeout + maxDuration + 120s`,
 resolving `Committed`.
 

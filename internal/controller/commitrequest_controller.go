@@ -24,9 +24,9 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/queue"
 )
 
-// SaveRequestFinalizer is the EventRouter seam the reconciler drives, using the
-// attach-then-poll protocol (docs/spec/saverequest-design.md):
-// ServiceSaveRequest registers the attach idempotently on the GitTarget's branch
+// CommitRequestFinalizer is the EventRouter seam the reconciler drives, using the
+// attach-then-poll protocol (docs/spec/commitrequest-design.md):
+// ServiceCommitRequest registers the attach idempotently on the GitTarget's branch
 // worker (attach it to the author's window with its message and timers)
 // and returns the request's current outcome — resolved=false means keep polling.
 // watch.EventRouter satisfies it without adaptation.
@@ -34,21 +34,21 @@ import (
 // There is no watermark barrier: the interactive case is covered by the human gap between the
 // edit and the save, UC2 by the request's attach wait. The worker anchors that wait at its own
 // registration and runs the window's timers, so the controller never holds the finalize itself.
-type SaveRequestFinalizer interface {
-	ServiceSaveRequest(ctx context.Context, attach git.AttachSaveRequest) (git.FinalizeResult, bool, error)
-	// WithdrawSaveRequest cancels a request the worker has not acted on and reports the worker's
-	// answer: resolved with git.ErrSaveRequestWithdrawn when it is cancelled, the real outcome
+type CommitRequestFinalizer interface {
+	ServiceCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
+	// WithdrawCommitRequest cancels a request the worker has not acted on and reports the worker's
+	// answer: resolved with git.ErrCommitRequestWithdrawn when it is cancelled, the real outcome
 	// when the worker got there first, or resolved=false with the worker's phase while it decides.
-	WithdrawSaveRequest(ctx context.Context, attach git.AttachSaveRequest) (git.FinalizeResult, bool, error)
-	// LookupSaveRequestApply reports where the apply a request with catchUp:
+	WithdrawCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
+	// LookupCommitRequestApply reports where the apply a request with catchUp:
 	// AfterPush asked for stands, and false while the worker knows nothing of it.
-	LookupSaveRequestApply(ctx context.Context, attach git.AttachSaveRequest) (git.SaveApply, bool, error)
+	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
 }
 
-// CommandAuthorLookup resolves the author of a SaveRequest from the submitter
+// CommandAuthorLookup resolves the author of a CommitRequest from the submitter
 // captured at admission by the validate-operator-types webhook, keyed by the persisted
 // object's UID. *queue.CommandAuthorStore satisfies it without adaptation. The lookup
-// is present-or-never (docs/spec/saverequest-admission-authorship.md): a miss is
+// is present-or-never (docs/spec/commitrequest-admission-authorship.md): a miss is
 // immediate and final — the webhook is not configured (or a best-effort write missed) —
 // and the request claims no actor with no wait.
 type CommandAuthorLookup interface {
@@ -65,30 +65,30 @@ const windowMismatchMessage = "the open commit window belongs to a different aut
 
 // resolveTimeoutMessage explains the fail-closed resolve bound: the worker never acted on the
 // request within the safety window, so it was withdrawn rather than polled forever.
-const resolveTimeoutMessage = "the SaveRequest finalize did not resolve within the safety window"
+const resolveTimeoutMessage = "the CommitRequest finalize did not resolve within the safety window"
 
 // noWorkerTimeoutMessage is resolveTimeoutMessage for a GitTarget that never started a branch
 // worker, the one cause the controller can name without asking anybody.
-const noWorkerTimeoutMessage = "the SaveRequest's GitTarget did not start a branch worker within the safety window"
+const noWorkerTimeoutMessage = "the CommitRequest's GitTarget did not start a branch worker within the safety window"
 
 const (
-	// saveRequestPollInterval is the requeue cadence while polling the worker
+	// commitRequestPollInterval is the requeue cadence while polling the worker
 	// for the attached request's outcome (attach-then-poll).
-	saveRequestPollInterval = 2 * time.Second
+	commitRequestPollInterval = 2 * time.Second
 
-	// saveRequestPushAllowance is what the safety bound allows on top of a request's own
+	// commitRequestPushAllowance is what the safety bound allows on top of a request's own
 	// timers, for the push cooldown and its retries. Authorship is settled synchronously at first
 	// sight, so no attribution wait belongs here.
-	saveRequestPushAllowance = 120 * time.Second
+	commitRequestPushAllowance = 120 * time.Second
 
-	// The request window defaults mirror the +kubebuilder:default markers on SaveRequestWindow.
+	// The request window defaults mirror the +kubebuilder:default markers on CommitRequestWindow.
 	// The API server fills them in, so these apply only to a client that bypasses defaulting;
 	// resolving to the same values keeps the two paths from disagreeing.
 	defaultAttachTimeout = 2 * time.Second
 	defaultMaxDuration   = 2 * time.Second
 )
 
-// requestWindow is a SaveRequest's window, resolved to the values the worker applies.
+// requestWindow is a CommitRequest's window, resolved to the values the worker applies.
 type requestWindow struct {
 	attach        configbutleraiv1alpha3.AttachPolicy
 	attachTimeout time.Duration
@@ -98,7 +98,7 @@ type requestWindow struct {
 
 // resolveRequestWindow reads spec.window, falling back field by field to the schema defaults. An
 // explicit "0s" stays zero, and an omitted idleTimeout stays nil (no idle close).
-func resolveRequestWindow(spec configbutleraiv1alpha3.SaveRequestSpec) requestWindow {
+func resolveRequestWindow(spec configbutleraiv1alpha3.CommitRequestSpec) requestWindow {
 	resolved := requestWindow{
 		attach:        configbutleraiv1alpha3.AttachCurrentOrNext,
 		attachTimeout: defaultAttachTimeout,
@@ -130,10 +130,10 @@ func resolveRequestWindow(spec configbutleraiv1alpha3.SaveRequestSpec) requestWi
 // only the worker can say how that ends, however long a down remote or a recovery takes. Past the
 // bound, an unheld request is withdrawn, and fails only once the worker agrees.
 func (w requestWindow) resolveTimeout() time.Duration {
-	return w.attachTimeout + w.maxDuration + saveRequestPushAllowance
+	return w.attachTimeout + w.maxDuration + commitRequestPushAllowance
 }
 
-// SaveRequestReconciler deliberately does NOT use reconcileStatus, which every other controller
+// CommitRequestReconciler deliberately does NOT use reconcileStatus, which every other controller
 // here shares. The difference is not stylistic, so it is worth saying once:
 //
 //   - Its For() carries no GenerationChangedPredicate, so a status write re-enqueues the object.
@@ -150,9 +150,9 @@ func (w requestWindow) resolveTimeout() time.Duration {
 //     one, but a re-run is no longer the only thing standing between a flushed window and a
 //     NoOpenWindow that never happened.)
 //
-// SaveRequestReconciler drives a SaveRequest through its state machine
-// (docs/spec/saverequest-design.md and
-// docs/spec/saverequest-admission-authorship.md):
+// CommitRequestReconciler drives a CommitRequest through its state machine
+// (docs/spec/commitrequest-design.md and
+// docs/spec/commitrequest-admission-authorship.md):
 //
 //  1. ATTRIBUTE — a single synchronous read of the submitter captured at admission
 //     (present-or-never). A hit names that submitter as the author
@@ -166,7 +166,7 @@ func (w requestWindow) resolveTimeout() time.Duration {
 //     registration, so there is no controller-side delay. While it polls, the controller
 //     reports the phase the worker reports. No window before the attach deadline resolves
 //     NoWindow; a window belonging to someone else stays open for its own author.
-type SaveRequestReconciler struct {
+type CommitRequestReconciler struct {
 	client.Client
 
 	Scheme *runtime.Scheme
@@ -181,219 +181,219 @@ type SaveRequestReconciler struct {
 	// AuthorLookup is nil (the validate-operator-types webhook is disabled), requests
 	// claim no actor immediately, with AuthorAttributed=False. The attached window
 	// determines the eventual Git author.
-	Finalizer    SaveRequestFinalizer
+	Finalizer    CommitRequestFinalizer
 	AuthorLookup CommandAuthorLookup
 
 	// TTL is how long a request is kept once it finishes. It is written onto the request as
-	// SaveRequestDeleteAfterAnnotation at that moment; zero writes nothing, so the request stays.
+	// CommitRequestDeleteAfterAnnotation at that moment; zero writes nothing, so the request stays.
 	TTL time.Duration
 }
 
-// SaveRequestDeleteAfterAnnotation carries the RFC 3339 time after which the controller deletes a
-// finished SaveRequest. The controller writes it once, when the request finishes, and from then
+// CommitRequestDeleteAfterAnnotation carries the RFC 3339 time after which the controller deletes a
+// finished CommitRequest. The controller writes it once, when the request finishes, and from then
 // on the annotation alone decides: remove it to keep the request, or edit it to move the deletion.
 // A request that finished before this annotation existed carries none and is never deleted.
-const SaveRequestDeleteAfterAnnotation = "configbutler.ai/delete-after"
+const CommitRequestDeleteAfterAnnotation = "configbutler.ai/delete-after"
 
-// +kubebuilder:rbac:groups=configbutler.ai,resources=saverequests,verbs=get;list;watch;patch;delete
-// +kubebuilder:rbac:groups=configbutler.ai,resources=saverequests/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests,verbs=get;list;watch;patch;delete
+// +kubebuilder:rbac:groups=configbutler.ai,resources=commitrequests/status,verbs=get;update;patch
 
-// Reconcile advances one SaveRequest through attribute → attach + poll →
-// terminal status. With MaxConcurrentReconciles=1 concurrent SaveRequests are
+// Reconcile advances one CommitRequest through attribute → attach + poll →
+// terminal status. With MaxConcurrentReconciles=1 concurrent CommitRequests are
 // serialized by construction, and the worker keys attaches by request identity so
 // re-sends across poll requeues are idempotent.
-func (r *SaveRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx).WithName("SaveRequestReconciler")
+func (r *CommitRequestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 
-	saveRequest, done, err := r.loadActionableSaveRequest(ctx, req)
+	commitRequest, done, err := r.loadActionableCommitRequest(ctx, req)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if done {
-		if saveRequest != nil {
-			if followsApply(saveRequest) {
-				return r.followApply(ctx, saveRequest)
+		if commitRequest != nil {
+			if followsApply(commitRequest) {
+				return r.followApply(ctx, commitRequest)
 			}
-			return r.expireFinished(ctx, saveRequest)
+			return r.expireFinished(ctx, commitRequest)
 		}
 		return ctrl.Result{}, nil
 	}
 
 	if r.Finalizer == nil {
-		log.V(1).Info("SaveRequest finalize disabled: no Finalizer configured",
+		log.V(1).Info("CommitRequest finalize disabled: no Finalizer configured",
 			"name", req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
 
-	if handled, err := r.refusePrunedGitTargetRef(ctx, saveRequest); handled || err != nil {
+	if handled, err := r.refusePrunedGitTargetRef(ctx, commitRequest); handled || err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 1. ATTRIBUTE: settle the request's actor synchronously (present-or-never).
 	// A hit names the admission submitter; a miss claims no actor. Either way the
 	// decision is final — there is no wait and no requeue for the author.
-	author, attribution := r.attributeAuthor(ctx, saveRequest)
+	author, attribution := r.attributeAuthor(ctx, commitRequest)
 
-	claim, admitted, refusal, err := r.admitAtFirstSight(ctx, log, saveRequest, attribution)
-	if err != nil || admitted == saveRequestRefused {
+	claim, admitted, refusal, err := r.admitAtFirstSight(ctx, log, commitRequest, attribution)
+	if err != nil || admitted == commitRequestRefused {
 		return ctrl.Result{}, err
 	}
 
-	if err := r.stampFirstSightConditions(ctx, saveRequest, attribution); err != nil {
+	if err := r.stampFirstSightConditions(ctx, commitRequest, attribution); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// The schema rejects an invalid literal message at admission, so a rejection here names an
 	// object the schema could not have seen: one stored before the rule landed. It is terminal
-	// rather than retried, because SaveRequest.spec is immutable and no apply can repair it.
-	if err := git.ValidateLiteralCommitMessage(saveRequest.Spec.Message); err != nil {
-		// The fallback identity: this fails before ServiceSaveRequest, so nothing has
+	// rather than retried, because CommitRequest.spec is immutable and no apply can repair it.
+	if err := git.ValidateLiteralCommitMessage(commitRequest.Spec.Message); err != nil {
+		// The fallback identity: this fails before ServiceCommitRequest, so nothing has
 		// confirmed the named GitTarget exists.
-		r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, err, attribution,
-			saveRequestTarget{})
+		r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution,
+			commitRequestTarget{})
 		return ctrl.Result{}, nil
 	}
 
 	// 2. ATTACH + POLL: register the attach idempotently the instant we attribute
 	// (no controller-side delay — the worker anchors the wait at its registration)
 	// and poll the outcome.
-	window := resolveRequestWindow(saveRequest.Spec)
-	attach := git.AttachSaveRequest{
-		Namespace:          saveRequest.Namespace,
-		Name:               saveRequest.Name,
-		UID:                string(saveRequest.UID),
+	window := resolveRequestWindow(commitRequest.Spec)
+	attach := git.AttachCommitRequest{
+		Namespace:          commitRequest.Namespace,
+		Name:               commitRequest.Name,
+		UID:                string(commitRequest.UID),
 		Author:             author.Author,
 		Attribution:        attribution.gitOutcome(),
-		GitTargetName:      saveRequest.GitTargetKey().Name,
-		GitTargetNamespace: saveRequest.GitTargetKey().Namespace,
-		GitTargetUID:       saveRequest.Status.GitTargetUID,
-		Message:            saveRequest.Spec.Message,
+		GitTargetName:      commitRequest.GitTargetKey().Name,
+		GitTargetNamespace: commitRequest.GitTargetKey().Namespace,
+		GitTargetUID:       commitRequest.Status.GitTargetUID,
+		Message:            commitRequest.Spec.Message,
 		Attach:             window.attach,
 		AttachTimeout:      window.attachTimeout,
 		IdleTimeout:        window.idleTimeout,
 		MaxDuration:        window.maxDuration,
-		CommitEmpty:        saveRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
-		CatchUpNow:         saveRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
+		CommitEmpty:        commitRequest.Spec.WhenNothingToCommit == configbutleraiv1alpha3.NothingToCommitCommitEmpty,
+		CatchUpNow:         commitRequest.Spec.CatchUp == configbutleraiv1alpha3.CatchUpAfterPush,
 		Unattributed:       claim,
 	}
-	if admitted == saveRequestReplaced {
-		return r.refuseOnceUnheld(ctx, log, req, saveRequest, attribution, attach, refusal)
+	if admitted == commitRequestReplaced {
+		return r.refuseOnceUnheld(ctx, log, req, commitRequest, attribution, attach, refusal)
 	}
-	return r.sendSaveRequest(ctx, log, req, saveRequest, attribution, attach,
-		time.Since(saveRequest.CreationTimestamp.Time) >= window.resolveTimeout(),
-		admitted == saveRequestTargetMissing)
+	return r.sendCommitRequest(ctx, log, req, commitRequest, attribution, attach,
+		time.Since(commitRequest.CreationTimestamp.Time) >= window.resolveTimeout(),
+		admitted == commitRequestTargetMissing)
 }
 
-// sendSaveRequest sends the attach, or the withdraw once the request is past its bound, or, while
+// sendCommitRequest sends the attach, or the withdraw once the request is past its bound, or, while
 // its GitTarget does not exist and never admitted it, neither: nothing is attached before a GitTarget
 // admitted the request, so one created later is asked first, on a later poll.
-func (r *SaveRequestReconciler) sendSaveRequest(
+func (r *CommitRequestReconciler) sendCommitRequest(
 	ctx context.Context,
 	log logr.Logger,
 	req ctrl.Request,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-	attach git.AttachSaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	attach git.AttachCommitRequest,
 	pastTheBound, targetMissing bool,
 ) (ctrl.Result, error) {
 	switch {
 	case pastTheBound:
 		// Past the bound the controller only withdraws: an attach sent now would sit behind the
 		// withdraw on the worker's FIFO and could register the request after it was cancelled.
-		return r.withdrawSaveRequest(ctx, log, req, saveRequest, attribution, attach)
+		return r.withdrawCommitRequest(ctx, log, req, commitRequest, attribution, attach)
 	case targetMissing:
-		return r.pollSaveRequest(ctx, saveRequest, attribution, git.PhaseWaitingForWorker, "")
+		return r.pollCommitRequest(ctx, commitRequest, attribution, git.PhaseWaitingForWorker, "")
 	}
-	return r.attachSaveRequest(ctx, log, req, saveRequest, attribution, attach)
+	return r.attachCommitRequest(ctx, log, req, commitRequest, attribution, attach)
 }
 
-// saveRequestAdmission is how admitAtFirstSight left a request.
-type saveRequestAdmission int
+// commitRequestAdmission is how admitAtFirstSight left a request.
+type commitRequestAdmission int
 
 const (
-	// saveRequestAdmitted is a request its GitTarget admitted, now or before.
-	saveRequestAdmitted saveRequestAdmission = iota
-	// saveRequestTargetMissing is a request whose GitTarget does not exist and never admitted it.
-	saveRequestTargetMissing
-	// saveRequestRefused is a request now failed.
-	saveRequestRefused
-	// saveRequestReplaced is a request a GitTarget refuses that replaced the one that admitted it. An
+	// commitRequestAdmitted is a request its GitTarget admitted, now or before.
+	commitRequestAdmitted commitRequestAdmission = iota
+	// commitRequestTargetMissing is a request whose GitTarget does not exist and never admitted it.
+	commitRequestTargetMissing
+	// commitRequestRefused is a request now failed.
+	commitRequestRefused
+	// commitRequestReplaced is a request a GitTarget refuses that replaced the one that admitted it. An
 	// attach may have been sent before, so it is refused only once no worker holds it.
-	saveRequestReplaced
+	commitRequestReplaced
 )
 
-// admitAtFirstSight runs admitSaveRequest, records the GitTarget that admitted the request, and fails
+// admitAtFirstSight runs admitCommitRequest, records the GitTarget that admitted the request, and fails
 // a request it refuses. A refusal is final unless that same GitTarget, by UID, admitted the request
 // before: then its grants were lowered after an attach may have been sent, and the worker, which may
 // hold the request, keeps what it was first sent. A GitTarget that did not exist when the request was
 // first seen admitted nothing, so its refusal stands. One that was recreated since admitted nothing
-// either, but the GitTarget it replaced did: its refusal is saveRequestReplaced, returned with the
+// either, but the GitTarget it replaced did: its refusal is commitRequestReplaced, returned with the
 // refusal, and waits for the worker that may hold the request. err is a read or write to retry.
-func (r *SaveRequestReconciler) admitAtFirstSight(
+func (r *CommitRequestReconciler) admitAtFirstSight(
 	ctx context.Context,
 	log logr.Logger,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-) (git.UnattributedClaim, saveRequestAdmission, error, error) {
-	claim, targetUID, err := r.admitSaveRequest(ctx, saveRequest)
-	recorded := saveRequest.Status.GitTargetUID
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+) (git.UnattributedClaim, commitRequestAdmission, error, error) {
+	claim, targetUID, err := r.admitCommitRequest(ctx, commitRequest)
+	recorded := commitRequest.Status.GitTargetUID
 	switch {
 	case err == nil && targetUID == "":
 		if recorded != "" {
 			// Its GitTarget is gone since it admitted the request: the attach path reports that.
-			return claim, saveRequestAdmitted, nil, nil
+			return claim, commitRequestAdmitted, nil, nil
 		}
-		return claim, saveRequestTargetMissing, nil, r.stampFirstSightConditions(ctx, saveRequest, attribution)
+		return claim, commitRequestTargetMissing, nil, r.stampFirstSightConditions(ctx, commitRequest, attribution)
 	case err == nil:
 		if recorded == targetUID {
-			return claim, saveRequestAdmitted, nil, nil
+			return claim, commitRequestAdmitted, nil, nil
 		}
 		// Recorded before any attach is sent for this GitTarget, so a later refusal can tell the two
 		// apart. At first sight the in-progress stamp that follows writes it.
-		saveRequest.Status.GitTargetUID = targetUID
-		if findCondition(saveRequest.Status.Conditions, ConditionTypeReady) == nil {
-			return claim, saveRequestAdmitted, nil, nil
+		commitRequest.Status.GitTargetUID = targetUID
+		if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) == nil {
+			return claim, commitRequestAdmitted, nil, nil
 		}
-		return claim, saveRequestAdmitted, nil, r.Status().Update(ctx, saveRequest)
-	case !errors.Is(err, errSaveRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed):
-		return claim, saveRequestAdmitted, nil, err
+		return claim, commitRequestAdmitted, nil, r.Status().Update(ctx, commitRequest)
+	case !errors.Is(err, errCommitRequestNotAllowed) && !errors.Is(err, errTakeOverNotAllowed):
+		return claim, commitRequestAdmitted, nil, err
 	case recorded == targetUID:
-		return git.UnattributedClaimNone, saveRequestAdmitted, nil, nil
+		return git.UnattributedClaimNone, commitRequestAdmitted, nil, nil
 	case recorded != "":
-		return git.UnattributedClaimNone, saveRequestReplaced, err, nil
+		return git.UnattributedClaimNone, commitRequestReplaced, err, nil
 	}
-	r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, err, attribution,
-		resolvedSaveRequestTarget(saveRequest))
-	return claim, saveRequestRefused, nil, nil
+	r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, err, attribution,
+		resolvedCommitRequestTarget(commitRequest))
+	return claim, commitRequestRefused, nil, nil
 }
 
 // refuseOnceUnheld fails a request that a replacement of its GitTarget refuses. The GitTarget it
 // replaced admitted the request, so an attach may have been sent, and the worker holding it may have
 // committed it. That worker answers first: its outcome is reported, and a request it holds is waited
 // for. The refusal is written only once the request is withdrawn, or nothing held it.
-func (r *SaveRequestReconciler) refuseOnceUnheld(
+func (r *CommitRequestReconciler) refuseOnceUnheld(
 	ctx context.Context,
 	log logr.Logger,
 	req ctrl.Request,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-	attach git.AttachSaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	attach git.AttachCommitRequest,
 	refusal error,
 ) (ctrl.Result, error) {
-	result, resolved, withdrawErr := r.Finalizer.WithdrawSaveRequest(ctx, attach)
+	result, resolved, withdrawErr := r.Finalizer.WithdrawCommitRequest(ctx, attach)
 	if withdrawErr != nil || !resolved {
 		if withdrawErr != nil {
-			log.V(1).Info("SaveRequest withdraw not yet serviceable; will retry",
+			log.V(1).Info("CommitRequest withdraw not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", withdrawErr.Error())
 		}
-		return r.pollSaveRequest(ctx, saveRequest, attribution, result.Phase, result.Held)
+		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
 	}
 	finalizeErr := result.Err
-	if errors.Is(finalizeErr, git.ErrSaveRequestWithdrawn) {
+	if errors.Is(finalizeErr, git.ErrCommitRequestWithdrawn) {
 		result, finalizeErr = git.FinalizeResult{}, refusal
 	}
-	r.writeTerminalStatus(ctx, log, saveRequest, result, finalizeErr, attribution,
-		resolvedSaveRequestTarget(saveRequest))
+	r.writeTerminalStatus(ctx, log, commitRequest, result, finalizeErr, attribution,
+		resolvedCommitRequestTarget(commitRequest))
 	return ctrl.Result{}, nil
 }
 
@@ -401,15 +401,15 @@ func (r *SaveRequestReconciler) refuseOnceUnheld(
 // than the grants admitting it allow. It is terminal: the spec is immutable.
 var errTakeOverNotAllowed = errors.New("spec.window.author asks for more than the GitTarget allows")
 
-// errSaveRequestNotAllowed is a request whose GitTarget's spec.allowedSaveRequests admits no grant for
+// errCommitRequestNotAllowed is a request whose GitTarget's spec.allowedCommitRequests admits no grant for
 // its namespace. It is terminal: the spec is immutable, so a later grant reaches only a new request.
-var errSaveRequestNotAllowed = errors.New("the GitTarget does not admit SaveRequests from this namespace")
+var errCommitRequestNotAllowed = errors.New("the GitTarget does not admit CommitRequests from this namespace")
 
-// admitSaveRequest decides whether the request may save its GitTarget's windows, and what it may claim
-// of a window whose writes name no author (git.AttachSaveRequest.Unattributed).
+// admitCommitRequest decides whether the request may save its GitTarget's windows, and what it may claim
+// of a window whose writes name no author (git.AttachCommitRequest.Unattributed).
 //
-// A grant in the GitTarget's spec.allowedSaveRequests must admit the request's namespace, or the
-// request is errSaveRequestNotAllowed. It then claims what spec.window.author asks for, and only while
+// A grant in the GitTarget's spec.allowedCommitRequests must admit the request's namespace, or the
+// request is errCommitRequestNotAllowed. It then claims what spec.window.author asks for, and only while
 // the GitTarget's KubeProvider has never received an audit fact: its AuditFactsReceived condition is
 // not True, so no write watched on that cluster can name its author. On a cluster that has sent one, a
 // write naming no author means its fact went missing, and nothing is claimed. A request that asks for
@@ -417,37 +417,37 @@ var errSaveRequestNotAllowed = errors.New("the GitTarget does not admit SaveRequ
 //
 // A GitTarget that does not exist admits nothing yet, and is reported with an empty UID. Any other
 // read error is returned as is, so the request is retried rather than refused.
-func (r *SaveRequestReconciler) admitSaveRequest(
+func (r *CommitRequestReconciler) admitCommitRequest(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 ) (git.UnattributedClaim, string, error) {
 	var target configbutleraiv1alpha3.GitTarget
-	if err := r.Get(ctx, saveRequest.GitTargetKey(), &target); err != nil {
+	if err := r.Get(ctx, commitRequest.GitTargetKey(), &target); err != nil {
 		if apierrors.IsNotFound(err) {
 			return git.UnattributedClaimNone, "", nil
 		}
-		return git.UnattributedClaimNone, "", fmt.Errorf("read GitTarget %s: %w", saveRequest.GitTargetKey(), err)
+		return git.UnattributedClaimNone, "", fmt.Errorf("read GitTarget %s: %w", commitRequest.GitTargetKey(), err)
 	}
 	uid := string(target.UID)
-	claim, err := r.claimOn(ctx, saveRequest, &target)
+	claim, err := r.claimOn(ctx, commitRequest, &target)
 	return claim, uid, err
 }
 
-// claimOn is admitSaveRequest for a GitTarget that exists.
-func (r *SaveRequestReconciler) claimOn(
+// claimOn is admitCommitRequest for a GitTarget that exists.
+func (r *CommitRequestReconciler) claimOn(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	target *configbutleraiv1alpha3.GitTarget,
 ) (git.UnattributedClaim, error) {
-	decision, admission, err := authz.SaveRequestAdmitted(ctx, r.Client, saveRequest, target)
+	decision, admission, err := authz.CommitRequestAdmitted(ctx, r.Client, commitRequest, target)
 	if err != nil {
 		return git.UnattributedClaimNone, err
 	}
 	if !decision.Allowed {
-		return git.UnattributedClaimNone, fmt.Errorf("%w: %s", errSaveRequestNotAllowed, decision.Message)
+		return git.UnattributedClaimNone, fmt.Errorf("%w: %s", errCommitRequestNotAllowed, decision.Message)
 	}
 	ask := configbutleraiv1alpha3.WindowAuthorOwn
-	if window := saveRequest.Spec.Window; window != nil && window.Author != "" {
+	if window := commitRequest.Spec.Window; window != nil && window.Author != "" {
 		ask = window.Author
 	}
 	if ask == configbutleraiv1alpha3.WindowAuthorOwn {
@@ -456,7 +456,7 @@ func (r *SaveRequestReconciler) claimOn(
 	if !admission.UnattributedWindows.Allows(ask) {
 		return git.UnattributedClaimNone, fmt.Errorf("%w: spec.window.author is %q, and the grants of GitTarget %s "+
 			"that admit namespace %q allow unattributedWindows %q", errTakeOverNotAllowed, ask,
-			saveRequest.GitTargetKey(), saveRequest.Namespace, admission.UnattributedWindows)
+			commitRequest.GitTargetKey(), commitRequest.Namespace, admission.UnattributedWindows)
 	}
 	key := target.KubeProviderKey()
 	if key.Name == "" {
@@ -475,70 +475,70 @@ func (r *SaveRequestReconciler) claimOn(
 	return git.UnattributedClaimSavedBy, nil
 }
 
-// attachSaveRequest sends the attach and reports the outcome once the worker has one. Until then
+// attachCommitRequest sends the attach and reports the outcome once the worker has one. Until then
 // it records the worker's phase and polls; a service error is a not-yet-serviceable worker, so it
 // polls on the same terms.
-func (r *SaveRequestReconciler) attachSaveRequest(
+func (r *CommitRequestReconciler) attachCommitRequest(
 	ctx context.Context,
 	log logr.Logger,
 	req ctrl.Request,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-	attach git.AttachSaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	attach git.AttachCommitRequest,
 ) (ctrl.Result, error) {
-	result, resolved, serviceErr := r.Finalizer.ServiceSaveRequest(ctx, attach)
+	result, resolved, serviceErr := r.Finalizer.ServiceCommitRequest(ctx, attach)
 	if serviceErr != nil || !resolved {
 		if serviceErr != nil {
-			log.V(1).Info("SaveRequest attach not yet serviceable; will retry",
+			log.V(1).Info("CommitRequest attach not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", serviceErr.Error())
 		}
-		return r.pollSaveRequest(ctx, saveRequest, attribution, result.Phase, result.Held)
+		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
 	}
 
 	if result.Err != nil {
-		log.Error(result.Err, "SaveRequest finalize failed",
-			"gitTarget", saveRequest.GitTargetKey().String(), "name", req.NamespacedName)
+		log.Error(result.Err, "CommitRequest finalize failed",
+			"gitTarget", commitRequest.GitTargetKey().String(), "name", req.NamespacedName)
 	}
-	r.writeTerminalStatus(ctx, log, saveRequest, result, result.Err, attribution,
-		resolvedSaveRequestTarget(saveRequest))
+	r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution,
+		resolvedCommitRequestTarget(commitRequest))
 	return ctrl.Result{}, nil
 }
 
-// withdrawSaveRequest handles a request past its safety window. A request the worker holds keeps
+// withdrawCommitRequest handles a request past its safety window. A request the worker holds keeps
 // polling with no bound of its own: only the worker can say how it ends. Any other request is
 // withdrawn, and fails only on the worker's answer, so a request reported failed can never be
 // committed afterwards. A withdraw that cannot be serviced yet polls on the same terms.
-func (r *SaveRequestReconciler) withdrawSaveRequest(
+func (r *CommitRequestReconciler) withdrawCommitRequest(
 	ctx context.Context,
 	log logr.Logger,
 	req ctrl.Request,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-	attach git.AttachSaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	attach git.AttachCommitRequest,
 ) (ctrl.Result, error) {
-	result, resolved, withdrawErr := r.Finalizer.WithdrawSaveRequest(ctx, attach)
+	result, resolved, withdrawErr := r.Finalizer.WithdrawCommitRequest(ctx, attach)
 	if withdrawErr != nil || !resolved {
 		if withdrawErr != nil {
-			log.V(1).Info("SaveRequest withdraw not yet serviceable; will retry",
+			log.V(1).Info("CommitRequest withdraw not yet serviceable; will retry",
 				"name", req.NamespacedName, "err", withdrawErr.Error())
 		}
 		// Not answered yet, or the worker holds the request: keep polling.
-		return r.pollSaveRequest(ctx, saveRequest, attribution, result.Phase, result.Held)
+		return r.pollCommitRequest(ctx, commitRequest, attribution, result.Phase, result.Held)
 	}
 
-	if !errors.Is(result.Err, git.ErrSaveRequestWithdrawn) {
+	if !errors.Is(result.Err, git.ErrCommitRequestWithdrawn) {
 		// The worker resolved it on its own before the withdraw: report that outcome, as the
 		// attach path would have.
-		r.writeTerminalStatus(ctx, log, saveRequest, result, result.Err, attribution,
-			resolvedSaveRequestTarget(saveRequest))
+		r.writeTerminalStatus(ctx, log, commitRequest, result, result.Err, attribution,
+			resolvedCommitRequestTarget(commitRequest))
 		return ctrl.Result{}, nil
 	}
 
 	// Withdrawn. A worker's answer, or a GitTarget that was read, carries the branch, and only
 	// then is the request's identity known.
-	target := saveRequestTarget{}
+	target := commitRequestTarget{}
 	if result.Branch != "" {
-		target = resolvedSaveRequestTarget(saveRequest)
+		target = resolvedCommitRequestTarget(commitRequest)
 	}
 
 	message := resolveTimeoutMessage
@@ -548,60 +548,60 @@ func (r *SaveRequestReconciler) withdrawSaveRequest(
 	case result.Phase == git.PhaseWaitingForWorker:
 		message = noWorkerTimeoutMessage
 	}
-	log.Info("SaveRequest was not acted on within the safety window; withdrawn and failed closed",
+	log.Info("CommitRequest was not acted on within the safety window; withdrawn and failed closed",
 		"name", req.NamespacedName, "reason", message)
-	r.writeTerminalStatus(ctx, log, saveRequest, git.FinalizeResult{}, errors.New(message), attribution, target)
+	r.writeTerminalStatus(ctx, log, commitRequest, git.FinalizeResult{}, errors.New(message), attribution, target)
 	return ctrl.Result{}, nil
 }
 
-// pollSaveRequest reports where the worker says the request stands and polls again.
-func (r *SaveRequestReconciler) pollSaveRequest(
+// pollCommitRequest reports where the worker says the request stands and polls again.
+func (r *CommitRequestReconciler) pollCommitRequest(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-	phase git.SaveRequestPhase,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	phase git.CommitRequestPhase,
 	held string,
 ) (ctrl.Result, error) {
-	if err := r.recordWorkerPhase(ctx, saveRequest, attribution, phase, held); err != nil {
+	if err := r.recordWorkerPhase(ctx, commitRequest, attribution, phase, held); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: saveRequestPollInterval}, nil
+	return ctrl.Result{RequeueAfter: commitRequestPollInterval}, nil
 }
 
 // stampFirstSightConditions stamps the still-running conditions the first time a request is seen,
 // so the object reports its progress (kstatus InProgress) and AuthorAttributed is settled
 // immediately. A disabled controller returns before this, so it never stamps.
-func (r *SaveRequestReconciler) stampFirstSightConditions(
+func (r *CommitRequestReconciler) stampFirstSightConditions(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
 ) error {
-	if findCondition(saveRequest.Status.Conditions, ConditionTypeReady) != nil {
+	if findCondition(commitRequest.Status.Conditions, ConditionTypeReady) != nil {
 		return nil
 	}
-	markSaveRequestProgressing(saveRequest, attribution, "", "")
-	if err := r.Status().Update(ctx, saveRequest); err != nil {
+	markCommitRequestProgressing(commitRequest, attribution, "", "")
+	if err := r.Status().Update(ctx, commitRequest); err != nil {
 		return err
 	}
-	logf.FromContext(ctx).V(1).Info("Stamped SaveRequest in-progress conditions",
-		"name", client.ObjectKeyFromObject(saveRequest))
+	logf.FromContext(ctx).V(1).Info("Stamped CommitRequest in-progress conditions",
+		"name", client.ObjectKeyFromObject(commitRequest))
 	return nil
 }
 
-// refusePrunedGitTargetRef fails a SaveRequest whose spec names no GitTarget, which can only be
+// refusePrunedGitTargetRef fails a CommitRequest whose spec names no GitTarget, which can only be
 // one thing: an object stored before spec.targetRef was renamed to spec.gitTargetRef, whose old
 // value the apiserver stopped serving the moment the new CRDs landed. Admission refuses an empty
 // name on every path, so nothing else can produce it.
 //
 // It is terminal rather than retried, and it has to be, because the object cannot be repaired:
-// SaveRequest.spec is wholly immutable, so no apply can put the name back. Retrying would spend
+// CommitRequest.spec is wholly immutable, so no apply can put the name back. Retrying would spend
 // the controller's attention on an object that will never resolve, and would report a transient
 // "get GitTarget" error for a permanent condition. The message names the only fix there is.
-func (r *SaveRequestReconciler) refusePrunedGitTargetRef(
+func (r *CommitRequestReconciler) refusePrunedGitTargetRef(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 ) (bool, error) {
-	if saveRequest.Spec.GitTargetRef.Name != "" {
+	if commitRequest.Spec.GitTargetRef.Name != "" {
 		return false, nil
 	}
 
@@ -610,18 +610,18 @@ func (r *SaveRequestReconciler) refusePrunedGitTargetRef(
 	// state that must not be missing from the counter. Note the status write below is returned for
 	// requeue, so a failing write re-decides and increments again: see the instrument's doc
 	// comment on what one increment means.
-	recordSaveRequestOutcome(ctx, crOutcomeFailed, saveRequestTarget{})
-	failSaveRequest(saveRequest, crReasonGitTargetRefPruned,
+	recordCommitRequestOutcome(ctx, crOutcomeFailed, commitRequestTarget{})
+	failCommitRequest(commitRequest, crReasonGitTargetRefPruned,
 		"spec.gitTargetRef is empty: this request was created before spec.targetRef was renamed, "+
-			"and its value was pruned by the upgrade. A SaveRequest spec is immutable, so this "+
+			"and its value was pruned by the upgrade. A CommitRequest spec is immutable, so this "+
 			"one cannot be repaired — delete it and create a new one.")
-	if err := r.Status().Update(ctx, saveRequest); err != nil {
+	if err := r.Status().Update(ctx, commitRequest); err != nil {
 		return true, err
 	}
-	r.stampDeleteAfter(ctx, saveRequest)
+	r.stampDeleteAfter(ctx, commitRequest)
 	logf.FromContext(ctx).Info(
-		"SaveRequest names no GitTarget: created before the gitTargetRef rename",
-		"name", client.ObjectKeyFromObject(saveRequest))
+		"CommitRequest names no GitTarget: created before the gitTargetRef rename",
+		"name", client.ObjectKeyFromObject(commitRequest))
 	return true, nil
 }
 
@@ -634,25 +634,25 @@ func (r *SaveRequestReconciler) refusePrunedGitTargetRef(
 // The lookup result is logged at Info: it is the counterpart to the admission handler's
 // "recorded command author" line, so a hit/miss pair makes the whole capture→read path
 // legible (the first thing to check when a request unexpectedly claims no actor).
-func (r *SaveRequestReconciler) attributeAuthor(
+func (r *CommitRequestReconciler) attributeAuthor(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-) (queue.CommandAuthor, saveRequestAttribution) {
-	log := logf.FromContext(ctx).WithName("SaveRequestReconciler")
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+) (queue.CommandAuthor, commitRequestAttribution) {
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 	if r.AuthorLookup == nil {
 		log.Info("command-author lookup disabled (validate-operator-types webhook off); request claims no actor",
-			"name", client.ObjectKeyFromObject(saveRequest), "uid", saveRequest.UID)
+			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
 		// Capture is off, so nothing was attempted — distinct from a capture that ran and
 		// found no record, which is what attributionCommitter now means.
 		return queue.CommandAuthor{}, attributionNotAttempted
 	}
-	if author, ok := r.AuthorLookup.LookupCommandAuthor(ctx, saveRequest.UID); ok {
+	if author, ok := r.AuthorLookup.LookupCommandAuthor(ctx, commitRequest.UID); ok {
 		log.Info("command author resolved from admission record",
-			"name", client.ObjectKeyFromObject(saveRequest), "uid", saveRequest.UID, "author", author.Author)
+			"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID, "author", author.Author)
 		return author, attributionFromAdmission
 	}
 	log.Info("no admission command-author record found; request claims no actor",
-		"name", client.ObjectKeyFromObject(saveRequest), "uid", saveRequest.UID)
+		"name", client.ObjectKeyFromObject(commitRequest), "uid", commitRequest.UID)
 	return queue.CommandAuthor{}, attributionCommitter
 }
 
@@ -660,23 +660,23 @@ func (r *SaveRequestReconciler) attributeAuthor(
 // change, so polling does not re-write status every interval. An empty phase — the worker has not
 // registered the request yet — keeps whatever is shown, so the controller never reports a phase
 // the worker has not confirmed.
-func (r *SaveRequestReconciler) recordWorkerPhase(
+func (r *CommitRequestReconciler) recordWorkerPhase(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
-	attribution saveRequestAttribution,
-	phase git.SaveRequestPhase,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
+	attribution commitRequestAttribution,
+	phase git.CommitRequestPhase,
 	held string,
 ) error {
-	if progressRecorded(saveRequest, phase, held) {
+	if progressRecorded(commitRequest, phase, held) {
 		return nil
 	}
-	markSaveRequestProgressing(saveRequest, attribution, phase, held)
-	return r.Status().Update(ctx, saveRequest)
+	markCommitRequestProgressing(commitRequest, attribution, phase, held)
+	return r.Status().Update(ctx, commitRequest)
 }
 
 // progressRecorded reports whether the request's status already says this phase, and why it is
 // held, so a poll writes only what changed. An empty phase says nothing new.
-func progressRecorded(cr *configbutleraiv1alpha3.SaveRequest, phase git.SaveRequestPhase, held string) bool {
+func progressRecorded(cr *configbutleraiv1alpha3.CommitRequest, phase git.CommitRequestPhase, held string) bool {
 	current := findCondition(cr.Status.Conditions, ConditionTypeReconciling)
 	if current == nil {
 		return false
@@ -688,35 +688,35 @@ func progressRecorded(cr *configbutleraiv1alpha3.SaveRequest, phase git.SaveRequ
 	return current.Reason == reason && current.Message == message
 }
 
-// loadActionableSaveRequest fetches the SaveRequest and short-circuits
+// loadActionableCommitRequest fetches the CommitRequest and short-circuits
 // everything that must not reach the finalize: a deleted object, a terminal
 // outcome, and — via an uncached re-read — a stale cache echo of our own
 // terminal write from a previous invocation (work past this point must happen
-// at most once per SaveRequest). done=true means the finalize has nothing
+// at most once per CommitRequest). done=true means the finalize has nothing
 // further to do; the request is returned with it when it is terminal, so its
 // expiry can be decided, and nil when it is gone.
-func (r *SaveRequestReconciler) loadActionableSaveRequest(
+func (r *CommitRequestReconciler) loadActionableCommitRequest(
 	ctx context.Context,
 	req ctrl.Request,
-) (*configbutleraiv1alpha3.SaveRequest, bool, error) {
-	var saveRequest configbutleraiv1alpha3.SaveRequest
-	if err := r.Get(ctx, req.NamespacedName, &saveRequest); err != nil {
+) (*configbutleraiv1alpha3.CommitRequest, bool, error) {
+	var commitRequest configbutleraiv1alpha3.CommitRequest
+	if err := r.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 		return nil, true, client.IgnoreNotFound(err)
 	}
-	if saveRequestIsTerminal(&saveRequest) {
-		return &saveRequest, true, nil
+	if commitRequestIsTerminal(&commitRequest) {
+		return &commitRequest, true, nil
 	}
 
 	if r.APIReader != nil {
-		if err := r.APIReader.Get(ctx, req.NamespacedName, &saveRequest); err != nil {
+		if err := r.APIReader.Get(ctx, req.NamespacedName, &commitRequest); err != nil {
 			return nil, true, client.IgnoreNotFound(err)
 		}
-		if saveRequestIsTerminal(&saveRequest) {
-			return &saveRequest, true, nil
+		if commitRequestIsTerminal(&commitRequest) {
+			return &commitRequest, true, nil
 		}
 	}
 
-	return &saveRequest, false, nil
+	return &commitRequest, false, nil
 }
 
 // expireFinished deletes a finished request once the time in its delete-after annotation has
@@ -728,20 +728,20 @@ func (r *SaveRequestReconciler) loadActionableSaveRequest(
 // that races it fails the delete with a conflict, and the requeue reads the edit. The edit itself
 // needs no extra wiring: this controller has no generation filter, so a metadata change reconciles
 // the request again.
-func (r *SaveRequestReconciler) expireFinished(
+func (r *CommitRequestReconciler) expireFinished(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 ) (ctrl.Result, error) {
-	value, ok := saveRequest.Annotations[SaveRequestDeleteAfterAnnotation]
-	if !ok || !saveRequest.DeletionTimestamp.IsZero() {
+	value, ok := commitRequest.Annotations[CommitRequestDeleteAfterAnnotation]
+	if !ok || !commitRequest.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
-	log := logf.FromContext(ctx).WithName("SaveRequestReconciler")
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 	deleteAfter, parsed := parseDeleteAfter(value)
 	if !parsed {
 		// Kept rather than guessed at: an annotation a person mistyped is not consent to delete.
-		log.Info("SaveRequest delete-after annotation is not an RFC 3339 time; keeping the request",
-			"name", client.ObjectKeyFromObject(saveRequest), "value", value)
+		log.Info("CommitRequest delete-after annotation is not an RFC 3339 time; keeping the request",
+			"name", client.ObjectKeyFromObject(commitRequest), "value", value)
 		return ctrl.Result{}, nil
 	}
 
@@ -749,13 +749,13 @@ func (r *SaveRequestReconciler) expireFinished(
 		return ctrl.Result{RequeueAfter: remaining}, nil
 	}
 
-	uid, resourceVersion := saveRequest.UID, saveRequest.ResourceVersion
-	err := r.Delete(ctx, saveRequest, client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion})
+	uid, resourceVersion := commitRequest.UID, commitRequest.ResourceVersion
+	err := r.Delete(ctx, commitRequest, client.Preconditions{UID: &uid, ResourceVersion: &resourceVersion})
 	if err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	log.Info("Deleted finished SaveRequest past its delete-after time",
-		"name", client.ObjectKeyFromObject(saveRequest), "deleteAfter", value)
+	log.Info("Deleted finished CommitRequest past its delete-after time",
+		"name", client.ObjectKeyFromObject(commitRequest), "deleteAfter", value)
 	return ctrl.Result{}, nil
 }
 
@@ -776,74 +776,74 @@ func parseDeleteAfter(value string) (time.Time, bool) {
 //
 // A write that still fails is logged, not requeued: the request is then simply kept, the safe
 // direction, and a requeue would re-enter the finalize this controller must run at most once.
-func (r *SaveRequestReconciler) stampDeleteAfter(
+func (r *CommitRequestReconciler) stampDeleteAfter(
 	ctx context.Context,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 ) {
 	if r.TTL <= 0 {
 		return
 	}
-	log := logf.FromContext(ctx).WithName("SaveRequestReconciler")
+	log := logf.FromContext(ctx).WithName("CommitRequestReconciler")
 	reader := r.APIReader
 	if reader == nil {
 		reader = r.Client
 	}
 	deleteAfter := time.Now().Add(r.TTL).UTC().Format(time.RFC3339)
 
-	current := saveRequest
-	for attempt := 1; attempt <= saveRequestStatusUpdateAttempts; attempt++ {
-		if _, set := current.Annotations[SaveRequestDeleteAfterAnnotation]; set {
+	current := commitRequest
+	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
+		if _, set := current.Annotations[CommitRequestDeleteAfterAnnotation]; set {
 			return
 		}
 		patch := client.MergeFromWithOptions(current.DeepCopy(), client.MergeFromWithOptimisticLock{})
 		if current.Annotations == nil {
 			current.Annotations = map[string]string{}
 		}
-		current.Annotations[SaveRequestDeleteAfterAnnotation] = deleteAfter
+		current.Annotations[CommitRequestDeleteAfterAnnotation] = deleteAfter
 		err := r.Patch(ctx, current, patch)
 		if err == nil || apierrors.IsNotFound(err) {
 			return
 		}
 		if !apierrors.IsConflict(err) {
-			log.Error(err, "Failed to stamp delete-after on a finished SaveRequest; it will be kept",
-				"name", client.ObjectKeyFromObject(saveRequest))
+			log.Error(err, "Failed to stamp delete-after on a finished CommitRequest; it will be kept",
+				"name", client.ObjectKeyFromObject(commitRequest))
 			return
 		}
-		var fresh configbutleraiv1alpha3.SaveRequest
-		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(saveRequest), &fresh); getErr != nil {
+		var fresh configbutleraiv1alpha3.CommitRequest
+		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(commitRequest), &fresh); getErr != nil {
 			if !apierrors.IsNotFound(getErr) {
-				log.Error(getErr, "Failed to re-read SaveRequest to stamp delete-after; it will be kept",
-					"name", client.ObjectKeyFromObject(saveRequest))
+				log.Error(getErr, "Failed to re-read CommitRequest to stamp delete-after; it will be kept",
+					"name", client.ObjectKeyFromObject(commitRequest))
 			}
 			return
 		}
-		if fresh.UID != saveRequest.UID {
+		if fresh.UID != commitRequest.UID {
 			return
 		}
 		current = &fresh
 	}
 	log.Error(nil, "Gave up stamping delete-after after repeated conflicts; the request will be kept",
-		"name", client.ObjectKeyFromObject(saveRequest))
+		"name", client.ObjectKeyFromObject(commitRequest))
 }
 
-// saveRequestStatusUpdateAttempts bounds the terminal-status conflict retry.
-const saveRequestStatusUpdateAttempts = 3
+// commitRequestStatusUpdateAttempts bounds the terminal-status conflict retry.
+const commitRequestStatusUpdateAttempts = 3
 
-// writeTerminalStatus records the finalize outcome on the SaveRequest,
+// writeTerminalStatus records the finalize outcome on the CommitRequest,
 // retrying on optimistic-concurrency conflicts. Like the audit-consumer path
 // it replaces, a permanently failing write is logged and given up on rather
 // than returned for requeue: re-running the reconcile would re-finalize an
 // already-flushed window and mis-report the outcome as NoOpenWindow.
-func (r *SaveRequestReconciler) writeTerminalStatus(
+func (r *CommitRequestReconciler) writeTerminalStatus(
 	ctx context.Context,
 	log logr.Logger,
-	saveRequest *configbutleraiv1alpha3.SaveRequest,
+	commitRequest *configbutleraiv1alpha3.CommitRequest,
 	result git.FinalizeResult,
 	finalizeErr error,
-	attribution saveRequestAttribution,
-	target saveRequestTarget,
+	attribution commitRequestAttribution,
+	target commitRequestTarget,
 ) {
-	expectedUID := saveRequest.UID
+	expectedUID := commitRequest.UID
 	reader := r.APIReader
 	if reader == nil {
 		reader = r.Client
@@ -852,10 +852,10 @@ func (r *SaveRequestReconciler) writeTerminalStatus(
 	// Once, here, and deliberately not inside the loop below: result and finalizeErr are inputs
 	// that do not change across attempts, so this is the point the outcome is settled. Recording
 	// per attempt would over-count every request that hit a conflict.
-	recordSaveRequestOutcome(ctx, saveRequestOutcome(result, finalizeErr), target)
+	recordCommitRequestOutcome(ctx, commitRequestOutcome(result, finalizeErr), target)
 
-	current := saveRequest
-	for attempt := 1; attempt <= saveRequestStatusUpdateAttempts; attempt++ {
+	current := commitRequest
+	for attempt := 1; attempt <= commitRequestStatusUpdateAttempts; attempt++ {
 		applyFinalizeResultToStatus(current, result, finalizeErr, attribution)
 
 		err := r.Status().Update(ctx, current)
@@ -865,14 +865,14 @@ func (r *SaveRequestReconciler) writeTerminalStatus(
 			if finalizeErr != nil {
 				finalizeError = finalizeErr.Error()
 			}
-			readyReason, readyMessage := saveRequestReadyReason(current)
-			log.Info("SaveRequest finalized",
+			readyReason, readyMessage := commitRequestReadyReason(current)
+			log.Info("CommitRequest finalized",
 				"name", client.ObjectKeyFromObject(current),
-				"ready", saveRequestConditionStatus(current, ConditionTypeReady),
+				"ready", commitRequestConditionStatus(current, ConditionTypeReady),
 				"reason", readyReason,
 				"message", readyMessage,
-				"authorAttributed", saveRequestConditionStatus(current, ConditionTypeAuthorAttributed),
-				"pushed", saveRequestConditionStatus(current, ConditionTypePushed),
+				"authorAttributed", commitRequestConditionStatus(current, ConditionTypeAuthorAttributed),
+				"pushed", commitRequestConditionStatus(current, ConditionTypePushed),
 				"branch", current.Status.Branch,
 				"commit", current.Status.Commit,
 				"outcome", result.Outcome,
@@ -882,42 +882,42 @@ func (r *SaveRequestReconciler) writeTerminalStatus(
 			return
 		}
 		if !apierrors.IsConflict(err) {
-			log.Error(err, "Failed to write SaveRequest status")
+			log.Error(err, "Failed to write CommitRequest status")
 			return
 		}
 
-		log.V(1).Info("Conflict writing SaveRequest status; retrying", "attempt", attempt)
-		var fresh configbutleraiv1alpha3.SaveRequest
-		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(saveRequest), &fresh); getErr != nil {
+		log.V(1).Info("Conflict writing CommitRequest status; retrying", "attempt", attempt)
+		var fresh configbutleraiv1alpha3.CommitRequest
+		if getErr := reader.Get(ctx, client.ObjectKeyFromObject(commitRequest), &fresh); getErr != nil {
 			if apierrors.IsNotFound(getErr) {
-				log.Info("SaveRequest deleted before status could be written; skipping")
+				log.Info("CommitRequest deleted before status could be written; skipping")
 				return
 			}
-			log.Error(getErr, "Failed to re-read SaveRequest for status update")
+			log.Error(getErr, "Failed to re-read CommitRequest for status update")
 			return
 		}
 		// Never stamp the outcome onto a different incarnation or over a
 		// terminal outcome another writer got in first.
 		if fresh.UID != expectedUID {
-			log.Info("SaveRequest UID changed before status could be written; skipping",
+			log.Info("CommitRequest UID changed before status could be written; skipping",
 				"expectedUID", expectedUID, "objectUID", fresh.UID)
 			return
 		}
-		if saveRequestIsTerminal(&fresh) {
+		if commitRequestIsTerminal(&fresh) {
 			return
 		}
 		current = &fresh
 	}
 
-	log.Error(nil, "Gave up writing SaveRequest status after repeated conflicts")
+	log.Error(nil, "Gave up writing CommitRequest status after repeated conflicts")
 }
 
 // SetupWithManager sets up the controller with the Manager.
 // MaxConcurrentReconciles is pinned to 1 on purpose: the single worker IS the
-// multi-SaveRequest ordering design — concurrent SaveRequests for the same
+// multi-CommitRequest ordering design — concurrent CommitRequests for the same
 // GitTarget are serialized exactly as a dedicated finalize-coordinator
 // goroutine would serialize them, without the extra moving parts (see
-// docs/spec/saverequest-design.md).
+// docs/spec/commitrequest-design.md).
 //
 // Restart recovery is best-effort by design: the
 // message is durable in spec.message, so on restart any non-terminal request is
@@ -927,10 +927,10 @@ func (r *SaveRequestReconciler) writeTerminalStatus(
 // in-memory outcome is gone, the re-driven attach finds the work already mirrored,
 // and it resolves Rejected/AlreadyPresent. We do not build a durable record to
 // close that.
-func (r *SaveRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *CommitRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&configbutleraiv1alpha3.SaveRequest{}).
+		For(&configbutleraiv1alpha3.CommitRequest{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
-		Named("saverequest").
+		Named("commitrequest").
 		Complete(r)
 }

@@ -1,25 +1,25 @@
-# SaveRequest authorship from admission
+# CommitRequest authorship from admission
 
 > **spec** — current behaviour. The code depends on this document; change one, change the other.
 > Index: [`../INDEX.md`](../INDEX.md)
 
-A `SaveRequest` is a command to close an existing GitTarget commit window. Its submitter is captured
+A `CommitRequest` is a command to close an existing GitTarget commit window. Its submitter is captured
 by the `/validate-operator-types` validating admission webhook, while mirrored-resource attribution is
 separately derived from kube-apiserver audit facts. The two paths answer different questions and must not
 be conflated.
 
 ## Contract
 
-| Concern | SaveRequest submitter | Mirrored-resource author |
+| Concern | CommitRequest submitter | Mirrored-resource author |
 |---|---|---|
 | Source | validating admission request `userInfo` | post-persist audit fact joined to watch event |
-| Key | SaveRequest UID | source provider, GVR, UID, and resourceVersion |
+| Key | CommitRequest UID | source provider, GVR, UID, and resourceVersion |
 | Timing | written before the object persists | waits up to `--author-attribution-grace` after the watch event |
 | Miss | request claims no actor | watch commit has the explicit unresolved author |
 
 The admission handler records the authenticated submitter in the Redis command-author store and always
 allows the request. It is deliberately best-effort: a Redis failure or an unavailable webhook must not
-reject a user's command. The controller reads the record when the persisted `SaveRequest` is first
+reject a user's command. The controller reads the record when the persisted `CommitRequest` is first
 reconciled. The result is **present-or-never**; waiting cannot create a record that admission did not write.
 
 ## Attach and final Git author
@@ -63,6 +63,6 @@ An installation may therefore have either, both, or neither source of author inf
 
 Related live contracts:
 
-- [architecture: SaveRequest Finalize](../architecture.md#saverequest-finalize)
-- [configuration: SaveRequest conditions](../configuration.md#when-there-is-nothing-to-commit)
+- [architecture: CommitRequest Finalize](../architecture.md#commitrequest-finalize)
+- [configuration: CommitRequest conditions](../configuration.md#when-there-is-nothing-to-commit)
 - [status conditions guide](status-conditions-guide.md)

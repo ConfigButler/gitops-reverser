@@ -32,7 +32,7 @@ import (
 )
 
 // GitBranchFinalizer holds a GitBranch until its branch worker has given every pending write and
-// SaveRequest an outcome. It never deletes the branch on the remote.
+// CommitRequest an outcome. It never deletes the branch on the remote.
 const GitBranchFinalizer = "configbutler.ai/git-branch"
 
 const (
@@ -394,7 +394,7 @@ func (r *GitBranchReconciler) finalize(ctx context.Context, branch *configbutler
 // It is the one path for a GitBranch being deleted and for one that no grant admits any more, which
 // keeps its finalizer. The claim goes first, so no GitTarget reconcile can start this GitBranch's
 // worker again; then the worker is stopped, which closes its intake, pushes or refuses every pending
-// write and settles every SaveRequest it holds (BranchWorker.Stop). Release, not a failed proof:
+// write and settles every CommitRequest it holds (BranchWorker.Stop). Release, not a failed proof:
 // Observe keeps a holder's candidacy through a failed proof, and a revoked GitBranch must stop being
 // a candidate at all. Last, once the old worker has retired so pending work never moves on, the
 // GitBranches waiting for the branch are woken. Release handed it to none of them: each takes it only
