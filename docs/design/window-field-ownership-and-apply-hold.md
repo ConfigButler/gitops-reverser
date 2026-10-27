@@ -329,7 +329,7 @@ its Kustomization suspended and the `ArgoCDClaim` keeps automated sync off.
 
 Window timers cannot bound the hold. A window's `max_duration` is not fixed: attaching a
 `CommitRequest` replaces the window's timers with the request's, running from the attach
-(`attachToOpenWindow`, `internal/git/commit_request_attach_loop.go`). A hold that waited for the
+(`attachToWindow`, `internal/git/commit_request_attach_loop.go`). A hold that waited for the
 windows' own deadlines could be extended by every attach.
 
 So the hold has an **absolute deadline, measured from when it began**. It ends at the first of:

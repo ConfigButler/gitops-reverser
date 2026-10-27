@@ -1009,6 +1009,12 @@ func (w *BranchWorker) processEvents() {
 // goroutine running run() may touch these fields, so no extra synchronisation
 // is required.
 type branchWorkerEventLoop struct {
+	// commitWindows holds the live commit-shaped event windows and what they are charged. A window is
+	// finalized when its idle or max-duration timer runs out, and eagerly on author/target changes,
+	// resync arrivals, byte-cap trips, an attach: Next, and shutdown. Embedded, so loop.openWindow
+	// names the one window it holds.
+	commitWindows
+
 	w *BranchWorker
 
 	// barrierSeq numbers the barriers this loop's apply windows take (apply_barrier.go).
@@ -1017,12 +1023,6 @@ type branchWorkerEventLoop struct {
 	// defaultWindow is the operator-level default for a GitTarget's commit window timers, used
 	// for any target that declares no spec.commit.window field and for one that cannot be read.
 	defaultWindow commitWindowDefaults
-
-	// openWindow holds the one live commit-shaped event window. It is finalized when its idle or
-	// max-duration timer runs out, and eagerly on author/target changes, resync arrivals, byte-cap
-	// trips, an attach: Next, and shutdown.
-	openWindow  *openWindow
-	windowBytes int64
 
 	// pendingWrites holds the retained durability units for local commits that
 	// have not yet successfully reached the remote. A successful push is the
@@ -1226,7 +1226,7 @@ func (l *branchWorkerEventLoop) endWake(released int64) {
 // publishing the flag second would let both read empty while a window is open, and a scrape landing
 // there would report a drained queue for a worker that has work.
 func (l *branchWorkerEventLoop) publishLoopState(released int64) {
-	l.w.hasUnpushedWork.Store(l.openWindow != nil || len(l.pendingWrites) > 0 || len(l.held) > 0)
+	l.w.hasUnpushedWork.Store(l.commitWindows.anyOpen() || len(l.pendingWrites) > 0 || len(l.held) > 0)
 	l.syncAdmission(released)
 }
 
@@ -1250,10 +1250,10 @@ func (l *branchWorkerEventLoop) timerChannels() (
 }
 
 // totalRetainedBytes is what the operator-level byte cap is enforced against:
-// the open window plus the locally-committed-but-not-yet-pushed events that
+// the open windows plus the locally-committed-but-not-yet-pushed events that
 // we keep around for replay-on-conflict.
 func (l *branchWorkerEventLoop) totalRetainedBytes() int64 {
-	return l.windowBytes + l.pendingWritesBytes
+	return l.commitWindows.windowBytes + l.pendingWritesBytes
 }
 
 // dispatch hands one item to its handler, and returns the intake charge the item was admitted with.
@@ -1305,7 +1305,7 @@ func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 // finalizing it as identity, the byte cap or a zero window require.
 func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 	{
-		if l.openWindow != nil && !l.openWindow.canAppend(event) {
+		for _, other := range l.commitWindows.blocking(event) {
 			// Log the identity that broke the window so an unexpected split is
 			// diagnosable: the common cause is an incoming event whose author is empty
 			// (an unattributed update, e.g. a /status change that carries no audit fact)
@@ -1313,38 +1313,38 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 			// can split a CommitRequest collect window. windowAuthor vs eventAuthor makes
 			// that visible at a glance.
 			l.w.Log.Info("Window identity change forces finalize before appending event",
-				"windowAuthor", l.openWindow.Author,
+				"windowAuthor", other.Author,
 				"eventAuthor", event.UserInfo.Username,
 				"operation", event.Operation,
 				"resource", event.Identifier.String(),
 				"eventTarget", event.GitTargetNamespace+"/"+event.GitTargetName)
-			l.finalizeOpenWindowWithReason(windowFinalizeReasonIdentityChange)
+			l.finalizeWindow(other, windowFinalizeReasonIdentityChange)
 		}
 
+		window := l.commitWindows.forWrite(event)
 		opened := false
-		if l.openWindow == nil {
+		if window == nil {
 			l.w.Log.Info("Opening commit window",
 				"author", event.UserInfo.Username,
 				"gitTarget", event.GitTargetNamespace+"/"+event.GitTargetName,
 				"resource", event.Identifier.String())
-			l.openWindow = newOpenWindow(event, l.w.contentWriter)
-			l.openWindow.openedAt = l.w.now()
+			window = l.commitWindows.open(event, l.w.contentWriter, l.w.now())
 			// One window, one GitTarget: snapshot that target's timers now, so a later edit to the
 			// target never moves a deadline already running.
 			timers := l.w.commitWindowFor(
 				l.w.ctx, event.GitTargetName, event.GitTargetNamespace, l.defaultWindow)
-			l.openWindow.timers = windowTimers{
+			window.timers = windowTimers{
 				idle:  timers.idleTimeout,
 				maxAt: l.w.now().Add(timers.maxDuration),
 			}
 			opened = true
 		}
 		// The window keeps one event per path, so a replaced one stops being charged.
-		if replaced, ok := l.openWindow.add(event); ok {
-			l.windowBytes -= eventRetainedCharge(&replaced)
+		if replaced, ok := window.add(event); ok {
+			l.commitWindows.charge(window, -eventRetainedCharge(&replaced))
 		}
-		l.openWindow.lastWriteAt = l.w.now()
-		l.windowBytes += eventRetainedCharge(&event)
+		window.lastWriteAt = l.w.now()
+		l.commitWindows.charge(window, eventRetainedCharge(&event))
 
 		if opened {
 			// A waiting CommitRequest gets the new window BEFORE anything can close it: before the
@@ -1354,7 +1354,7 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 			// waiting on another author, never see the window that refuses it.
 			l.noteForeignWindow()
 			l.attachWaitingCommitRequests()
-			if l.openWindow == nil {
+			if !l.commitWindows.isOpen(window) {
 				return // the attached request's maxDuration: 0s closed it already
 			}
 		}
@@ -1406,21 +1406,27 @@ func (l *branchWorkerEventLoop) mirrors(event Event) bool {
 	return true
 }
 
-// closeOrArmWindow finalizes the open window when its first deadline has passed, and otherwise
-// arms the commit timer for that deadline. A zero timer therefore closes the window in the same
-// step that collected the write.
+// closeOrArmWindow finalizes every open window whose first deadline has passed, oldest first, and
+// arms the commit timer for the earliest deadline of the windows left open. A zero timer therefore
+// closes the window in the same step that collected the write.
 func (l *branchWorkerEventLoop) closeOrArmWindow() {
-	if l.openWindow == nil {
+	now := l.w.now()
+	var next time.Time
+	for _, window := range l.commitWindows.all() {
+		closeAt, reason := window.closeAt()
+		if !closeAt.After(now) {
+			l.finalizeWindow(window, reason)
+			continue
+		}
+		if next.IsZero() || closeAt.Before(next) {
+			next = closeAt
+		}
+	}
+	if next.IsZero() {
 		l.stopCommitTimer()
 		return
 	}
-	closeAt, reason := l.openWindow.closeAt()
-	delay := closeAt.Sub(l.w.now())
-	if delay <= 0 {
-		l.finalizeOpenWindowWithReason(reason)
-		return
-	}
-	l.resetCommitTimer(delay)
+	l.resetCommitTimer(next.Sub(now))
 }
 
 func (l *branchWorkerEventLoop) handleShutdown() {
@@ -1496,34 +1502,38 @@ func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
 	l.commitTimer.Reset(delay)
 }
 
-// finalizeOpenWindowWithReason closes the live event window into one decided write. The attached
-// CommitRequest message overrides the live template.
+// finalizeOpenWindowWithReason closes every open window, oldest first: the triggers that are about
+// the branch rather than about one window (a resync, an apply flush, the byte cap, shutdown).
+func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) {
+	for _, window := range l.commitWindows.all() {
+		l.finalizeWindow(window, reason)
+	}
+}
+
+// finalizeWindow closes one live event window into one decided write. The attached CommitRequest
+// message overrides the live template.
 //
 // The closed window is a decided write (decide): a remote that cannot be reached leaves it pending
 // for the publication retry, and its CommitRequest held. Only a failure of the write itself
 // drops it, and resolves that request Failed (settleFailed).
-func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinalizeReason) {
-	if l.openWindow == nil {
-		return
-	}
-
+func (l *branchWorkerEventLoop) finalizeWindow(window *openWindow, reason windowFinalizeReason) {
 	l.stopCommitTimer()
 	// Counted here, before anything can fail or find no diff, so every window is counted once and
 	// its collection time never includes the commit.
-	l.w.recordWindowClosed(l.openWindow, reason)
-	events := l.openWindow.orderedEvents()
-	windowAuthor := l.openWindow.Author
-	targetName, targetNamespace := l.openWindow.GitTarget, l.openWindow.GitTargetNamespace
+	l.w.recordWindowClosed(window, reason)
+	events := window.orderedEvents()
+	windowAuthor := window.Author
+	targetName, targetNamespace := window.GitTarget, window.GitTargetNamespace
 	windowTarget := targetNamespace + "/" + targetName
-	pendingCR := l.openWindow.pendingCR
-	effectiveMessage := l.openWindow.pendingMessage
+	pendingCR := window.pendingCR
+	effectiveMessage := window.pendingMessage
 	// The render-fidelity gate drops the whole window, request or not: its events were planned
 	// against a render nobody has checked. Suspension is read from the write built below, because
 	// a suspended target still scans. See write_gate.go.
 	if err := l.w.targetWriteRefusal(targetName, targetNamespace, false); err != nil {
 		l.w.Log.V(1).Info("Discarding open window while render fidelity is not established",
 			"reason", string(reason), "gitTarget", targetNamespace+"/"+targetName)
-		l.dropOpenWindow(pendingCR, err)
+		l.dropWindow(window, pendingCR, err)
 		return
 	}
 
@@ -1532,7 +1542,7 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 		"windowAuthor", windowAuthor,
 		"windowTarget", windowTarget,
 		"events", len(events),
-		"windowBytes", l.windowBytes,
+		"windowBytes", window.bytes,
 		"pendingWrites", len(l.pendingWrites),
 		"messageOverride", effectiveMessage != "",
 		"attachedCR", pendingCR != nil)
@@ -1545,18 +1555,17 @@ func (l *branchWorkerEventLoop) finalizeOpenWindowWithReason(reason windowFinali
 			"windowAuthor", windowAuthor,
 			"windowTarget", windowTarget,
 			"events", len(events))
-		l.dropOpenWindow(pendingCR, fmt.Errorf("build pending write: %w", err))
+		l.dropWindow(window, pendingCR, fmt.Errorf("build pending write: %w", err))
 		return
 	}
 	pendingWrite.CommitMessage = effectiveMessage
-	pendingCR, proceed := l.gateBuiltWindow(pendingCR, pendingWrite.Target(), reason)
+	pendingCR, proceed := l.gateBuiltWindow(window, pendingCR, pendingWrite.Target(), reason)
 	if !proceed {
 		return
 	}
 	l.carryRequestOnWrite(pendingWrite, pendingCR)
 
-	l.openWindow = nil
-	l.windowBytes = 0
+	l.commitWindows.remove(window)
 	l.decide(*pendingWrite)
 
 	l.w.Log.Info("Open commit window finalized",
@@ -1590,12 +1599,12 @@ func (l *branchWorkerEventLoop) carryRequestOnWrite(pendingWrite *PendingWrite, 
 // target's scan stays fresh, but it commits nothing, and the push would report that as
 // AlreadyPresent, so only the request fails. See write_gate.go.
 func (l *branchWorkerEventLoop) gateBuiltWindow(
-	pendingCR *commitRequestID, target ResolvedTargetMetadata, reason windowFinalizeReason,
+	window *openWindow, pendingCR *commitRequestID, target ResolvedTargetMetadata, reason windowFinalizeReason,
 ) (*commitRequestID, bool) {
 	if err := l.w.targetWriteRefusal(target.Name, target.Namespace, false); err != nil {
 		l.w.Log.V(1).Info("Discarding built window: render fidelity closed while it was finalized",
 			"reason", string(reason), "gitTarget", target.Namespace+"/"+target.Name)
-		l.dropOpenWindow(pendingCR, err)
+		l.dropWindow(window, pendingCR, err)
 		return nil, false
 	}
 	if pendingCR != nil && target.Suspend {
@@ -1605,11 +1614,10 @@ func (l *branchWorkerEventLoop) gateBuiltWindow(
 	return pendingCR, true
 }
 
-// dropOpenWindow discards a window whose finalize failed before it was decided, resolving any
+// dropWindow discards a window whose finalize failed before it was decided, resolving any
 // attached CommitRequest as Failed so the controller does not poll forever.
-func (l *branchWorkerEventLoop) dropOpenWindow(pendingCR *commitRequestID, cause error) {
-	l.openWindow = nil
-	l.windowBytes = 0
+func (l *branchWorkerEventLoop) dropWindow(window *openWindow, pendingCR *commitRequestID, cause error) {
+	l.commitWindows.remove(window)
 	if pendingCR != nil {
 		l.resolveCommitRequest(*pendingCR, FinalizeResult{Branch: l.w.Branch, Err: cause})
 	}

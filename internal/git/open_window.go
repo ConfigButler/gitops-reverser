@@ -4,10 +4,9 @@ package git
 
 import "time"
 
-// openWindow is the one live commit-shaped event window owned by a branch
-// worker. It accepts only events with the same author and target; repeated
-// writes to the same Git path are last-write-wins while preserving first-seen
-// path order.
+// openWindow is one live commit-shaped event window of a branch worker (commitWindows). It accepts
+// only events with the same author and target; repeated writes to the same Git path are
+// last-write-wins while preserving first-seen path order.
 type openWindow struct {
 	// Author is event.UserInfo.Username verbatim.
 	Author string
@@ -57,6 +56,12 @@ type openWindow struct {
 	// lastWriteAt is when the idle interval last restarted: the latest collected write, or the
 	// attach of a CommitRequest.
 	lastWriteAt time.Time
+
+	// seq is the window's place in the order windows opened (commitWindows.windowSeq).
+	seq uint64
+	// bytes is what the window is charged: its events, and its attached request's message. The set's
+	// windowBytes is the sum of every open window's.
+	bytes int64
 }
 
 // windowTimers are the two timers that close a commit window, resolved to absolute terms.
