@@ -4,6 +4,8 @@ annotations:
     of Role "scenario-car" to User "carol@example.com"'
   validate-all.configbutler.ai/scenario: selector-membership
 auditID: <auditID-2>
+authenticationMetadata:
+  impersonationConstraint: impersonate:user-info
 impersonatedUser:
   groups:
   - system:authenticated
