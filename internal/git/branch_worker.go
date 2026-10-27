@@ -1032,6 +1032,9 @@ type branchWorkerEventLoop struct {
 
 	lastPushAt  time.Time
 	commitTimer *time.Timer
+	// commitTimerAt is the worker-clock time commitTimer is armed for, while it is armed. The timer
+	// itself runs on real time; tests that step the clock deliver its wake at this time.
+	commitTimerAt time.Time
 	// pushTimer fires the next push when the success cooldown ends.
 	pushTimer *time.Timer
 	// retry is the one schedule of the next attempt at work a failed attempt left pending. See
@@ -1102,6 +1105,8 @@ type branchWorkerEventLoop struct {
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
 	// its window's timers close it.
 	attachTimer *time.Timer
+	// attachTimerAt is the worker-clock time attachTimer is armed for, while it is armed.
+	attachTimerAt time.Time
 
 	// recovery is the open task of writing what a missing parent branch held back, and the probe
 	// that drives it. See parent_recovery.go.
@@ -1489,6 +1494,7 @@ func (w *BranchWorker) drainQueue() {
 }
 
 func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
+	l.commitTimerAt = l.w.now().Add(delay)
 	if l.commitTimer == nil {
 		l.commitTimer = time.NewTimer(delay)
 		return

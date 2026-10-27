@@ -11,14 +11,22 @@ import (
 )
 
 // These tests pin that the commit windows' timers read the worker's clock: a test steps it past a
-// deadline, delivers the wake the timer would have, and the window or the waiting request is due,
-// with no sleep and no rewound deadline.
+// deadline, delivers the wake of each timer the worker armed for it, and the window or the waiting
+// request is due, with no sleep and no rewound deadline.
 
-// timerWake is the wake the commit and attach timers deliver when they fire, as run does.
+// timerWake delivers the wakes the commit and attach timers would, as run does: each timer the worker
+// has armed whose time on the worker's clock has come. A deadline no timer was armed for passes.
 func timerWake(loop *branchWorkerEventLoop) {
-	loop.commitTimer = nil
-	loop.closeOrArmWindow()
-	loop.endWake(0)
+	now := loop.w.now()
+	if loop.commitTimer != nil && !loop.commitTimerAt.After(now) {
+		loop.commitTimer = nil
+		loop.closeOrArmWindow()
+		loop.endWake(0)
+	}
+	if loop.attachTimer != nil && !loop.attachTimerAt.After(now) {
+		loop.attachTimer = nil
+		loop.endWake(0)
+	}
 }
 
 func TestWindowClock_TheIdleTimeoutIsMeasuredOnTheWorkersClock(t *testing.T) {

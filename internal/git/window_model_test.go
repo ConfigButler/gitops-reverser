@@ -7,12 +7,15 @@ import (
 	"maps"
 	"math/rand"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -22,18 +25,20 @@ import (
 // independent implementation of today's single-window rules, fed the same random inputs as a branch
 // worker on a real Git server, with the worker checked against it.
 //
-//   - After every step: the open window (author, objects, attached save, deadline, charge), the
-//     registered saves (attached or waiting, and until when), the retained-byte charge, the close
-//     reasons so far, and every save's outcome are the model's.
+//   - After every step: the open window (author, objects, attached save, deadline, charge), the timers
+//     armed for it and for the waiting saves, the registered saves (attached or waiting, and until
+//     when), the retained-byte charge, the close reasons so far, and every save's outcome are the
+//     model's.
 //   - Every commit the worker publishes is the one the model's closing window makes: its author, its
-//     message, and the documents it changes. Per document, the writes that land do so in the order
-//     they were accepted, so an older write never lands after a newer one.
+//     message, every path it changes, and each document whole. Per document, the writes that land do
+//     so in the order they were accepted, so an older write never lands after a newer one.
 //   - Every save settles exactly once, or is given back at shutdown.
-//   - Drained, Git holds the model's tree and nothing is charged.
+//   - Drained, Git holds the model's tree, path for path, and nothing is charged.
 //
 // The model shares no window code with the worker: only the event fixtures, the per-event charge
 // (eventRetainedCharge, attachCharge) and the close-reason names. The worker's timers are real; the
-// driver steps the worker's clock to each deadline in turn and delivers the wake the timer would.
+// driver steps the worker's clock to the time each armed timer is due and delivers that timer's wake,
+// so a deadline the worker armed no timer for is never delivered.
 //
 // WINDOW_MODEL_SEEDS and WINDOW_MODEL_STEPS raise the search; a failure names its seed, and
 // WINDOW_MODEL_SEED replays one.
@@ -47,6 +52,9 @@ const (
 var (
 	modelObjects = []string{"x", "y", "z"}
 	modelAuthors = []string{"alice", "bob", "carol"}
+	// modelBootstrap is what the worker adds to the folder, from its template, with the first commit
+	// it makes there. The GitTarget encrypts nothing, so there is no .sops.yaml.
+	modelBootstrap = []string{gitTargetIgnoreFileName, "README.md"}
 )
 
 // modelEdit is one accepted write: seq is the order the worker accepted it in, and value is the
@@ -99,12 +107,14 @@ type modelPending struct {
 }
 
 // modelCommit is a commit the worker must publish. A resync's message is not the model's to say.
+// bootstrap is the folder's first commit, which also adds modelBootstrap.
 type modelCommit struct {
-	author  string
-	message string
-	resync  bool
-	files   map[string]string
-	seqs    map[string]int
+	author    string
+	message   string
+	resync    bool
+	bootstrap bool
+	files     map[string]string
+	seqs      map[string]int
 }
 
 type windowModel struct {
@@ -120,6 +130,8 @@ type windowModel struct {
 	history map[string][]string
 
 	foreignUnseen, applyDue, hinted bool
+	// bootstrapped is whether Git holds modelBootstrap.
+	bootstrapped bool
 
 	pending  []modelPending
 	commits  []modelCommit
@@ -372,6 +384,8 @@ func (m *windowModel) push() {
 			}
 			continue
 		}
+		commit.bootstrap = !m.bootstrapped
+		m.bootstrapped = true
 		m.commits = append(m.commits, commit)
 		if p.save != nil {
 			m.resolve(p.save, FinalizeCommitted)
@@ -410,11 +424,6 @@ func (m *windowModel) endWake() bool {
 	// The apply is of the tip the worker knows: a push it has not found yet is not in it.
 	m.cluster = maps.Clone(m.known)
 	return true
-}
-
-func (m *windowModel) timerWake() bool {
-	m.closeOrArm()
-	return m.endWake()
 }
 
 // resync closes the window, then commits, as the operator, every live object Git does not hold as
@@ -485,6 +494,7 @@ func newWindowModelRun(t *testing.T, seed int64) *windowModelRun {
 	r.knownTip = r.base
 	r.start = r.clock.Now()
 	r.m = newWindowModel(r.start, docs)
+	r.m.bootstrapped = gitIn(t, f.repoDir, "ls-tree", "--name-only", r.base, echoTarget+"/README.md") != ""
 	return r
 }
 
@@ -538,50 +548,66 @@ func (r *windowModelRun) applied(modelSent bool) {
 	}
 }
 
-// timerWake is the wake the commit and attach timers deliver.
-func (r *windowModelRun) timerWake() {
+// armed is the timer the worker has armed to fire first, when, and whether it is the commit timer. Two
+// due at the same instant fire in either order, as run's select picks.
+func (r *windowModelRun) armed() (time.Time, bool, bool) {
+	loop := r.f.loop
+	commit, attach := loop.commitTimer != nil, loop.attachTimer != nil
+	switch {
+	case commit && attach && loop.commitTimerAt.Equal(loop.attachTimerAt):
+		return loop.commitTimerAt, r.rng.Intn(2) == 0, true
+	case commit && (!attach || loop.commitTimerAt.Before(loop.attachTimerAt)):
+		return loop.commitTimerAt, true, true
+	case attach:
+		return loop.attachTimerAt, false, true
+	}
+	return time.Time{}, false, false
+}
+
+// commitWake is the wake the commit timer delivers, as run does.
+func (r *windowModelRun) commitWake() {
+	r.notef("commit timer")
 	r.f.loop.lastPushAt = time.Time{}
 	r.f.loop.commitTimer = nil
 	r.f.loop.closeOrArmWindow()
 	r.f.loop.endWake(0)
-	r.applied(r.m.timerWake())
+	r.m.closeOrArm()
+	r.applied(r.m.endWake())
 }
 
-// nextDeadline is the earliest timer the worker has armed: a window's close, or a waiting save's
-// attach deadline.
-func (r *windowModelRun) nextDeadline() (time.Time, bool) {
-	var next time.Time
-	for _, window := range r.f.loop.commitWindows.all() {
-		if at, _ := window.closeAt(); next.IsZero() || at.Before(next) {
-			next = at
-		}
-	}
-	for _, pcr := range r.f.loop.pendingCRs {
-		if !pcr.attached && (next.IsZero() || pcr.attachDeadline.Before(next)) {
-			next = pcr.attachDeadline
-		}
-	}
-	return next, !next.IsZero()
+// attachWake is the wake the attach timer delivers: endWake's serviceCommitRequests does its work.
+func (r *windowModelRun) attachWake() {
+	r.notef("attach timer")
+	r.f.loop.lastPushAt = time.Time{}
+	r.f.loop.attachTimer = nil
+	r.f.loop.endWake(0)
+	r.applied(r.m.endWake())
 }
 
+// advance steps the clock by d, firing each timer the worker armed when it comes due. A deadline the
+// worker armed no timer for passes unseen, as it would in run.
 func (r *windowModelRun) advance(d time.Duration) {
 	r.notef("clock +%s", d)
 	target := r.clock.Now().Add(d)
 	for range 1000 {
-		next, ok := r.nextDeadline()
-		if !ok || next.After(target) {
+		at, commit, ok := r.armed()
+		if !ok || at.After(target) {
 			r.clock.advance(target.Sub(r.clock.Now()))
 			r.m.now = target
 			return
 		}
-		if next.After(r.clock.Now()) {
-			r.clock.advance(next.Sub(r.clock.Now()))
+		if at.After(r.clock.Now()) {
+			r.clock.advance(at.Sub(r.clock.Now()))
 		}
 		r.m.now = r.clock.Now()
-		r.timerWake()
+		if commit {
+			r.commitWake()
+		} else {
+			r.attachWake()
+		}
 		r.check("timer")
 	}
-	r.failf("a deadline stayed due after its wake")
+	r.failf("a timer stayed due after its wake")
 }
 
 func (r *windowModelRun) freshValue(obj string) string {
@@ -746,6 +772,7 @@ var closeLine = regexp.MustCompile(`"msg"="Finalizing open commit window" "reaso
 func (r *windowModelRun) check(what string) {
 	r.t.Helper()
 	r.checkWindow(what)
+	r.checkTimers(what)
 	r.checkSaves(what)
 	r.checkCloses(what)
 	r.checkCommits(what)
@@ -765,6 +792,38 @@ func (r *windowModelRun) checkWindow(what string) {
 	if len(loop.pendingWrites) != 0 {
 		r.failf("%s: %d writes still pending after a wake that pushed at once", what, len(loop.pendingWrites))
 	}
+}
+
+// checkTimers compares the timers the worker has armed with the model's deadlines: the commit timer
+// for the open window's close, the attach timer for the earliest deadline of a save still waiting.
+func (r *windowModelRun) checkTimers(what string) {
+	r.t.Helper()
+	if r.exited {
+		return
+	}
+	loop, m := r.f.loop, r.m
+	var commitAt, attachAt time.Time
+	if m.window != nil {
+		commitAt, _ = m.window.closeAt()
+	}
+	for _, s := range m.saves {
+		if !s.attached && (attachAt.IsZero() || s.deadline.Before(attachAt)) {
+			attachAt = s.deadline
+		}
+	}
+	got := r.describeTimer(loop.commitTimer != nil, loop.commitTimerAt) + ", " +
+		r.describeTimer(loop.attachTimer != nil, loop.attachTimerAt)
+	want := r.describeTimer(!commitAt.IsZero(), commitAt) + ", " + r.describeTimer(!attachAt.IsZero(), attachAt)
+	if got != want {
+		r.failf("%s: the armed timers (commit, attach) differ:\n  worker %s\n  model  %s", what, got, want)
+	}
+}
+
+func (r *windowModelRun) describeTimer(armed bool, at time.Time) string {
+	if !armed {
+		return "none"
+	}
+	return "in " + at.Sub(r.m.now).String()
 }
 
 // workerWindow describes the worker's open window as describeWindow does the model's.
@@ -871,18 +930,24 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 		r.failf("%s: commit %s by %q %q; the model's by %q %q", what, hash[:8], author, message, want.author,
 			want.message)
 	}
-	files := map[string]string{}
-	for _, path := range splitLines(gitIn(r.t, r.f.repoDir, "diff-tree", "-r", "--name-only", "--no-commit-id",
-		hash)) {
-		obj, ok := strings.CutPrefix(path, echoTarget+"/default/configmaps/")
-		if !ok {
-			continue
-		}
-		obj = strings.TrimSuffix(obj, ".yaml")
-		files[obj] = r.valueAt(hash, obj)
+	paths := splitLines(gitIn(r.t, r.f.repoDir, "diff-tree", "-r", "--name-only", "--no-commit-id", hash))
+	var wantPaths []string
+	for obj := range want.files {
+		wantPaths = append(wantPaths, echoFile(obj))
 	}
-	if fmt.Sprint(files) != fmt.Sprint(want.files) {
-		r.failf("%s: commit %s by %s changes %v; the model's changes %v", what, hash[:8], author, files, want.files)
+	if want.bootstrap {
+		for _, name := range modelBootstrap {
+			wantPaths = append(wantPaths, echoTarget+"/"+name)
+			r.checkBootstrap(what, hash, name)
+		}
+	}
+	slices.Sort(paths)
+	slices.Sort(wantPaths)
+	if !slices.Equal(paths, wantPaths) {
+		r.failf("%s: commit %s by %s changes %v; the model's changes %v", what, hash[:8], author, paths, wantPaths)
+	}
+	for obj, value := range want.files {
+		r.checkDocument(what, hash, obj, value)
 	}
 	for obj, seq := range want.seqs {
 		if seq <= r.m.landed[obj] {
@@ -892,20 +957,39 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 	}
 }
 
-// valueAt is the key of the document obj at commit hash, or "" when the commit holds none.
-func (r *windowModelRun) valueAt(hash, obj string) string {
-	listed := gitIn(r.t, r.f.repoDir, "ls-tree", "--name-only", hash, echoFile(obj))
-	if listed == "" {
-		return ""
-	}
-	document := gitIn(r.t, r.f.repoDir, "show", hash+":"+echoFile(obj)) + "\n"
-	for _, line := range strings.Split(document, "\n") {
-		if value, ok := strings.CutPrefix(line, "  key: "); ok {
-			return value
+// checkDocument compares the document obj at rev, parsed, with the ConfigMap obj holding value; value
+// "" is no document. YAML 1.2, so a bare y is the name y.
+func (r *windowModelRun) checkDocument(what, rev, obj, value string) {
+	r.t.Helper()
+	var got, want map[string]any
+	listed := gitIn(r.t, r.f.repoDir, "ls-tree", "--name-only", rev, echoFile(obj))
+	if listed != "" {
+		if err := yaml.Unmarshal([]byte(gitIn(r.t, r.f.repoDir, "show", rev+":"+echoFile(obj))), &got); err != nil {
+			r.failf("%s: %s at %s: %v", what, obj, rev, err)
 		}
 	}
-	r.failf("commit %s holds %s without a key: %s", hash[:8], obj, document)
-	return ""
+	if value != "" {
+		want = map[string]any{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]any{"name": obj, "namespace": "default"},
+			"data":     map[string]any{"key": value},
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		r.failf("%s: %s at %s is %v; the model's is %v", what, obj, rev, got, want)
+	}
+}
+
+// checkBootstrap compares the bootstrap file name at rev with the worker's template.
+func (r *windowModelRun) checkBootstrap(what, rev, name string) {
+	r.t.Helper()
+	want, err := readBootstrapTemplateContent(name, pathBootstrapOptions{Enabled: true})
+	if err != nil {
+		r.failf("%s: %v", what, err)
+	}
+	if got := gitIn(r.t, r.f.repoDir, "show", rev+":"+echoTarget+"/"+name); got != strings.TrimSpace(string(want)) {
+		r.failf("%s: %s at %s is not the template's:\n%s", what, name, rev, got)
+	}
 }
 
 // drained checks the worker once nothing is open, waiting or pending.
@@ -924,11 +1008,7 @@ func (r *windowModelRun) drained() {
 	if held != 0 || r.f.loop.totalRetainedBytes() != 0 {
 		r.failf("drained, the worker still charges %d (retained %d)", held, r.f.loop.totalRetainedBytes())
 	}
-	for _, obj := range modelObjects {
-		if got := r.valueAt("main", obj); got != r.m.remote[obj] {
-			r.failf("drained, Git holds %s=%q; the model %q", obj, got, r.m.remote[obj])
-		}
-	}
+	r.checkTree()
 	for name := range r.m.given {
 		if _, resolved := r.f.worker.LookupCommitRequestOutcome("default", name, "uid-"+name); resolved {
 			r.failf("%s was given back at shutdown, and has an outcome", name)
@@ -936,6 +1016,42 @@ func (r *windowModelRun) drained() {
 		if phase := r.f.worker.LookupCommitRequestPhase("default", name, "uid-"+name); phase != "" {
 			r.failf("%s was given back at shutdown, and is still %s", name, phase)
 		}
+	}
+}
+
+// checkTree checks that Git is the base tree with the model's documents and, once the folder is
+// bootstrapped, the template's files: nothing else was added, changed or removed.
+func (r *windowModelRun) checkTree() {
+	r.t.Helper()
+	present := map[string]bool{}
+	for _, path := range splitLines(gitIn(r.t, r.f.repoDir, "ls-tree", "-r", "--name-only", r.base)) {
+		present[path] = true
+	}
+	for _, obj := range modelObjects {
+		present[echoFile(obj)] = r.m.remote[obj] != ""
+		r.checkDocument("drained", "main", obj, r.m.remote[obj])
+	}
+	others := []string{"diff", "--name-only", r.base, "main", "--", ".",
+		":(exclude)" + echoTarget + "/default/configmaps"}
+	for _, name := range modelBootstrap {
+		others = append(others, ":(exclude)"+echoTarget+"/"+name)
+		if r.m.bootstrapped {
+			present[echoTarget+"/"+name] = true
+			r.checkBootstrap("drained", "main", name)
+		}
+	}
+	var want []string
+	for path, ok := range present {
+		if ok {
+			want = append(want, path)
+		}
+	}
+	slices.Sort(want)
+	if tree := splitLines(gitIn(r.t, r.f.repoDir, "ls-tree", "-r", "--name-only", "main")); !slices.Equal(tree, want) {
+		r.failf("drained, Git holds %v; the model %v", tree, want)
+	}
+	if changed := gitIn(r.t, r.f.repoDir, others...); changed != "" {
+		r.failf("drained, Git changed the base's %s", changed)
 	}
 }
 
