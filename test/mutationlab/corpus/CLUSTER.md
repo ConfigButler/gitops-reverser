@@ -14,8 +14,8 @@ the one recorded here.
 
 | Field | Value |
 |---|---|
-| k3d image | `rancher/k3s:v1.36.4-k3s1` |
-| Server version | `v1.36.4+k3s1` (linux/amd64) |
+| k3d image | `rancher/k3s:v1.37.1-k3s1` |
+| Server version | `v1.37.1+k3s1` (linux/amd64) |
 | Captured at | 2026-10-27 |
 
 Moving from `v1.36.1+k3s1` (captured 2026-06-25) to `v1.36.4+k3s1` changed one
@@ -28,3 +28,16 @@ field: each audit event of an impersonated actor in rows 8a and 19
 `authenticationMetadata.impersonationConstraint: impersonate:user-info`. A plain
 k3s v1.36.1 and v1.36.4 cluster, with an audit log backend instead of the lab,
 records it for the same request. Every other scenario reproduced unchanged.
+
+Moving from `v1.36.4+k3s1` to `v1.37.1+k3s1` (2026-10-27, the e2e cluster's
+version) changed three shapes, each reproduced by a second capture:
+
+- `configmap/deletecollection/`: the `deletecollection` response's list
+  resourceVersion is now the last deleted object's own resourceVersion, where
+  1.36 returned a newer one, so the watch DELETED placeholders shift by one;
+- `pod/graceful-delete/`: the deleted pod's `PodReadyToStartContainers`
+  condition now carries `reason: PodSandboxNotReady` and a message;
+- `configmap/owner-ref-cascade/`: the garbage collector's `userAgent` names the
+  new version.
+
+Every other scenario reproduced unchanged.

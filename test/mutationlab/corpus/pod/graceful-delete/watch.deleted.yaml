@@ -61,7 +61,9 @@ object:
               .: {}
               f:lastProbeTime: {}
               f:lastTransitionTime: {}
+              f:message: {}
               f:observedGeneration: {}
+              f:reason: {}
               f:status: {}
               f:type: {}
             k:{"type":"PodScheduled"}:
@@ -131,7 +133,9 @@ object:
     conditions:
     - lastProbeTime: null
       lastTransitionTime: <ts>
+      message: pod sandbox is not ready
       observedGeneration: 2
+      reason: PodSandboxNotReady
       status: "False"
       type: PodReadyToStartContainers
     - lastProbeTime: null

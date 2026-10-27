@@ -8,7 +8,7 @@ webhooks** — at every interesting moment — and commits those structures as a
 **corpus**. It is not a second implementation of GitOps Reverser; it is reference material and a
 regression harness.
 
-The corpus is captured against **k8s v1.36.4+k3s1** (recorded in
+The corpus is captured against **k8s v1.37.1+k3s1** (recorded in
 `test/mutationlab/corpus/CLUSTER.md`). **All seventeen** catalogued scenarios are captured today (see
 the [Difficult Cases Catalog](#difficult-cases-catalog)), plus the rows that extend it, which
 `test/mutationlab/README.md` indexes.
