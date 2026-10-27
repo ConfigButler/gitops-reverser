@@ -122,9 +122,10 @@ type commitRequestWatcher struct {
 
 	mu sync.Mutex
 	// forbidden are the namespaces whose list or watch was denied, and undeletable those where a
-	// finished request could not be deleted.
+	// finished request could not be deleted. unreachable is why the cluster's client could not be built.
 	forbidden   map[string]bool
 	undeletable map[string]bool
+	unreachable error
 }
 
 // CommitRequestsEvents names a KubeProvider whose report changed, so its reconcile writes it at once.
@@ -387,6 +388,9 @@ func (w *commitRequestWatcher) report(deletes bool) CommitRequestsReport {
 	if deletes {
 		verbs += ", and patch and delete on commitrequests"
 	}
+	if w.unreachable != nil {
+		return unreachableCommitRequests(w.unreachable)
+	}
 	if len(w.forbidden) > 0 {
 		return CommitRequestsReport{Status: metav1.ConditionFalse, Reason: ReasonCommitRequestsForbidden,
 			Message: fmt.Sprintf("the credential may not list or watch CommitRequests in %s: grant it %s, "+
@@ -425,9 +429,8 @@ func (s *CommitRequestServer) run(
 		release := s.FactStreams.Acquire(queue.FactStreamKeyFor(route, commitRequestGVR().GroupResource()))
 		defer release()
 	}
-	dc, err := s.Clusters.ApplierDynamicClient(ctx, watch.SourceClusterID(watcher.provider))
+	dc, err := s.clusterClient(ctx, log, watcher)
 	if err != nil {
-		log.Info("Cannot reach the KubeProvider's cluster for CommitRequests; will retry", "err", err.Error())
 		return
 	}
 	resource := dc.Resource(commitRequestGVR())
@@ -455,6 +458,28 @@ func (w *commitRequestWatcher) markUndeletable(namespace string) {
 	w.mark(w.undeletable, namespace, true)
 }
 
+// clusterClient builds the client of the watcher's cluster, retrying until it can or ctx ends; until
+// then the watcher reports the cluster unreachable.
+func (s *CommitRequestServer) clusterClient(
+	ctx context.Context, log logr.Logger, watcher *commitRequestWatcher,
+) (dynamic.Interface, error) {
+	for {
+		dc, err := s.Clusters.ApplierDynamicClient(ctx, watch.SourceClusterID(watcher.provider))
+		watcher.mu.Lock()
+		watcher.unreachable = err
+		watcher.mu.Unlock()
+		if err == nil {
+			return dc, nil
+		}
+		log.Info("Cannot reach the KubeProvider's cluster for CommitRequests; will retry", "err", err.Error())
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(commitRequestReconnect):
+		}
+	}
+}
+
 // watchNamespace lists and watches one namespace's CommitRequests, or every namespace's, reconnecting
 // after a failure, until ctx ends.
 func (s *CommitRequestServer) watchNamespace(
@@ -462,8 +487,10 @@ func (s *CommitRequestServer) watchNamespace(
 	resource dynamic.NamespaceableResourceInterface, namespace string,
 ) {
 	for ctx.Err() == nil {
-		err := s.session(ctx, watcher, resource.Namespace(namespace))
-		watcher.mark(watcher.forbidden, namespaceLabel(namespace), apierrors.IsForbidden(err))
+		err := s.session(ctx, watcher, resource.Namespace(namespace), namespaceLabel(namespace))
+		if apierrors.IsForbidden(err) {
+			watcher.mark(watcher.forbidden, namespaceLabel(namespace), true)
+		}
 		if err != nil && ctx.Err() == nil {
 			log.Info("The watch of CommitRequests ended; reconnecting", "namespace", namespaceLabel(namespace),
 				"err", err.Error())
@@ -475,14 +502,16 @@ func (s *CommitRequestServer) watchNamespace(
 	}
 }
 
-// session lists the requests and watches them, until the watch ends.
+// session lists the requests and watches them, until the watch ends. A list that succeeds clears a
+// denial reported for the namespace, so a Role granted since is reported at once.
 func (s *CommitRequestServer) session(
-	ctx context.Context, watcher *commitRequestWatcher, resource dynamic.ResourceInterface,
+	ctx context.Context, watcher *commitRequestWatcher, resource dynamic.ResourceInterface, namespace string,
 ) error {
 	list, err := resource.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
+	watcher.mark(watcher.forbidden, namespace, false)
 	for i := range list.Items {
 		s.consider(ctx, watcher, &list.Items[i])
 	}

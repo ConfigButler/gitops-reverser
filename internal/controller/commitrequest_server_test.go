@@ -135,6 +135,11 @@ func TestCommitRequestWatcher_Report(t *testing.T) {
 	every := &commitRequestWatcher{namespaces: []string{"*"}, forbidden: map[string]bool{},
 		undeletable: map[string]bool{}}
 	assert.Contains(t, every.report(false).Message, "every namespace")
+
+	every.unreachable = errors.New("no route to host")
+	report = every.report(false)
+	assert.Equal(t, ReasonCommitRequestsUnreachable, report.Reason)
+	assert.Contains(t, report.Message, "no route to host")
 }
 
 // On a source cluster a request is admitted by a grant's sourceNamespaces, and only in a namespace the
