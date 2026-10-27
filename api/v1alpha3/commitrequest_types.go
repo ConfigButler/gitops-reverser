@@ -258,6 +258,14 @@ type CommitRequestStatus struct {
 	AppliedRevision string `json:"appliedRevision,omitempty"`
 }
 
+// The last line of the kind's description is its schema revision, which a cluster that installed the
+// CRD on its own, as a source cluster does, can be judged by. It ships in the CRD, so the same
+// published schema reads it back: CommitRequestSchemaRevision and CommitRequestSchemaFloor below
+// must say the same, and TestCommitRequestSchemaRevision fails when the generated CRD changes and
+// they do not move. Raise the revision with every change to the generated CRD, and the floor ("compatible
+// from") with a change that breaks an older reader or writer: a new required field, a removed field,
+// or a changed meaning.
+
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
@@ -273,8 +281,12 @@ type CommitRequestStatus struct {
 
 // CommitRequest asks for a save: it attaches to its author's current or next
 // commit window on a GitTarget, closes that window on its own timers, and
-// gives the commit its message. Its spec is immutable, and status.commit
-// reports the commit once it is on the remote.
+// gives the commit its message. Create it on the cluster GitOps Reverser runs
+// in, or on a source cluster whose KubeProvider sets spec.commitRequests. Its
+// spec is immutable, and status.commit reports the commit once it is on the
+// remote.
+//
+// Schema revision 1, compatible from revision 1.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -311,6 +323,14 @@ func (s *CommitRequest) GitTargetKey() types.NamespacedName {
 	}
 	return types.NamespacedName{Namespace: namespace, Name: s.Spec.GitTargetRef.Name}
 }
+
+// CommitRequestSchemaRevision and CommitRequestSchemaFloor are the revision of the CommitRequest
+// schema this operator was built with, and the oldest revision it can serve: the last line of the
+// kind's description.
+const (
+	CommitRequestSchemaRevision = 1
+	CommitRequestSchemaFloor    = 1
+)
 
 func init() {
 	SchemeBuilder.Register(&CommitRequest{}, &CommitRequestList{})

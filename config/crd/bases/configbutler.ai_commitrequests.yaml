@@ -55,8 +55,12 @@ spec:
         description: |-
           CommitRequest asks for a save: it attaches to its author's current or next
           commit window on a GitTarget, closes that window on its own timers, and
-          gives the commit its message. Its spec is immutable, and status.commit
-          reports the commit once it is on the remote.
+          gives the commit its message. Create it on the cluster GitOps Reverser runs
+          in, or on a source cluster whose KubeProvider sets spec.commitRequests. Its
+          spec is immutable, and status.commit reports the commit once it is on the
+          remote.
+
+          Schema revision 1, compatible from revision 1.
         properties:
           apiVersion:
             description: |-

@@ -86,21 +86,22 @@ evaluated against `Namespace`s in the *source* cluster, so a remote provider's i
 grant it exactly the namespaces and types the rules name — a `sourceNamespace: "*"` item asks for a
 cluster-wide `list`/`watch` of its types, and gets a clean 403 if the credential cannot serve it.
 
-### `remotesaverequests` on a source cluster
+### `commitrequests` on a source cluster
 
-A source credential only reads, with one opt-in exception. A `KubeProvider` with
-`spec.remoteSaveRequests: Enabled` serves the
-[`RemoteSaveRequest`s](configuration.md#remotesaverequest) created on its cluster, and writes their
-status back there. Its credential then needs, in the `source.configbutler.ai` group, `get`, `list`,
-`watch` and `delete` on `remotesaverequests` (`delete` for the finished-request TTL), and `update` on
-`remotesaverequests/status`. Nothing else on a source cluster is written. The manager role carries
-the same rules for the cluster the operator runs in, for an `inCluster` provider.
+A source credential only reads, with one opt-in exception. A `KubeProvider` whose
+`spec.commitRequests` is `Reconcile` serves the
+[`CommitRequest`s](configuration.md#serving-the-commitrequests-of-a-source-cluster) created on its
+cluster, in the namespaces it lends its `GitTarget`s, and writes their status back there. Its
+credential then needs, in the `configbutler.ai` group and in each of those namespaces, `get`, `list`
+and `watch` on `commitrequests`, and `update` on `commitrequests/status`.
+`ReconcileAndDeleteFinished` also deletes finished requests, so it needs `patch` and `delete` on
+`commitrequests` too. Nothing else on a source cluster is written, the CRD included. The manager
+role carries the same rules for the cluster the operator runs in.
 
-Whoever may create a `RemoteSaveRequest` in a namespace may save their own commit window on any
-`GitTarget` whose `spec.allowedRemoteSaveRequests` admits it. That grant, not the provider's switch,
-is the `GitTarget` owner's consent. On the cluster GitOps Reverser runs in, whoever may create a
-`CommitRequest` in a namespace may save on every `GitTarget` whose `spec.allowedCommitRequests` admits
-that namespace.
+Whoever may create a `CommitRequest` in a namespace may save their own commit window on any
+`GitTarget` whose `spec.allowedCommitRequests` admits it: by `sourceNamespaces` on a source cluster,
+by `consumerNamespaces` on the cluster GitOps Reverser runs in. That grant, not the provider's
+switch, is the `GitTarget` owner's consent.
 
 ## The operator does not read Secrets wholesale
 

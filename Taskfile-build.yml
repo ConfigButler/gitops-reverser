@@ -55,7 +55,6 @@ tasks:
       - exclude: cmd/**/zz_generated.deepcopy.go
     generates:
       - config/crd/bases/configbutler.ai*.yaml
-      - config/crd/bases/source.configbutler.ai*.yaml
       - config/rbac/role.yaml
     cmds:
       - |
@@ -112,7 +111,6 @@ tasks:
       - exclude: api/**/zz_generated.deepcopy.go
     generates:
       - api/v1alpha3/zz_generated.deepcopy.go
-      - api/source/v1alpha1/zz_generated.deepcopy.go
     cmds:
       - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths=./api/...'
 
@@ -774,6 +772,7 @@ tasks:
       - exclude: cmd/**/zz_generated.deepcopy.go
     generates:
       - dist/crds.yaml
+      - dist/commitrequest-crd.yaml
       - dist/install.yaml
     cmds:
       - |
@@ -787,6 +786,8 @@ tasks:
         # here. Each chart CRD file already begins with its own `---`, so a plain cat is valid
         # multi-doc YAML.
         cat charts/gitops-reverser/crds/*.yaml > dist/crds.yaml
+        # A source cluster needs only the CommitRequest CRD, so it ships on its own too.
+        cp charts/gitops-reverser/crds/configbutler.ai_commitrequests.yaml dist/commitrequest-crd.yaml
         {{.HELM}} template {{.INSTALL_NAME}} charts/gitops-reverser \
           --namespace {{.NAMESPACE}} \
           --set labels.managedBy=kubectl \

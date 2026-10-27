@@ -11,4 +11,3 @@ resources:
   - bases/configbutler.ai_kubeproviders.yaml
   - bases/configbutler.ai_commitrequests.yaml
   - bases/configbutler.ai_watchrules.yaml
-  - bases/source.configbutler.ai_remotesaverequests.yaml

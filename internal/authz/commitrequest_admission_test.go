@@ -31,13 +31,13 @@ func TestCommitRequestAdmitted(t *testing.T) {
 		}
 	}
 	bySelector := configv1alpha3.GitTargetCommitRequestGrant{
-		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{
+		ConsumerNamespaces: &configv1alpha3.ConsumerNamespaces{
 			From:     configv1alpha3.GrantFromSelector,
 			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"platform.example.com/tenant": "true"}},
 		},
 	}
 	all := configv1alpha3.GitTargetCommitRequestGrant{
-		ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
+		ConsumerNamespaces: &configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
 	}
 	reader := fake.NewClientBuilder().WithScheme(admissionScheme(t)).WithObjects(tenant).Build()
 

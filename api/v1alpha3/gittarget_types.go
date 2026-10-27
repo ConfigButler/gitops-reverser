@@ -185,41 +185,27 @@ type GitTargetSpec struct {
 	Commit *GitTargetCommitSpec `json:"commit,omitempty"`
 
 	// AllowedCommitRequests says which CommitRequests may save this GitTarget's
-	// commit windows, by the namespace they are in:
+	// commit windows. Each grant sets one of:
 	//
-	// - Omitted: the CommitRequests in this GitTarget's namespace, as one grant
-	//   with from: "Same".
-	// - Empty list ([]): no CommitRequest.
-	// - A list of grants: the CommitRequests that at least one grant allows.
+	// - consumerNamespaces: namespaces of the cluster GitOps Reverser runs
+	//   in. They admit requests only when spec.kubeProviderRef names an
+	//   inCluster KubeProvider.
+	// - sourceNamespaces: namespaces of the cluster spec.kubeProviderRef
+	//   names, which must set spec.commitRequests. They admit requests only
+	//   when that KubeProvider names a kubeconfig.
 	//
-	// A list replaces the default: the CommitRequests in this namespace keep
-	// access only if at least one grant allows them. A request no grant allows
+	// Omitted, the CommitRequests in this GitTarget's namespace are admitted,
+	// as one grant with consumerNamespaces from: "Same". An empty list ([])
+	// admits none. A list replaces the default. A request no grant admits
 	// fails with reason "NotAllowed".
+	//
+	// An admitted request saves its creator's whole commit window on this
+	// GitTarget, writes outside the request's namespace included.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=64
 	// +kubebuilder:default={{consumerNamespaces: {from: Same}}}
 	AllowedCommitRequests []GitTargetCommitRequestGrant `json:"allowedCommitRequests"`
-
-	// Consent lives on the GitTarget, not on the KubeProvider that serves the requests: the provider's
-	// owner lends a cluster, and whether a save made on it may steer this folder's commits, with its
-	// message, its timers and an apply, is the folder's owner's decision. Nothing is admitted by
-	// default, because a source cluster's namespaces are not the control cluster's, so there is no
-	// "Same" to default to.
-
-	// AllowedRemoteSaveRequests are the RemoteSaveRequests, made on the cluster
-	// spec.kubeProviderRef names, that may save this GitTarget's commit
-	// windows. A request is admitted when one grant admits both its namespace
-	// and its labels. Omitted or empty, none is. A request that GitTargets
-	// mirror but none admits reports "NotAllowed". The KubeProvider must also
-	// set spec.remoteSaveRequests "Enabled".
-	//
-	// An admitted request saves its creator's whole commit window on this
-	// GitTarget, edits outside the request's namespace included.
-	// +optional
-	// +listType=atomic
-	// +kubebuilder:validation:MaxItems=16
-	AllowedRemoteSaveRequests []GitTargetRemoteSaveRequestGrant `json:"allowedRemoteSaveRequests,omitempty"`
 
 	// The scan keeps running while writes are suspended: freezing status.placement too would leave
 	// a stale answer at the moment it costs most. A suspended target is Ready=True reason

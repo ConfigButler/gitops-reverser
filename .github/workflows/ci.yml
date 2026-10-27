@@ -458,6 +458,7 @@ jobs:
           name: release-bundle
           path: |
             dist/crds.yaml
+            dist/commitrequest-crd.yaml
             dist/install.yaml
             gitops-reverser.tgz
           if-no-files-found: error

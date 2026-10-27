@@ -220,24 +220,62 @@ type KubeProviderApplierClaimGrant struct {
 }
 
 // GitTargetCommitRequestGrant admits the CommitRequests of some namespaces to
-// save a GitTarget's commit windows.
+// save a GitTarget's commit windows: on the cluster GitOps Reverser runs in
+// (consumerNamespaces), or on the cluster the GitTarget mirrors
+// (sourceNamespaces). It sets exactly one of the two.
+// +kubebuilder:validation:XValidation:rule="has(self.consumerNamespaces) != has(self.sourceNamespaces)",message="a grant in allowedCommitRequests sets exactly one of consumerNamespaces and sourceNamespaces"
 type GitTargetCommitRequestGrant struct {
-	// ConsumerNamespaces are the namespaces whose CommitRequests this grant
-	// admits. from: "Same" is this GitTarget's namespace.
-	// +required
-	ConsumerNamespaces ConsumerNamespaces `json:"consumerNamespaces"`
+	// ConsumerNamespaces are the namespaces, on the cluster GitOps Reverser
+	// runs in, whose CommitRequests this grant admits. from: "Same" is this
+	// GitTarget's namespace. It admits requests only for a GitTarget whose
+	// KubeProvider sets spec.inCluster.
+	// +optional
+	ConsumerNamespaces *ConsumerNamespaces `json:"consumerNamespaces,omitempty"`
+
+	// SourceNamespaces are the namespaces, on the cluster spec.kubeProviderRef
+	// names, whose CommitRequests this grant admits: exact names, or "*" for
+	// every namespace this GitTarget may mirror. Variables are refused. A
+	// namespace the KubeProvider does not lend this GitTarget in
+	// spec.allowedGitTargets is never admitted. It admits requests only for a
+	// GitTarget whose KubeProvider names a kubeconfig.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=64
+	SourceNamespaces []SourceNamespace `json:"sourceNamespaces,omitempty"`
 }
 
-// AdmitsCommitRequest reports whether spec.allowedCommitRequests admits a CommitRequest in namespace,
-// by the labels that namespace carries in the control cluster.
+// AdmitsCommitRequest reports whether spec.allowedCommitRequests admits a CommitRequest in namespace
+// of the control cluster, by the labels that namespace carries there: its consumerNamespaces grants.
 func (t *GitTarget) AdmitsCommitRequest(namespace string, nsLabels map[string]string) (bool, error) {
 	admitting, err := admitAll(consumersOf(t.commitRequestGrants()), t.Namespace, namespace, nsLabels)
 	return len(admitting) > 0, err
 }
 
-// DescribeAllowedCommitRequests names the namespaces spec.allowedCommitRequests admits.
+// DescribeAllowedCommitRequests names the namespaces spec.allowedCommitRequests admits on the control
+// cluster.
 func (t *GitTarget) DescribeAllowedCommitRequests() string {
-	return describeAdmitted(consumersOf(t.commitRequestGrants()), t.Namespace)
+	grants := t.commitRequestGrants()
+	consumers := make([]ConsumerNamespaces, 0, len(grants))
+	for i := range grants {
+		if grants[i].ConsumerNamespaces != nil {
+			consumers = append(consumers, *grants[i].ConsumerNamespaces)
+		}
+	}
+	return describeAdmitted(consumers, t.Namespace)
+}
+
+// AdmitsSourceCommitRequest reports whether spec.allowedCommitRequests admits a CommitRequest in
+// namespace of the cluster this GitTarget mirrors: its sourceNamespaces grants, "*" for any.
+func (t *GitTarget) AdmitsSourceCommitRequest(namespace string) bool {
+	for _, grant := range t.commitRequestGrants() {
+		if slices.ContainsFunc(grant.SourceNamespaces, func(ns SourceNamespace) bool {
+			return ns == "*" || string(ns) == namespace
+		}) {
+			return true
+		}
+	}
+	return false
 }
 
 // SourceNamespace is a namespace of a source cluster, by exact name, or "*"
@@ -245,54 +283,6 @@ func (t *GitTarget) DescribeAllowedCommitRequests() string {
 // +kubebuilder:validation:MaxLength=63
 // +kubebuilder:validation:XValidation:rule="self == '*' || self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="a source namespace is a namespace name, or '*' alone; variables are refused, because a source cluster's namespaces are not the control cluster's"
 type SourceNamespace string
-
-// GitTargetRemoteSaveRequestGrant admits the RemoteSaveRequests of some
-// namespaces of the source cluster to save a GitTarget's commit windows.
-type GitTargetRemoteSaveRequestGrant struct {
-	// SourceNamespaces are the namespaces, on the cluster the GitTarget's
-	// spec.kubeProviderRef names, whose RemoteSaveRequests this grant admits:
-	// exact names, or "*" for every namespace the GitTarget mirrors.
-	// +required
-	// +listType=set
-	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=64
-	SourceNamespaces []SourceNamespace `json:"sourceNamespaces"`
-
-	// RequestSelector narrows this grant to the RemoteSaveRequests whose labels
-	// match. Omitted, it admits every request from sourceNamespaces. Whoever
-	// creates a request picks its labels, so this picks requests and proves
-	// nothing about who made them.
-	// +optional
-	RequestSelector *metav1.LabelSelector `json:"requestSelector,omitempty"`
-}
-
-// AdmitsRemoteSaveRequest reports whether spec.allowedRemoteSaveRequests admits a RemoteSaveRequest
-// in namespace, on the source cluster, carrying requestLabels. A selector that does not convert is an
-// error, never a silent allow; it is returned only when no grant admits.
-func (t *GitTarget) AdmitsRemoteSaveRequest(namespace string, requestLabels map[string]string) (bool, error) {
-	var errs []error
-	for i := range t.Spec.AllowedRemoteSaveRequests {
-		grant := &t.Spec.AllowedRemoteSaveRequests[i]
-		if !slices.ContainsFunc(grant.SourceNamespaces, func(ns SourceNamespace) bool {
-			return ns == "*" || string(ns) == namespace
-		}) {
-			continue
-		}
-		if grant.RequestSelector == nil {
-			return true, nil
-		}
-		selector, err := metav1.LabelSelectorAsSelector(grant.RequestSelector)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("grant %d: requestSelector %s: %w", i,
-				metav1.FormatLabelSelector(grant.RequestSelector), err))
-			continue
-		}
-		if selector.Matches(labels.Set(requestLabels)) {
-			return true, nil
-		}
-	}
-	return false, errors.Join(errs...)
-}
 
 // The API server defaults an omitted grant list on GitBranch, KubeProvider and GitTarget (the
 // +kubebuilder:default markers on their fields), so a list read from it is never nil. These mirror
@@ -327,7 +317,7 @@ func DefaultKubeProviderApplierClaimGrants() []KubeProviderApplierClaimGrant {
 // DefaultGitTargetCommitRequestGrants is GitTarget.spec.allowedCommitRequests when it is omitted:
 // CommitRequests in the GitTarget's own namespace.
 func DefaultGitTargetCommitRequestGrants() []GitTargetCommitRequestGrant {
-	return []GitTargetCommitRequestGrant{{ConsumerNamespaces: ConsumerNamespaces{From: GrantFromSame}}}
+	return []GitTargetCommitRequestGrant{{ConsumerNamespaces: &ConsumerNamespaces{From: GrantFromSame}}}
 }
 
 // orDefault is grants, or def when grants is nil (omitted rather than empty).
@@ -358,8 +348,14 @@ func (t *GitTarget) commitRequestGrants() []GitTargetCommitRequestGrant {
 	return orDefault(t.Spec.AllowedCommitRequests, DefaultGitTargetCommitRequestGrants)
 }
 
-// consumers is the admitting half of a GitTargetCommitRequestGrant.
-func (g *GitTargetCommitRequestGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }
+// consumers is the admitting half of a GitTargetCommitRequestGrant on the control cluster. A grant of
+// source namespaces admits nobody there: its zero ConsumerNamespaces has no from.
+func (g *GitTargetCommitRequestGrant) consumers() ConsumerNamespaces {
+	if g.ConsumerNamespaces == nil {
+		return ConsumerNamespaces{}
+	}
+	return *g.ConsumerNamespaces
+}
 
 // consumers is the admitting half of a GitProviderGitBranchGrant.
 func (g *GitProviderGitBranchGrant) consumers() ConsumerNamespaces { return g.ConsumerNamespaces }

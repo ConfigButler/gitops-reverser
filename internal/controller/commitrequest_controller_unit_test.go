@@ -880,7 +880,7 @@ func TestCommitRequestAttach_AGitTargetElsewhereMustAdmitTheRequest(t *testing.T
 	}
 	fromNames := func(names ...configv1alpha3.GrantNamespace) []configv1alpha3.GitTargetCommitRequestGrant {
 		return []configv1alpha3.GitTargetCommitRequestGrant{{
-			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames, Names: names},
+			ConsumerNamespaces: &configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromNames, Names: names},
 		}}
 	}
 	cases := []struct {
@@ -892,7 +892,7 @@ func TestCommitRequestAttach_AGitTargetElsewhereMustAdmitTheRequest(t *testing.T
 		{"a grant for another namespace", fromNames("team-b"), false},
 		{"a grant for the request's namespace", fromNames("default"), true},
 		{"every namespace", []configv1alpha3.GitTargetCommitRequestGrant{{
-			ConsumerNamespaces: configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
+			ConsumerNamespaces: &configv1alpha3.ConsumerNamespaces{From: configv1alpha3.GrantFromAll},
 		}}, true},
 		{"an empty list admits nobody", []configv1alpha3.GitTargetCommitRequestGrant{}, false},
 	}

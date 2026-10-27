@@ -756,6 +756,24 @@ func (m *Manager) ApplierDynamicClient(ctx context.Context, clusterID string) (d
 	return dc, nil
 }
 
+// SourceDiscovery returns a discovery client for the cluster clusterID names, with that KubeProvider's
+// identity, built for this call: what the CommitRequest server asks whether the cluster serves the
+// CommitRequest CRD. It carries the dial timeout every discovery client here does.
+func (m *Manager) SourceDiscovery(ctx context.Context, clusterID string) (discovery.DiscoveryInterface, error) {
+	if clusterID == configPlaneClusterID {
+		return nil, errors.New("no cluster named: the config plane is not a KubeProvider")
+	}
+	cfg, _, _, err := m.resolveSourceConfig(ctx, clusterID)
+	if err != nil {
+		return nil, err
+	}
+	dc, err := discovery.NewDiscoveryClientForConfig(discoveryRESTConfig(cfg))
+	if err != nil {
+		return nil, fmt.Errorf("build discovery client for cluster %q: %w", describeCluster(clusterID), err)
+	}
+	return dc, nil
+}
+
 // sourceClusterDeclared reports whether any GitTarget's Declare captured this cluster id.
 func (m *Manager) sourceClusterDeclared(clusterID string) bool {
 	for _, id := range m.watchPlane().clusters {

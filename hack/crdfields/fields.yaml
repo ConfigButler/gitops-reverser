@@ -128,10 +128,11 @@ kinds:
         doc: >-
           Audit route this provider joins. A route is held by one namespace. See
           [audit route](#audit-route-and-auditfactsreceived)
-      - path: remoteSaveRequests
+      - path: commitRequests
         doc: >-
-          `Enabled` serves the `RemoteSaveRequest`s created on this cluster, which writes to it. See
-          [`RemoteSaveRequest`](#remotesaverequest)
+          Whether the `CommitRequest`s created on this cluster are served, and finished ones deleted:
+          `Ignore`, `Reconcile`, `ReconcileAndDeleteFinished`. See
+          [serving them](#serving-the-commitrequests-of-a-source-cluster)
 
   - kind: GitTarget
     title: "`GitTarget` (namespaced): which branch and folder"
@@ -160,13 +161,9 @@ kinds:
         doc: How commits are phrased. See [commit messages](commit-messages.md)
       - path: allowedCommitRequests
         doc: >-
-          The namespaces whose `CommitRequest`s may save this target's windows. See
+          The `CommitRequest`s that may save this target's windows: `consumerNamespaces` on the
+          cluster GitOps Reverser runs in, `sourceNamespaces` on the one it mirrors. See
           [who may save](#who-may-save-specallowedcommitrequests)
-      - path: allowedRemoteSaveRequests
-        default: none admitted
-        doc: >-
-          The `RemoteSaveRequest`s, by source namespace and labels, that may name this target and
-          save its windows. See [`RemoteSaveRequest`](#remotesaverequest)
       - path: placement.byType
         default: the built-in path
         doc: >-
@@ -301,12 +298,13 @@ kinds:
           Otherwise `10s` to `24h`
 
   - kind: CommitRequest
-    title: "`CommitRequest` (namespaced): save now"
+    title: "`CommitRequest` (namespaced, here or on a source cluster): save now"
     fields:
       - path: gitTargetRef
         doc: >-
           The target whose commit window the request attaches to: in this namespace, or `namespace`
-          names another, whose `allowedCommitRequests` must admit this one
+          names another, whose `allowedCommitRequests` must admit this one. On a source cluster
+          `namespace` is required. See [where a request is created](#where-a-request-is-created)
       - path: message
         default: the target's templates
         doc: Commit message, committed verbatim unless `requestTemplate` frames it
@@ -329,24 +327,3 @@ kinds:
           pushed, instead of after the applier claim's `catchUpAfter`. The tip may hold later commits,
           and saves pushed close together can share one apply; the `Applied` condition reports it
 
-  - kind: RemoteSaveRequest
-    title: "`RemoteSaveRequest` (namespaced, on a source cluster): save the edits made here"
-    fields:
-      - path: gitTargetRef
-        doc: >-
-          The `GitTarget` to save, by `namespace` and `name` on the cluster GitOps Reverser runs in.
-          Its `allowedRemoteSaveRequests` must admit this request
-      - path: message
-        default: the target's templates
-        doc: Commit message, committed verbatim unless `requestTemplate` frames it
-      - path: window.attachTimeout
-        doc: How long to wait for a window with the edits it saves. See [`RemoteSaveRequest`](#remotesaverequest)
-      - path: window.idleTimeout
-        default: no idle close
-        doc: Close the attached window after this much silence
-      - path: window.maxDuration
-        doc: Close the attached window this long after the attach
-      - path: catchUp
-        doc: >-
-          `AfterPush` asks the `GitTarget`'s applier to apply the branch tip right after the commit
-          is pushed; the `Applied` condition reports it

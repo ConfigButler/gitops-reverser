@@ -78,17 +78,24 @@ func kubeconfigProvider(name string, serving bool) *configv1alpha3.KubeProvider 
 		Spec:       configv1alpha3.KubeProviderSpec{SecretRef: &meta.SecretKeyReference{Name: name}},
 	}
 	if serving {
-		provider.Spec.RemoteSaveRequests = configv1alpha3.RemoteSaveRequestsEnabled
+		provider.Spec.CommitRequests = configv1alpha3.CommitRequestsReconcile
 	}
 	return provider
 }
 
-// mirroringTarget is the GitTarget team-a-config, mirroring through provider.
+// mirroringTarget is the GitTarget team-a-config, mirroring through provider. Through a provider
+// other than the in-cluster one, it admits the requests of every namespace of the cluster it mirrors.
 func mirroringTarget(provider string) *configv1alpha3.GitTarget {
-	return &configv1alpha3.GitTarget{
+	target := &configv1alpha3.GitTarget{
 		ObjectMeta: metav1.ObjectMeta{Name: "team-a-config", Namespace: "default"},
 		Spec:       configv1alpha3.GitTargetSpec{KubeProviderRef: meta.NamespacedObjectReference{Name: provider}},
 	}
+	if provider != localProvider {
+		target.Spec.AllowedCommitRequests = []configv1alpha3.GitTargetCommitRequestGrant{
+			{SourceNamespaces: []configv1alpha3.SourceNamespace{"*"}},
+		}
+	}
+	return target
 }
 
 func committed() *fakeFinalizer {

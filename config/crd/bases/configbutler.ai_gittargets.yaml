@@ -113,25 +113,35 @@ spec:
                     from: Same
                 description: |-
                   AllowedCommitRequests says which CommitRequests may save this GitTarget's
-                  commit windows, by the namespace they are in:
+                  commit windows. Each grant sets one of:
 
-                  - Omitted: the CommitRequests in this GitTarget's namespace, as one grant
-                    with from: "Same".
-                  - Empty list ([]): no CommitRequest.
-                  - A list of grants: the CommitRequests that at least one grant allows.
+                  - consumerNamespaces: namespaces of the cluster GitOps Reverser runs
+                    in. They admit requests only when spec.kubeProviderRef names an
+                    inCluster KubeProvider.
+                  - sourceNamespaces: namespaces of the cluster spec.kubeProviderRef
+                    names, which must set spec.commitRequests. They admit requests only
+                    when that KubeProvider names a kubeconfig.
 
-                  A list replaces the default: the CommitRequests in this namespace keep
-                  access only if at least one grant allows them. A request no grant allows
+                  Omitted, the CommitRequests in this GitTarget's namespace are admitted,
+                  as one grant with consumerNamespaces from: "Same". An empty list ([])
+                  admits none. A list replaces the default. A request no grant admits
                   fails with reason "NotAllowed".
+
+                  An admitted request saves its creator's whole commit window on this
+                  GitTarget, writes outside the request's namespace included.
                 items:
                   description: |-
                     GitTargetCommitRequestGrant admits the CommitRequests of some namespaces to
-                    save a GitTarget's commit windows.
+                    save a GitTarget's commit windows: on the cluster GitOps Reverser runs in
+                    (consumerNamespaces), or on the cluster the GitTarget mirrors
+                    (sourceNamespaces). It sets exactly one of the two.
                   properties:
                     consumerNamespaces:
                       description: |-
-                        ConsumerNamespaces are the namespaces whose CommitRequests this grant
-                        admits. from: "Same" is this GitTarget's namespace.
+                        ConsumerNamespaces are the namespaces, on the cluster GitOps Reverser
+                        runs in, whose CommitRequests this grant admits. from: "Same" is this
+                        GitTarget's namespace. It admits requests only for a GitTarget whose
+                        KubeProvider sets spec.inCluster.
                       properties:
                         from:
                           description: |-
@@ -240,83 +250,14 @@ spec:
                         rule: '!has(self.selector) || (has(self.selector.matchLabels)
                           && size(self.selector.matchLabels) > 0) || (has(self.selector.matchExpressions)
                           && size(self.selector.matchExpressions) > 0)'
-                  required:
-                  - consumerNamespaces
-                  type: object
-                maxItems: 64
-                type: array
-                x-kubernetes-list-type: atomic
-              allowedRemoteSaveRequests:
-                description: |-
-                  AllowedRemoteSaveRequests are the RemoteSaveRequests, made on the cluster
-                  spec.kubeProviderRef names, that may save this GitTarget's commit
-                  windows. A request is admitted when one grant admits both its namespace
-                  and its labels. Omitted or empty, none is. A request that GitTargets
-                  mirror but none admits reports "NotAllowed". The KubeProvider must also
-                  set spec.remoteSaveRequests "Enabled".
-
-                  An admitted request saves its creator's whole commit window on this
-                  GitTarget, edits outside the request's namespace included.
-                items:
-                  description: |-
-                    GitTargetRemoteSaveRequestGrant admits the RemoteSaveRequests of some
-                    namespaces of the source cluster to save a GitTarget's commit windows.
-                  properties:
-                    requestSelector:
-                      description: |-
-                        RequestSelector narrows this grant to the RemoteSaveRequests whose labels
-                        match. Omitted, it admits every request from sourceNamespaces. Whoever
-                        creates a request picks its labels, so this picks requests and proves
-                        nothing about who made them.
-                      properties:
-                        matchExpressions:
-                          description: matchExpressions is a list of label selector
-                            requirements. The requirements are ANDed.
-                          items:
-                            description: |-
-                              A label selector requirement is a selector that contains values, a key, and an operator that
-                              relates the key and values.
-                            properties:
-                              key:
-                                description: key is the label key that the selector
-                                  applies to.
-                                type: string
-                              operator:
-                                description: |-
-                                  operator represents a key's relationship to a set of values.
-                                  Valid operators are In, NotIn, Exists and DoesNotExist.
-                                type: string
-                              values:
-                                description: |-
-                                  values is an array of string values. If the operator is In or NotIn,
-                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                  the values array must be empty. This array is replaced during a strategic
-                                  merge patch.
-                                items:
-                                  type: string
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - key
-                            - operator
-                            type: object
-                          type: array
-                          x-kubernetes-list-type: atomic
-                        matchLabels:
-                          additionalProperties:
-                            type: string
-                          description: |-
-                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                            map is equivalent to an element of matchExpressions, whose key field is "key", the
-                            operator is "In", and the values array contains only "value". The requirements are ANDed.
-                          type: object
-                      type: object
-                      x-kubernetes-map-type: atomic
                     sourceNamespaces:
                       description: |-
-                        SourceNamespaces are the namespaces, on the cluster the GitTarget's
-                        spec.kubeProviderRef names, whose RemoteSaveRequests this grant admits:
-                        exact names, or "*" for every namespace the GitTarget mirrors.
+                        SourceNamespaces are the namespaces, on the cluster spec.kubeProviderRef
+                        names, whose CommitRequests this grant admits: exact names, or "*" for
+                        every namespace this GitTarget may mirror. Variables are refused. A
+                        namespace the KubeProvider does not lend this GitTarget in
+                        spec.allowedGitTargets is never admitted. It admits requests only for a
+                        GitTarget whose KubeProvider names a kubeconfig.
                       items:
                         description: |-
                           SourceNamespace is a namespace of a source cluster, by exact name, or "*"
@@ -332,10 +273,12 @@ spec:
                       minItems: 1
                       type: array
                       x-kubernetes-list-type: set
-                  required:
-                  - sourceNamespaces
                   type: object
-                maxItems: 16
+                  x-kubernetes-validations:
+                  - message: a grant in allowedCommitRequests sets exactly one of
+                      consumerNamespaces and sourceNamespaces
+                    rule: has(self.consumerNamespaces) != has(self.sourceNamespaces)
+                maxItems: 64
                 type: array
                 x-kubernetes-list-type: atomic
               applierClaimRef:

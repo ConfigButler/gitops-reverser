@@ -326,15 +326,18 @@ func main() {
 	// Setup watch manager (must be after controllers are set up)
 	fatalIfErr(watchMgr.SetupWithManager(mgr), "unable to setup watch ingestion manager")
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
-	// RemoteSaveRequests are saves made on a source cluster, next to the edits they save: served on every
-	// KubeProvider whose spec.remoteSaveRequests is Enabled, attributed from that cluster's audit facts.
-	fatalIfErr(mgr.Add(&watch.RemoteSaveRequestServer{
-		Manager:   watchMgr,
-		Client:    mgr.GetClient(),
-		Finalizer: eventRouter,
-		TTL:       cfg.commitRequestTTL,
-		Log:       ctrl.Log.WithName("remotesaverequests"),
-	}), "unable to add the RemoteSaveRequest server")
+	// CommitRequests created on a source cluster, next to the edits they save: served through every
+	// KubeProvider whose spec.commitRequests reconciles them, attributed from that cluster's audit facts.
+	commitRequestServer := &controller.CommitRequestServer{
+		Client:      mgr.GetClient(),
+		Clusters:    watchMgr,
+		Finalizer:   eventRouter,
+		Authors:     watchMgr.AuthorResolver,
+		FactStreams: watchMgr.FactStreams,
+		TTL:         cfg.commitRequestTTL,
+		Log:         ctrl.Log.WithName("commitrequests"),
+	}
+	fatalIfErr(mgr.Add(commitRequestServer), "unable to add the CommitRequest server")
 
 	// The GitBranch, GitTarget and applier claim controllers find a GitProvider's GitBranches, in any
 	// namespace, through this index.
@@ -364,6 +367,7 @@ func main() {
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		KubeConfigSafety: cfg.kubeConfigSafety,
+		CommitRequests:   commitRequestServer,
 		Recorder:         mgr.GetEventRecorderFor("kubeprovider"),
 	}
 	// A nil registry must stay a nil INTERFACE, not one wrapping a nil pointer: the reconciler

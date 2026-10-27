@@ -148,7 +148,7 @@ func (c *commitRequestCore) serveOpen(
 		if commitRequestClaimed(cr) {
 			// Its GitTarget went away after the claim. Only a worker that holds the request can still
 			// say how it ends, and that answer is true for every observer.
-			return c.drive(ctx, p, cr, nil)
+			return c.drive(ctx, p, cr, nil, nil)
 		}
 		return c.awaitGitTarget(ctx, p, cr, targetKey)
 	}
@@ -164,7 +164,7 @@ func (c *commitRequestCore) serveOpen(
 		return commitRequestUnownedRecheck, nil
 	}
 	if commitRequestClaimed(cr) {
-		return c.drive(ctx, p, cr, target)
+		return c.drive(ctx, p, cr, target, provider)
 	}
 	return c.claim(ctx, p, cr, target, provider)
 }
@@ -233,15 +233,43 @@ func (c *commitRequestCore) awaitGitTarget(
 
 // admit decides whether target admits the request in spec.allowedCommitRequests: admitted, or the
 // refusal, which wraps errCommitRequestNotAllowed. err is a read to retry.
+//
+// On the control cluster, a grant's consumerNamespaces admit the request's namespace, by its labels
+// there. On a source cluster, a grant's sourceNamespaces name the request's namespace, and the
+// KubeProvider must lend that namespace to the GitTarget in spec.allowedGitTargets, the bound its
+// WatchRules have too.
 func (c *commitRequestCore) admit(
-	ctx context.Context, cr *configbutleraiv1alpha3.CommitRequest, target *configbutleraiv1alpha3.GitTarget,
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
+	target *configbutleraiv1alpha3.GitTarget, provider *configbutleraiv1alpha3.KubeProvider,
 ) (bool, error, error) {
-	decision, err := authz.CommitRequestAdmitted(ctx, c.reader, cr, target)
+	key := client.ObjectKeyFromObject(target)
+	if p.controlCluster() {
+		decision, err := authz.CommitRequestAdmitted(ctx, c.reader, cr, target)
+		if err != nil {
+			return false, nil, err
+		}
+		if !decision.Allowed {
+			return false, fmt.Errorf("%w: %s; on the cluster GitOps Reverser runs in, a grant admits by "+
+				"consumerNamespaces", errCommitRequestNotAllowed, decision.Message), nil
+		}
+		return true, nil, nil
+	}
+	if !target.AdmitsSourceCommitRequest(cr.Namespace) {
+		return false, fmt.Errorf("%w: GitTarget %s does not admit CommitRequests from namespace %q of the "+
+			"cluster it mirrors; on that cluster, a grant in spec.allowedCommitRequests admits by sourceNamespaces",
+			errCommitRequestNotAllowed, key, cr.Namespace), nil
+	}
+	labels, err := namespaceLabelsOf(ctx, c.reader, target.Namespace)
 	if err != nil {
 		return false, nil, err
 	}
-	if !decision.Allowed {
-		return false, fmt.Errorf("%w: %s", errCommitRequestNotAllowed, decision.Message), nil
+	scope, err := provider.AdmitsGitTarget(key, labels)
+	if err != nil {
+		return false, nil, err
+	}
+	if !scope.AllowsSourceNamespace(cr.Namespace) {
+		return false, fmt.Errorf("%w: KubeProvider %s does not lend namespace %q to GitTarget %s in "+
+			"spec.allowedGitTargets", errCommitRequestNotAllowed, provider.Key(), cr.Namespace, key), nil
 	}
 	return true, nil, nil
 }
@@ -259,7 +287,7 @@ func (c *commitRequestCore) claim(
 	if err := git.ValidateLiteralCommitMessage(cr.Spec.Message); err != nil {
 		return c.decide(ctx, p, cr, commitRequestOutcome{err: err, fallbackTarget: true}, false)
 	}
-	admitted, refusal, err := c.admit(ctx, cr, target)
+	admitted, refusal, err := c.admit(ctx, p, cr, target, provider)
 	if err != nil {
 		return 0, err
 	}
@@ -277,7 +305,7 @@ func (c *commitRequestCore) claim(
 	}
 	p.log.Info("CommitRequest claimed", "name", client.ObjectKeyFromObject(cr),
 		"gitTarget", client.ObjectKeyFromObject(target), "author", author)
-	return c.drive(ctx, p, cr, target)
+	return c.drive(ctx, p, cr, target, provider)
 }
 
 // creator is the request's author, found from its audit fact on the route of the GitTarget's
@@ -379,8 +407,8 @@ func (c *commitRequestCore) attachFor(cr *configbutleraiv1alpha3.CommitRequest) 
 }
 
 // drive advances a claimed request: it sends the attach, or the withdraw once the request is past its
-// bound, and records the worker's phase until the worker has an outcome. target is nil when the
-// GitTarget is gone.
+// bound, and records the worker's phase until the worker has an outcome. target and its provider are
+// nil when the GitTarget is gone.
 //
 // A GitTarget with another UID than the one that admitted the request replaced it, and admitted
 // nothing: it is asked again. Its admission is recorded before anything is attached to it; its
@@ -388,11 +416,11 @@ func (c *commitRequestCore) attachFor(cr *configbutleraiv1alpha3.CommitRequest) 
 // have had the request committed.
 func (c *commitRequestCore) drive(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
-	target *configbutleraiv1alpha3.GitTarget,
+	target *configbutleraiv1alpha3.GitTarget, provider *configbutleraiv1alpha3.KubeProvider,
 ) (time.Duration, error) {
 	attach := c.attachFor(cr)
 	if target != nil && string(target.UID) != cr.Status.GitTargetUID {
-		admitted, refusal, err := c.admit(ctx, cr, target)
+		admitted, refusal, err := c.admit(ctx, p, cr, target, provider)
 		if err != nil {
 			return 0, err
 		}
