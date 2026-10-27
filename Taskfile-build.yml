@@ -93,7 +93,6 @@ tasks:
       - exclude: cmd/**/zz_generated.deepcopy.go
     generates:
       - charts/gitops-reverser/crds/configbutler.*.yaml
-      - charts/gitops-reverser/crds/source.configbutler.*.yaml
       - charts/gitops-reverser/config/role.yaml
     cmds:
       - |
