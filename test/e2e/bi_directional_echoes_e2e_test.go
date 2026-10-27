@@ -397,6 +397,7 @@ func echoScenarios(run func() *echoRun) {
 
 		By("saving an API edit with a CommitRequest while a Git-side push changes the same object")
 		name := applyCommitRequestWithGenerateName(r.testNs, "echo-save-", r.targetName, "e2e: save the edit")
+		waitForCommitRequestClaimed(r.testNs, name)
 		r.editThroughAPI("saved", "s-save")
 		r.pushFromOutside("saved", "s-git")
 

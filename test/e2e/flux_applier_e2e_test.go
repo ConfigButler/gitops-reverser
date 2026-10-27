@@ -380,6 +380,7 @@ spec:
     maxDuration: "4s"
 `, request, testNs, destName), "apply", "-f", "-")
 		Expect(err).NotTo(HaveOccurred())
+		waitForCommitRequestClaimed(testNs, request)
 		_, err = kubectlRunInNamespace(testNs, "patch", "configmap", configMap, "--type=merge", "-p",
 			`{"data":{"test-key":"saved"}}`)
 		Expect(err).NotTo(HaveOccurred())

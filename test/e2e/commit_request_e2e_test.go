@@ -488,6 +488,18 @@ spec:
 	Expect(err).NotTo(HaveOccurred(), fmt.Sprintf("failed to apply CommitRequest %s/%s", namespace, name))
 }
 
+// waitForCommitRequestClaimed waits until the request is claimed: Ready=Unknown, written once its own
+// audit event named its author and before it is attached. A save made before its edit waits for this
+// on a GitTarget whose windows close on the first silence (e2eCommitWindow): the request is
+// registered only after its author is found, and its edit, attributed the same way, could otherwise
+// reach the worker first and commit alone.
+func waitForCommitRequestClaimed(namespace, name string) {
+	GinkgoHelper()
+	Eventually(func(g Gomega) {
+		g.Expect(commitRequestCondition(g, namespace, name, "Ready")).To(Equal("Unknown"))
+	}, time.Minute, 250*time.Millisecond).Should(Succeed(), "CommitRequest %s/%s is claimed", namespace, name)
+}
+
 // commitRequestField reads a jsonpath field off a CommitRequest object.
 func commitRequestField(g Gomega, namespace, name, jsonPath string) string {
 	out, err := kubectlRunInNamespace(namespace, "get", "commitrequest", name,

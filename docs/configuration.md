@@ -3078,6 +3078,13 @@ up to `--author-attribution-grace` each. That is rare when the audit policy cove
 [suggested alert](interpreting-metrics.md#suggested-alerts) on `tier="absent"` says when it is not.
 Widening `attachTimeout` hides that delay rather than removing it.
 
+A request is registered with the branch worker only once its own audit event has named its author,
+and its edit is attributed the same way, so a request created just before its edit does not always
+reach the worker first. On a `GitTarget` whose windows close on the first silence (`idleTimeout:
+"0s"`), such an edit can commit alone before the request is there to attach to it. Make the edit
+once the request is claimed (`Ready=Unknown`), or give the `GitTarget` an `idleTimeout` that covers
+the gap.
+
 `maxDuration`, and `idleTimeout` when set, cover the span of the save's own writes after the
 attach. The worst case from registration to the finalize is `attachTimeout` plus `maxDuration`; the
 push follows, with its cooldown and any retries.

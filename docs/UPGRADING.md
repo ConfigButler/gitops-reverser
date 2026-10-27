@@ -31,6 +31,9 @@ those that remain expire on their own.
   `Stalled=True` is unaffected.
 - **`spec.window.attachTimeout` defaults to `5s`**, since the request now waits for its own audit event
   as its edits do. A request that sets it keeps its value.
+- **A request is registered once its author is found**, no longer at creation. A client that creates a
+  request and then makes the edit it saves, on a `GitTarget` whose windows close on the first silence
+  (`idleTimeout: "0s"`), waits for `Ready=Unknown` before the edit, or the edit can commit alone.
 - **A `GitTarget` that mirrors another cluster.** A `CommitRequest` on the cluster GitOps Reverser runs
   in, for such a `GitTarget`, is refused with reason `NotAllowed`. Create it on the cluster the
   `GitTarget` mirrors instead, as described in
