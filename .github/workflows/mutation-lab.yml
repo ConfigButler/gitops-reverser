@@ -1,0 +1,78 @@
+# Mutation-capture lab: creates the lab's own k3d cluster, runs every scenario, and fails on any
+# difference from the committed corpus under test/mutationlab/corpus/
+# (docs/design/mutation-capture-lab-own-cluster.md).
+#
+# Nightly and on demand rather than per PR. Its job is to notice when something stops the lab
+# from working, or makes it record something else, before the next Kubernetes upgrade depends on
+# it; a break shows up within a day of the change that caused it. Nothing here publishes, and the
+# run needs no secrets beyond a read token to pull the CI container.
+name: Mutation lab
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The CI base container main last published (ci.yml moves :latest only from main): the same
+  # Go, kubectl, k3d, and task the e2e legs run with.
+  CI_CONTAINER: ghcr.io/configbutler/gitops-reverser-ci:latest
+  CI_WORKDIR: /workspaces/${{ github.event.repository.name }}
+
+jobs:
+  capture:
+    name: Capture and compare to the corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Login to Docker registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Run lab-capture in the CI container
+        # One container for the whole run: the lab's kube context and its records-API forward
+        # live only as long as it does. Host networking reaches the k3d API port and the forward.
+        run: |
+          docker run --rm \
+            --network host \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -w "${{ env.CI_WORKDIR }}" \
+            -e HOST_PROJECT_PATH=${{ github.workspace }} \
+            ${{ env.CI_CONTAINER }} \
+            bash -c "
+              git config --global --add safe.directory ${{ env.CI_WORKDIR }}
+              task lab-capture
+            "
+
+      - name: Show the lab on failure
+        if: failure()
+        run: |
+          docker run --rm \
+            --network host \
+            -v "${GITHUB_WORKSPACE}:${{ env.CI_WORKDIR }}" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -w "${{ env.CI_WORKDIR }}" \
+            ${{ env.CI_CONTAINER }} \
+            bash -c "
+              k3d kubeconfig merge gitops-reverser-capture-lab --kubeconfig-switch-context=false \
+                --kubeconfig-merge-default >/dev/null 2>&1 || exit 0
+              kubectl --context k3d-gitops-reverser-capture-lab get pods -A -o wide || true
+              kubectl --context k3d-gitops-reverser-capture-lab -n mutation-capture-lab \
+                logs deployment/mutation-capture-lab --tail=200 || true
+            "

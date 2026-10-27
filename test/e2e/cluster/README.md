@@ -31,6 +31,10 @@ audit webhook setup restarts the server container to load the final webhook conf
 keeps that restart from taking the manager, Valkey and Gitea down with it. `K3D_AGENT_COUNT=0`
 still builds a single-node cluster, with no taint.
 
+`K3D_SWITCH_CONTEXT=false` creates the cluster without making it the kubeconfig's current context;
+the mutation-capture lab's own cluster ([`test/mutationlab/Taskfile-lab.yml`](../../mutationlab/Taskfile-lab.yml))
+is created that way, so bootstrapping it never moves `kubectl`, or an e2e run, onto it.
+
 It also disables these packaged k3s components by default:
 
 - `traefik`

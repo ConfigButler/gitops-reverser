@@ -1,0 +1,36 @@
+# The rules the corpus was captured under; changing them changes what the corpus records.
+#
+# - resources: ["*"] matches top-level resources only, so rows 5 and 6 record no admission for
+#   /status and /scale. Kubernetes would send those reviews if a rule named the subresources.
+# - failurePolicy Ignore: the backend is a pod on this cluster, and a Fail policy on "*" would
+#   refuse the writes that bring that pod back.
+# - timeoutSeconds 1: with Ignore, a longer wait buys nothing but latency on every write.
+# - The webhook's name is part of the capture too: the API server keys the audit annotation the
+#   admission recorder returns by it (validate-all.configbutler.ai/scenario), and quotes it in a
+#   rejection's message (row 12).
+#
+# The overlay `task lab-bootstrap` writes sets caBundle to the lab CA.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: mutation-capture-lab
+webhooks:
+  - name: validate-all.configbutler.ai
+    admissionReviewVersions: ["v1"]
+    clientConfig:
+      service:
+        name: mutation-capture-lab
+        namespace: mutation-capture-lab
+        path: /validate-all
+        port: 443
+      caBundle: ""
+    failurePolicy: Ignore
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["*"]
+        scope: "*"
+    sideEffects: None
+    timeoutSeconds: 1

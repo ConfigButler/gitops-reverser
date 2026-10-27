@@ -7,5 +7,6 @@
 // The driver is behind the `mutationlab_e2e` build tag so it never compiles into
 // the default `go test ./...` unit lane (which has no cluster). This file is the
 // untagged placeholder that keeps the package buildable when the tag is absent;
-// `task lab-e2e` builds it with -tags mutationlab_e2e.
+// `task lab-capture` builds it with -tags mutationlab_e2e against the lab's own
+// cluster (test/mutationlab/Taskfile-lab.yml).
 package e2e

@@ -22,9 +22,10 @@ import (
 // Deployment for the /status (Row 5) and /scale (Row 6) subresources, and a Pod
 // for the two-event graceful delete (Row 7).
 //
-// The headline finding here is mechanism *silence*. The lab reuses the product's
-// audit policy and validating-webhook config verbatim (swap-image model), and
-// those deliberately drop exactly these moments from the provenance mechanisms:
+// The headline finding here is mechanism *silence*. The lab cluster uses the
+// e2e audit policy and the validating-webhook match rules the corpus was captured
+// under, and those deliberately drop exactly these moments from the provenance
+// mechanisms:
 //
 //   - the audit policy drops apps/*/status and core */status, so a /status write
 //     is invisible to audit (Row 5);

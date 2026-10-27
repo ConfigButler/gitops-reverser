@@ -23,6 +23,6 @@ object:
       time: <ts>
     name: cm-c
     namespace: <ns-1>
-    resourceVersion: <rv-7>
+    resourceVersion: <rv-6>
     uid: <uid-5>
 type: DELETED

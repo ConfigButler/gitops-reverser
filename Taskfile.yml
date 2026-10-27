@@ -24,6 +24,10 @@ includes:
     taskfile: ./test/e2e/Taskfile-e2e.yml
     dir: .
     flatten: true
+  lab:
+    taskfile: ./test/mutationlab/Taskfile-lab.yml
+    dir: .
+    flatten: true
 
 tasks:
   default:

@@ -1,5 +1,5 @@
-# Mutation-capture lab image. Built and deployed only by `task lab-e2e`; it is
-# never part of the product image, the Helm chart, or the default CI lane.
+# Mutation-capture lab image. Built by `task lab-build-image` and run on the lab's
+# own cluster; it is never part of the product image or the Helm chart.
 FROM golang:1.27.3 AS builder
 
 ARG TARGETOS

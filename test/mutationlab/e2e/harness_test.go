@@ -54,7 +54,12 @@ func newHarness(t *testing.T) *harness {
 	t.Helper()
 	apiURL := os.Getenv("LAB_API_URL")
 	if apiURL == "" {
-		t.Skip("LAB_API_URL not set; run via `task lab-e2e`")
+		t.Skip("LAB_API_URL not set; run via `task lab-capture`")
+	}
+	// The context is required, never defaulted: the current context may well be the e2e
+	// cluster, and the scenarios would then write there while the lab records nothing.
+	if os.Getenv("LAB_KUBECONTEXT") == "" {
+		t.Fatal("LAB_KUBECONTEXT not set; run via `task lab-capture`")
 	}
 	cfg, err := restConfig()
 	if err != nil {
@@ -256,10 +261,10 @@ func (h *harness) createNamespace(ctx context.Context, t *testing.T, ns string) 
 }
 
 // ensureCaptureLive creates a labeled probe ConfigMap and waits until its
-// admission record reaches the lab, confirming the webhook endpoint has finished
-// cutting over to the lab pod after the image swap (the apiserver routes to the
-// Service, whose endpoints lag a rollout). Without this, the first real scenario
-// can silently miss its admission record.
+// admission record reaches the lab, confirming the webhook Service routes to a
+// ready lab pod (its endpoints lag a rollout). Without this, the first real
+// scenario can silently miss its admission record. TestSourcesLive, which
+// `task lab-bootstrap` runs, proves every other source.
 func (h *harness) ensureCaptureLive(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -275,7 +280,7 @@ func (h *harness) ensureCaptureLive(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("capture never went live: no admission record within 90s of the image swap")
+	t.Fatal("capture never went live: no admission record within 90s")
 }
 
 func hasSource(records []mutationlab.Record, src mutationlab.Source) bool {
@@ -413,9 +418,8 @@ func (h *harness) probeWatch(t *testing.T, req watchProbeRequest) []mutationlab.
 }
 
 // do issues an HTTP request to the lab API, retrying transient connection errors.
-// The API sits behind a kubectl port-forward that can drop and is restarted by a
-// watchdog in the lab-e2e task, so a brief connection failure is expected, not
-// fatal.
+// The API sits behind a kubectl port-forward that can drop, so a brief connection
+// failure is expected, not fatal.
 func (h *harness) do(method, path string) ([]byte, int, error) {
 	return h.doJSON(method, path, nil)
 }

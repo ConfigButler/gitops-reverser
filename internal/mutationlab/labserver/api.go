@@ -47,8 +47,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("/records", a.handleRecords)
 	mux.HandleFunc("/watch-probe", a.handleWatchProbe)
 	mux.HandleFunc("/healthz", a.handleHealthz)
-	// /readyz mirrors /healthz so a lab deployment can satisfy the product
-	// deployment's readiness probe unchanged when it swaps in the lab image.
+	// /readyz mirrors /healthz; the lab Deployment's readiness probe reads it.
 	mux.HandleFunc("/readyz", a.handleHealthz)
 	return mux
 }

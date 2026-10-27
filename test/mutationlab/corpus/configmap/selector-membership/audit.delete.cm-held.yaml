@@ -4,6 +4,8 @@ annotations:
     of Role "scenario-ali" to User "alice@example.com"'
   validate-all.configbutler.ai/scenario: selector-membership
 auditID: <auditID-7>
+authenticationMetadata:
+  impersonationConstraint: impersonate:user-info
 impersonatedUser:
   groups:
   - system:authenticated

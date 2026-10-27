@@ -311,8 +311,12 @@ flowchart LR
 
   FULL --> ALLURE["allure-e2e-results/report/open"]
   FULL --> COV["e2e-coverage-collect<br/>(when E2E_COVERAGE=1)"]
-  PREP --> LAB["lab-e2e / lab-corpus-update<br/>(serial opt-in)"]
 ```
+
+The mutation-capture lab is not in this graph: it runs on a cluster of its own, through
+`task lab-bootstrap`, `lab-capture`, and `lab-corpus-update`
+([`test/mutationlab/Taskfile-lab.yml`](../test/mutationlab/Taskfile-lab.yml)), and no task here
+depends on it or it on them.
 
 ## Why the DAG pays off: only what changed re-runs
 

@@ -96,7 +96,8 @@ be **SSH-signed**. It even captures resources served by an **aggregated API serv
 - A **self-ratcheting coverage gate** (`cover-check`) that only ever moves the floor up, with
   merged unit + e2e coverage reported to Codecov.
 - **Three install modes** — config-dir, Helm, and plain manifests — all exercised by e2e.
-- A **mutation-capture lab** (`lab-e2e`) for stress-testing capture correctness.
+- A **mutation-capture lab** (`lab-capture`), on a cluster of its own, that records what Kubernetes
+  emits and diffs it against a committed corpus.
 - `actionlint` on the CI workflows, Conventional Commits driving `release-please`.
 - A genuinely deep [docs/architecture.md](architecture.md) that answers the "but how does it
   actually…" questions instead of hand-waving.

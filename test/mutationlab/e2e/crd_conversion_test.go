@@ -6,9 +6,12 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
+	"os"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -37,18 +40,20 @@ var (
 		Version:  "v1",
 		Resource: "customresourcedefinitions",
 	}
-	vwcGVR = schema.GroupVersionResource{
-		Group:    "admissionregistration.k8s.io",
-		Version:  "v1",
-		Resource: "validatingwebhookconfigurations",
-	}
 	widgetV1 = schema.GroupVersionResource{Group: widgetGroup, Version: "v1", Resource: "widgets"}
 	widgetV2 = schema.GroupVersionResource{Group: widgetGroup, Version: "v2", Resource: "widgets"}
-	vwcName  = "gitops-reverser-validating-webhook"
+)
+
+// The lab's Service, which serves /convert beside /validate-all under the same certificate
+// (test/mutationlab/deploy/service.yaml).
+const (
+	labService   = "mutation-capture-lab"
+	labNamespace = "mutation-capture-lab"
+	labPort      = int64(443)
 )
 
 // TestCRDConversion captures Row 14. It installs the two-version Widget CRD whose
-// conversion webhook reuses the lab's admission cert/port at /convert, creates a
+// conversion webhook calls the lab's /convert, creates a
 // Widget in v1, and captures the divergence: admission + audit see the submitted
 // v1 (spec.sizeBytes), the watch (opened on the v2 storage version) sees the
 // stored v2 (spec.size), and the conversion webhook is called in both directions.
@@ -111,48 +116,46 @@ func TestCRDConversion(t *testing.T) {
 }
 
 // installWidgetCRD creates the two-version Widget CRD, pointing its conversion
-// webhook at the lab by reusing the service and CA bundle the product's
-// validating webhook already uses (so the lab needs no new certificate). It waits
-// for the CRD to be Established and registers teardown.
+// webhook at the lab's Service and trusting the lab CA from the stamp directory
+// (LAB_CA_FILE). It waits for the CRD to be Established and registers a teardown
+// that waits for the CRD to be gone, so the next install does not meet it still
+// terminating.
 func (h *harness) installWidgetCRD(ctx context.Context, t *testing.T) {
 	t.Helper()
-	svc, ca := h.admissionServiceAndCA(ctx, t)
-	crd := widgetCRDObject(svc, ca)
+	caFile := os.Getenv("LAB_CA_FILE")
+	if caFile == "" {
+		t.Fatal("LAB_CA_FILE not set; run via `task lab-capture`")
+	}
+	ca, err := os.ReadFile(caFile)
+	if err != nil {
+		t.Fatalf("read the lab CA: %v", err)
+	}
+	crd := widgetCRDObject(base64.StdEncoding.EncodeToString(ca))
 	if _, err := h.dyn.Resource(crdGVR).Create(ctx, crd, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("create Widget CRD: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = h.dyn.Resource(crdGVR).Delete(context.Background(), widgetCRD, metav1.DeleteOptions{})
-	})
+	t.Cleanup(func() { h.deleteWidgetCRD(t) })
 	h.waitForCRDEstablished(ctx, t)
 }
 
-// admissionServiceAndCA reads the product validating webhook config and returns
-// its clientConfig.service (name/namespace/port) and caBundle, so the Widget CRD
-// conversion webhook can address the same lab endpoint over the same TLS trust.
-func (h *harness) admissionServiceAndCA(ctx context.Context, t *testing.T) (map[string]any, string) {
+func (h *harness) deleteWidgetCRD(t *testing.T) {
 	t.Helper()
-	vwc, err := h.dyn.Resource(vwcGVR).Get(ctx, vwcName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get validating webhook config %s: %v", vwcName, err)
+	ctx := context.Background()
+	_ = h.dyn.Resource(crdGVR).Delete(ctx, widgetCRD, metav1.DeleteOptions{})
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := h.dyn.Resource(crdGVR).Get(ctx, widgetCRD, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+			return
+		}
+		time.Sleep(time.Second)
 	}
-	webhooks, _, _ := unstructured.NestedSlice(vwc.Object, "webhooks")
-	if len(webhooks) == 0 {
-		t.Fatalf("validating webhook config %s has no webhooks", vwcName)
-	}
-	cc, _ := webhooks[0].(map[string]any)["clientConfig"].(map[string]any)
-	svc, _ := cc["service"].(map[string]any)
-	ca, _ := cc["caBundle"].(string)
-	if svc == nil || ca == "" {
-		t.Fatalf("validating webhook config %s missing service/caBundle", vwcName)
-	}
-	return svc, ca
+	t.Errorf("Widget CRD still present 60s after its deletion")
 }
 
 // widgetCRDObject builds the two-version Widget CRD. v1 carries spec.sizeBytes
 // (integer); v2 (storage) carries spec.size (string); the conversion webhook
-// renames between them at the given service/path with the given CA bundle.
-func widgetCRDObject(svc map[string]any, ca string) *unstructured.Unstructured {
+// renames between them at the lab's /convert, trusting the given CA bundle.
+func widgetCRDObject(ca string) *unstructured.Unstructured {
 	intSpec := map[string]any{"type": "object", "properties": map[string]any{
 		"spec": map[string]any{"type": "object", "properties": map[string]any{
 			"sizeBytes": map[string]any{"type": "integer"}}}}}
@@ -160,10 +163,10 @@ func widgetCRDObject(svc map[string]any, ca string) *unstructured.Unstructured {
 		"spec": map[string]any{"type": "object", "properties": map[string]any{
 			"size": map[string]any{"type": "string"}}}}}
 	convService := map[string]any{
-		"name":      svc["name"],
-		"namespace": svc["namespace"],
+		"name":      labService,
+		"namespace": labNamespace,
 		"path":      "/convert",
-		"port":      svc["port"],
+		"port":      labPort,
 	}
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apiextensions.k8s.io/v1",
