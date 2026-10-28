@@ -22,15 +22,19 @@ import (
 // (FootprintReproved); windows whose new proofs overlap close first, with path_conflict.
 //
 // The decisions have names in the log lines, and the reference model reads them: WindowOpened,
-// WriteJoinedWindow, FootprintReproved, WindowClosed (with its reason), and SingleWindowFallback,
-// which is about the worker rather than a window. They name diagnostics, not a journal.
+// WriteJoinedWindow, FootprintReproved, WindowClosed (with its reason), FootprintChecked and
+// FootprintCheckSkipped (a commit checked against its window's footprint, with its hash, or not, its
+// proof being of another tree), and SingleWindowFallback, which is about the worker rather than a
+// window. They name diagnostics, not a journal.
 
 const (
-	decisionWindowOpened         = "WindowOpened"
-	decisionWriteJoinedWindow    = "WriteJoinedWindow"
-	decisionFootprintReproved    = "FootprintReproved"
-	decisionWindowClosed         = "WindowClosed"
-	decisionSingleWindowFallback = "SingleWindowFallback"
+	decisionWindowOpened          = "WindowOpened"
+	decisionWriteJoinedWindow     = "WriteJoinedWindow"
+	decisionFootprintReproved     = "FootprintReproved"
+	decisionWindowClosed          = "WindowClosed"
+	decisionFootprintChecked      = "FootprintChecked"
+	decisionFootprintCheckSkipped = "FootprintCheckSkipped"
+	decisionSingleWindowFallback  = "SingleWindowFallback"
 )
 
 // admitWrite closes every open window the write cannot be admitted beside, and returns the footprint

@@ -2983,33 +2983,17 @@ const (
 )
 
 // metricLabel is the commit_windows_total `close_reason` value for this reason. The log field keeps
-// its hyphenated form; a label value follows the snake_case the other labels use.
+// its hyphenated form; a label value follows the snake_case the other labels use. Only
+// identity_change is named apart from its log form, author-or-target-change.
 func (r windowFinalizeReason) metricLabel() string {
 	switch r {
-	case windowFinalizeReasonIdleTimeout:
-		return "idle_timeout"
-	case windowFinalizeReasonMaxDuration:
-		return "max_duration"
-	case windowFinalizeReasonAttachNext:
-		return "attach_next"
 	case windowFinalizeReasonIdentityChange:
 		return "identity_change"
-	case windowFinalizeReasonBufferLimit:
-		return "buffer_limit"
-	case windowFinalizeReasonResyncBeforeApply:
-		return "resync_before_apply"
-	case windowFinalizeReasonShutdown:
-		return "shutdown"
-	case windowFinalizeReasonForeignCommit:
-		return "foreign_commit"
-	case windowFinalizeReasonApplyDue:
-		return "apply_due"
-	case windowFinalizeReasonPathConflict:
-		return "path_conflict"
-	case windowFinalizeReasonFootprintFallback:
-		return "footprint_fallback"
-	case windowFinalizeReasonUnspecified:
-		return "unspecified"
+	case windowFinalizeReasonIdleTimeout, windowFinalizeReasonMaxDuration, windowFinalizeReasonAttachNext,
+		windowFinalizeReasonBufferLimit, windowFinalizeReasonResyncBeforeApply, windowFinalizeReasonShutdown,
+		windowFinalizeReasonForeignCommit, windowFinalizeReasonApplyDue, windowFinalizeReasonPathConflict,
+		windowFinalizeReasonFootprintFallback, windowFinalizeReasonUnspecified:
+		return strings.ReplaceAll(string(r), "-", "_")
 	default:
 		return "unspecified"
 	}

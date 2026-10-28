@@ -1301,6 +1301,7 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 					author, path, f)
 			}
 		}
+		r.checkFootprintChecked(what, hash, author, f)
 	}
 	for path, file := range want.files {
 		r.checkFile(what, hash, path, file)
@@ -1310,6 +1311,19 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 			r.failf("%s: commit %s lands write %d of %s after write %d", what, hash[:8], seq, obj, r.m.landed[obj])
 		}
 		r.m.landed[obj] = seq
+	}
+}
+
+// checkFootprintChecked fails unless the worker checked the commit against its window's footprint
+// itself: one that skipped it would let a footprint bug through unrefused. It is matched by tree: a
+// rebuild of the prefix onto the same parent (a resync's fetch) makes the checked commit again, under
+// another hash.
+func (r *windowModelRun) checkFootprintChecked(what, hash, author string, f *modelFootprint) {
+	r.t.Helper()
+	tree := gitIn(r.t, r.f.repoDir, "rev-parse", hash+"^{tree}")
+	if len(r.logs.matching(`"tree"="`+tree+`" "footprint"=`)) == 0 {
+		r.failf("%s: commit %s by %s had a footprint %s, and the worker did not check it (%s)", what,
+			hash[:8], author, f, decisionFootprintChecked)
 	}
 }
 
