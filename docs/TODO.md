@@ -13,7 +13,20 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
   Before it is released, the reference model (`internal/git/window_model_test.go`) must cover both
   close orders, conflicting writes, delete and recreate, `attach_next`, zero-duration windows, a
   resync, shutdown, failed publication and replay, and buffer pressure, each with several windows
-  open.
+  open. The reviews of stages 1 and 2 add:
+  - **gate:** the model retains work across failed pushes and retries before several windows are
+    released. Today it publishes at once after every wake (`windowModelRun.wake`) and asserts no
+    pending writes after it (`drained`), so decided-but-uncommitted writes with windows open
+    (cooldown, failed push, replay) are never modelled;
+  - reach floors the model asserts: shutdown, flush and push hint with two or more windows open,
+    `attach_next` with others open, a reproof overlap, `path_conflict`; a concurrency-biased profile;
+    CI raised to about 20 seeds × 60 steps;
+  - model steps: a shutdown mid-run; a timer overdue but not yet delivered (the `!isOpen` guard in
+    `attachWaitingCommitRequests` survives its removal); a late stale applier write (the model
+    never withholds);
+  - the GitTarget-generation and checkout-reset parts of a footprint revision are untested;
+  - a counter for window fallbacks (`footprint_fallback` counts the windows it closes, not the
+    fallback).
 
 ## Applier claims and bi-directional editing
 
@@ -31,6 +44,11 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
   window (`resync_flush.go`), and `finalizeWindow` drops a window while render fidelity is Unknown,
   which it is after a restart. The worker state root `/tmp` is an `emptyDir` a new pod loses.
   [branch-worker-event-model.md](design/branch-worker-event-model.md#saves-lose-execution-identity-across-a-restart).
+- [ ] **Gaps in the withheld-field record** (`internal/git/withheld_fields.go`): a field patch in the
+  apply window forgets the object's accepted version, so a withhold over it records nothing;
+  `objectKey` leaves out the GitTarget and the cluster (it predates #466); accepted versions held
+  for render fidelity (`recordUnpublishedEdits`) and resyncs with `Initial: false` are untested;
+  no counter shows how many fields are withheld.
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on
   `RenderMatchesLive=False` clears only on an explicit recheck (the
   `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope; the render
@@ -183,6 +201,9 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   four specs that look tested and are not, then the moves and merges.
 - [ ] `SetDefaultEventuallyTimeout` is global and set in 17 e2e files, so the last `Describe` body
   built wins; use per-spec timeouts (`Eventually(...).WithTimeout`).
+- [ ] e2e for the commit-window stack: two authors editing disjoint files at once, then a
+  `path_conflict`; E5 extended to the withheld-field carry; a restart of a source cluster's
+  controller with a save in flight; `catchUp: AfterPush` at shutdown.
 - [ ] e2e Test A: a delete missed while the controller is scaled to 0; then Tests B and C.
   [e2e-coverage-gaps-and-improvements-plan.md](design/e2e-coverage-gaps-and-improvements-plan.md).
 - [ ] Re-enable `goconst` with a path-scoped exclusion (`test/`, `internal/git/commit.go`) instead
