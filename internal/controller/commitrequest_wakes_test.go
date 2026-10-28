@@ -180,6 +180,45 @@ func TestCommitRequestWakes_AChangeMidStepIsKeptForTheNextWait(t *testing.T) {
 	}
 }
 
+// TestCommitRequestWakes_AnotherWatcherLeavesTheOwnersWake pins that two KubeProviders watching
+// the same source cluster each keep their own wake of a request. The one that does not own it looks
+// at it after every write the owner makes, and leaves at once; neither its watch nor its leaving may
+// take the owner's wake away, or the owner falls back to the slow poll.
+func TestCommitRequestWakes_AnotherWatcherLeavesTheOwnersWake(t *testing.T) {
+	wakes := NewCommitRequestWakes(make(chan git.CommitRequestChange))
+	owner, stopOwner := wakes.watch("uid-save")
+	defer stopOwner()
+	change := git.CommitRequestChange{Namespace: "default", Name: "save", UID: "uid-save"}
+
+	for range 2 {
+		other, stopOther := wakes.watch("uid-save")
+		wakes.wake(change)
+		select {
+		case <-other:
+		default:
+			t.Fatal("the other watcher was not woken")
+		}
+		stopOther()
+		stopOther()
+		select {
+		case <-owner:
+		default:
+			t.Fatal("the owner was not woken while another watcher looked at its request")
+		}
+	}
+
+	wakes.wake(change)
+	select {
+	case <-owner:
+	default:
+		t.Fatal("the owner was not woken after the other watcher left")
+	}
+	stopOwner()
+	wakes.mu.Lock()
+	assert.Empty(t, wakes.served, "a request nobody serves leaves nothing behind")
+	wakes.mu.Unlock()
+}
+
 // TestCommitRequestWakes_NilWakesPoll pins that without wakes every step polls as it always did.
 func TestCommitRequestWakes_NilWakesPoll(t *testing.T) {
 	var wakes *CommitRequestWakes

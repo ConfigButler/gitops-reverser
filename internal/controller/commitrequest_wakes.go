@@ -32,8 +32,10 @@ type CommitRequestWakes struct {
 	events  chan event.GenericEvent
 
 	mu sync.Mutex
-	// served holds, by UID, the wake of each source-cluster request a goroutine serves now.
-	served map[types.UID]chan struct{}
+	// served holds, by UID, the wake of every goroutine that serves a source-cluster request now. A
+	// request can have several: each KubeProvider watching its namespace on that cluster looks at it,
+	// and one that does not own it must not take the owner's wake away.
+	served map[types.UID]map[chan struct{}]struct{}
 }
 
 // NewCommitRequestWakes reads changes; nil changes make wakes that wake nothing.
@@ -41,7 +43,7 @@ func NewCommitRequestWakes(changes <-chan git.CommitRequestChange) *CommitReques
 	return &CommitRequestWakes{
 		changes: changes,
 		events:  make(chan event.GenericEvent, commitRequestWakeBuffer),
-		served:  map[types.UID]chan struct{}{},
+		served:  map[types.UID]map[chan struct{}]struct{}{},
 	}
 }
 
@@ -60,8 +62,8 @@ func (w *CommitRequestWakes) Start(ctx context.Context) error {
 	}
 }
 
-// wake queues a reconcile of the request on the control cluster, and wakes the goroutine serving it
-// on a source cluster, if one does. A change names one request, on whichever cluster it lives, and
+// wake queues a reconcile of the request on the control cluster, and wakes every goroutine serving
+// it on a source cluster. A change names one request, on whichever cluster it lives, and
 // a reconcile of a name the control cluster does not hold reads nothing and ends.
 func (w *CommitRequestWakes) wake(change git.CommitRequestChange) {
 	request := &configbutleraiv1alpha3.CommitRequest{
@@ -72,9 +74,8 @@ func (w *CommitRequestWakes) wake(change git.CommitRequestChange) {
 	default:
 	}
 	w.mu.Lock()
-	ch := w.served[types.UID(change.UID)]
-	w.mu.Unlock()
-	if ch != nil {
+	defer w.mu.Unlock()
+	for ch := range w.served[types.UID(change.UID)] {
 		select {
 		case ch <- struct{}{}:
 		default:
@@ -99,11 +100,15 @@ func (w *CommitRequestWakes) watch(uid types.UID) (<-chan struct{}, func()) {
 	}
 	ch := make(chan struct{}, 1)
 	w.mu.Lock()
-	w.served[uid] = ch
+	if w.served[uid] == nil {
+		w.served[uid] = map[chan struct{}]struct{}{}
+	}
+	w.served[uid][ch] = struct{}{}
 	w.mu.Unlock()
 	return ch, func() {
 		w.mu.Lock()
-		if w.served[uid] == ch {
+		delete(w.served[uid], ch)
+		if len(w.served[uid]) == 0 {
 			delete(w.served, uid)
 		}
 		w.mu.Unlock()
