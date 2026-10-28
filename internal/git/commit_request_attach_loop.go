@@ -565,4 +565,5 @@ func (l *branchWorkerEventLoop) stopAttachTimer() {
 		}
 	}
 	l.attachTimer = nil
+	l.attachTimerAt = time.Time{}
 }

@@ -1779,6 +1779,7 @@ func (l *branchWorkerEventLoop) stopCommitTimer() {
 		}
 	}
 	l.commitTimer = nil
+	l.commitTimerAt = time.Time{}
 }
 
 func (l *branchWorkerEventLoop) stopTimers() {
