@@ -247,11 +247,11 @@ func TestEventLoop_LiveFanInRefusal_FailsGitTargetAndCommitsNothing(t *testing.T
 	event.GitTargetName = "podinfo-test"
 	event.GitTargetNamespace = "default"
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
-	require.NotNil(t, loop.openWindow, "the live event must open a commit window")
+	require.NotNil(t, loop.windows.only(), "the live event must open a commit window")
 
 	assert.False(t, loop.finalizeOpenWindow(), "a refused write plan must not produce a pending write")
 	assert.Empty(t, loop.pendingWrites, "a refused flush must retain nothing to push")
-	assert.Nil(t, loop.openWindow, "the refused window must be dropped, not retried forever")
+	assert.Nil(t, loop.windows.only(), "the refused window must be dropped, not retried forever")
 
 	require.Len(t, refusals, 1, "a live write-boundary refusal must be reported exactly once")
 	assert.Equal(t, types.NewResourceReference("podinfo-test", "default"), refusedTargets[0],

@@ -433,6 +433,11 @@ type PendingWrite struct {
 	decision uint64
 	// origin is what the write's outcome is settled against. See writeOrigin.
 	origin writeOrigin
+	// footprint is the footprint of the window the write closed, when that window was ever open
+	// beside another, proven again on the tree its first commit is planned on (proveBeforeCommit):
+	// that commit may change no file outside it (footprint.go). Nil for every other write.
+	// Loop-goroutine only.
+	footprint *footprint
 
 	// CommitSHA is the hash of the commit this write created, captured in
 	// executePendingWrite and refreshed when the write is re-executed on a

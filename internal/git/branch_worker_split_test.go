@@ -778,7 +778,7 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 		},
 	}})
 
-	assert.Nil(t, loop.openWindow, "commitWindow=0 must finalize the open window on every event")
+	assert.Nil(t, loop.windows.only(), "commitWindow=0 must finalize the open window on every event")
 	assert.Len(t, loop.pendingWrites, 2,
 		"events land in pendingWrites immediately while the cooldown defers the push")
 	assert.NotNil(t, loop.pushTimer,
@@ -816,8 +816,8 @@ func TestEventLoop_AuthorChangeFinalizesOpenWindow(t *testing.T) {
 
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Equal(t, "alice", loop.pendingWrites[0].Events[0].UserInfo.Username)
-	require.NotNil(t, loop.openWindow)
-	assert.Equal(t, "bob", loop.openWindow.Author)
+	require.NotNil(t, loop.windows.only())
+	assert.Equal(t, "bob", loop.windows.only().Author)
 
 	loop.stopTimers()
 }
@@ -839,8 +839,8 @@ func TestEventLoop_TargetChangeFinalizesOpenWindow(t *testing.T) {
 
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Equal(t, "team-a", loop.pendingWrites[0].Events[0].GitTargetName)
-	require.NotNil(t, loop.openWindow)
-	assert.Equal(t, "team-b", loop.openWindow.GitTarget)
+	require.NotNil(t, loop.windows.only())
+	assert.Equal(t, "team-b", loop.windows.only().GitTarget)
 
 	loop.stopTimers()
 }
@@ -859,8 +859,8 @@ func TestEventLoop_RepeatedPathEditsCollapseInOpenWindow(t *testing.T) {
 		Events: []Event{first, second, configMapEvent("other", "alice", "team-a")},
 	}})
 
-	require.NotNil(t, loop.openWindow)
-	events := loop.openWindow.orderedEvents()
+	require.NotNil(t, loop.windows.only())
+	events := loop.windows.only().orderedEvents()
 	require.Len(t, events, 2)
 	assert.Equal(t, "same", events[0].Identifier.Name)
 	assert.Equal(t, "latest", events[0].Object.Object["data"].(map[string]interface{})["key"])
@@ -883,7 +883,7 @@ func TestEventLoop_ByteCapFinalizesIncludingTrippingEvent(t *testing.T) {
 		Events: []Event{configMapEvent("oversized", "alice", "team-a")},
 	}})
 
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 	require.Len(t, loop.pendingWrites, 1)
 	require.Len(t, loop.pendingWrites[0].Events, 1)
 	assert.Equal(t, "oversized", loop.pendingWrites[0].Events[0].Identifier.Name)
@@ -908,8 +908,8 @@ func TestEventLoop_AuthorChangeStartsFreshCommitTimer(t *testing.T) {
 
 	require.NotNil(t, loop.commitTimer)
 	assert.NotSame(t, firstTimer, loop.commitTimer)
-	require.NotNil(t, loop.openWindow)
-	assert.Equal(t, "bob", loop.openWindow.Author)
+	require.NotNil(t, loop.windows.only())
+	assert.Equal(t, "bob", loop.windows.only().Author)
 
 	loop.stopTimers()
 }

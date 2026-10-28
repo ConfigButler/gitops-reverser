@@ -33,7 +33,7 @@ func TestHandledItem_PublishesRetainedWorkBeforeReleasingInflight(t *testing.T) 
 
 	loop := newBranchWorkerEventLoop(w, time.Second)
 	// The state handleQueueItem leaves behind for an event that opened a commit window.
-	loop.openWindow = &openWindow{}
+	loop.windows.setOnly(&openWindow{})
 
 	require.Positive(t, w.queueDepth(), "the in-flight count covers the item before the release")
 	loop.endWake(0)

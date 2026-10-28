@@ -374,7 +374,7 @@ func (l *branchWorkerEventLoop) closeWindowForPushHint() {
 	if !hinted || l.w.applyRequester == nil {
 		return
 	}
-	for _, window := range l.commitWindows.all() {
+	for _, window := range l.windows.all() {
 		if window.pendingCR != nil {
 			continue
 		}

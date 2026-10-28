@@ -62,8 +62,8 @@ func forceDue(loop *branchWorkerEventLoop) {
 	if pcr := loop.pendingCRs[id]; pcr != nil && !pcr.attached {
 		pcr.attachDeadline = past
 	}
-	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
-		loop.openWindow.timers.maxAt = past
+	if loop.windows.only() != nil && loop.windows.only().pendingCR != nil && *loop.windows.only().pendingCR == id {
+		loop.windows.only().timers.maxAt = past
 		loop.closeOrArmWindow()
 		loop.endWake(0)
 	}
@@ -145,7 +145,7 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 			configMapTargetEvent("explicit-b", "alice", "team-a"),
 		},
 	}})
-	require.NotNil(t, loop.openWindow, "events should accumulate in an open window")
+	require.NotNil(t, loop.windows.only(), "events should accumulate in an open window")
 
 	const message = "save: increase checkout API memory"
 	req := attachReq("alice", 0)
@@ -157,7 +157,7 @@ func TestAttach_CommitsOpenWindow(t *testing.T) {
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
 	require.NotEmpty(t, res.Commit)
-	assert.Nil(t, loop.openWindow, "the open window must be finalized")
+	assert.Nil(t, loop.windows.only(), "the open window must be finalized")
 	assert.Empty(t, loop.pendingWrites, "the pushed write is cleared on success")
 
 	// The reported SHA must match local HEAD (Committed means on the remote) and
@@ -185,7 +185,7 @@ func TestAttach_EmptyMessageUsesGeneratedMessage(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("solo", "bob", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	serviceAttach(loop, attachReq("bob", 0)) // no Message
 
@@ -226,9 +226,9 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
 	loop.endWake(0)
-	require.NotNil(t, loop.openWindow)
-	require.NotNil(t, loop.openWindow.pendingCR, "the opened window must carry the attached request")
-	assert.Equal(t, "bundle save", loop.openWindow.pendingMessage)
+	require.NotNil(t, loop.windows.only())
+	require.NotNil(t, loop.windows.only().pendingCR, "the opened window must carry the attached request")
+	assert.Equal(t, "bundle save", loop.windows.only().pendingMessage)
 
 	// Grace elapses → the collected window is finalized as one commit.
 	forceDue(loop)
@@ -238,7 +238,7 @@ func TestAttach_CollectGraceJoinsLaterWindow(t *testing.T) {
 	require.True(t, ok)
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 }
 
 // TestAttach_TheAttachStartsTheRequestsMaxDuration pins that the time a request spent waiting for
@@ -261,12 +261,12 @@ func TestAttach_TheAttachStartsTheRequestsMaxDuration(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the request attached to the window")
+	require.NotNil(t, loop.windows.only())
+	require.NotNil(t, loop.windows.only().pendingCR, "precondition: the request attached to the window")
 
-	assert.False(t, loop.openWindow.timers.maxAt.Before(attached.Add(maxDuration)),
+	assert.False(t, loop.windows.only().timers.maxAt.Before(attached.Add(maxDuration)),
 		"the attach must start the request's maxDuration")
-	assert.True(t, loop.openWindow.timers.noIdle,
+	assert.True(t, loop.windows.only().timers.noIdle,
 		"a request that set no idleTimeout replaces the target's idle close with none")
 }
 
@@ -295,9 +295,9 @@ func TestAttach_AnExpiredWaitNeverTakesALaterWindow(t *testing.T) {
 	require.True(t, ok, "the overdue request must resolve in this pass")
 	require.NoError(t, res.Err)
 	assert.Equal(t, FinalizeNoOpenWindow, res.Outcome)
-	require.NotNil(t, loop.openWindow, "the late write keeps its own window")
-	assert.Nil(t, loop.openWindow.pendingCR, "the expired request must not take the later window")
-	assert.Empty(t, loop.openWindow.pendingMessage, "so the late write never carries its message")
+	require.NotNil(t, loop.windows.only(), "the late write keeps its own window")
+	assert.Nil(t, loop.windows.only().pendingCR, "the expired request must not take the later window")
+	assert.Empty(t, loop.windows.only().pendingMessage, "so the late write never carries its message")
 }
 
 // TestAttach_WritesAfterTheClaimJoinOneCommit pins the save the claim restart exists for: a request
@@ -361,10 +361,10 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	serviceAttach(loop, attachReq("bob", 60*time.Second)) // bob, not alice
-	require.Nil(t, loop.openWindow.pendingCR, "bob's attach must not claim alice's window")
+	require.Nil(t, loop.windows.only().pendingCR, "bob's attach must not claim alice's window")
 
 	forceDue(loop)
 	loop.endWake(0)
@@ -375,8 +375,8 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	assert.Equal(t, FinalizeWindowMismatch, res.Outcome,
 		"bob waited out his grace on a window that was alice's the whole time; that is a refusal a "+
 			"human can see, not the benign 'nothing was pending'")
-	require.NotNil(t, loop.openWindow, "alice's window must be left open")
-	assert.Equal(t, "alice", loop.openWindow.Author)
+	require.NotNil(t, loop.windows.only(), "alice's window must be left open")
+	assert.Equal(t, "alice", loop.windows.only().Author)
 }
 
 // The two refusals must stay distinguishable, which is the whole reason WindowMismatch exists:
@@ -390,7 +390,7 @@ func TestAttach_NoWindowAtAllIsNotAMismatch(t *testing.T) {
 	defer loop.stopTimers()
 
 	serviceAttach(loop, attachReq("bob", 60*time.Second))
-	require.Nil(t, loop.openWindow, "precondition: nothing is open")
+	require.Nil(t, loop.windows.only(), "precondition: nothing is open")
 
 	forceDue(loop)
 	loop.endWake(0)
@@ -417,13 +417,13 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	serviceAttach(loop, attachReq("bob", 60*time.Second))
 
 	// Alice's window is finalized on its own account, long before bob's grace elapses.
 	loop.finalizeOpenWindowWithReason(windowFinalizeReasonIdleTimeout)
-	require.Nil(t, loop.openWindow, "precondition: nothing is open when bob's grace runs out")
+	require.Nil(t, loop.windows.only(), "precondition: nothing is open when bob's grace runs out")
 
 	forceDue(loop)
 	loop.endWake(0)
@@ -460,7 +460,7 @@ func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *
 			Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 		}})
 		serviceAttach(loop, attachReq("alice", 60*time.Second))
-		require.NotNil(t, loop.openWindow.pendingCR, "precondition: the first save collects the window")
+		require.NotNil(t, loop.windows.only().pendingCR, "precondition: the first save collects the window")
 
 		serviceAttach(loop, second())
 
@@ -510,7 +510,7 @@ func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *
 			Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 		}})
 		serviceAttach(loop, attachReq("alice", 60*time.Second))
-		require.NotNil(t, loop.openWindow.pendingCR, "precondition: the first save collects the window")
+		require.NotNil(t, loop.windows.only().pendingCR, "precondition: the first save collects the window")
 
 		next := second()
 		next.Attach = configv1alpha3.AttachNext
@@ -518,7 +518,7 @@ func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *
 
 		_, resolved := secondOutcome(t, worker)
 		assert.False(t, resolved, "it waits for the next window")
-		assert.Nil(t, loop.openWindow, "the first save's window was closed under its own message")
+		assert.Nil(t, loop.windows.only(), "the first save's window was closed under its own message")
 	})
 }
 
@@ -537,14 +537,14 @@ func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
 
 	// Bob parks with nothing open, and his grace runs out before anyone else starts work.
 	serviceAttach(loop, attachReq("bob", 60*time.Second))
-	require.Nil(t, loop.openWindow, "precondition: nothing was open during bob's grace")
+	require.Nil(t, loop.windows.only(), "precondition: nothing was open during bob's grace")
 	forceDue(loop)
 
 	// Only now does alice's work arrive and open a window.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	loop.endWake(0)
 
 	res, ok := outcome(t, worker)
@@ -612,14 +612,14 @@ func TestAttach_AnUnreachableRemoteHoldsTheRequest(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	serviceAttach(loop, attachReq("alice", 0))
 
 	_, resolved := outcome(t, worker)
 	assert.False(t, resolved, "a request whose write can still land is not failed")
 	assert.Equal(t, PhaseWaitingForPush, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
-	assert.Nil(t, loop.openWindow, "the window closed on its own timers")
+	assert.Nil(t, loop.windows.only(), "the window closed on its own timers")
 	require.Len(t, loop.pendingWrites, 1, "the decided window stays pending")
 	assert.False(t, loop.pendingWrites[0].committedOnce, "nothing could commit it yet")
 	assert.True(t, loop.retry.pending(), "the publication retry owns the next attempt")
@@ -640,10 +640,10 @@ func TestFinalizeOpenWindow_ReturnsCommittedFlag(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	assert.True(t, loop.finalizeOpenWindow(), "open window finalized → true")
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 }
 
 // TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms pins the corrected contract: a
@@ -683,7 +683,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("present", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	serviceAttach(loop, attachReq("alice", 0))
 
 	_, ok := outcome(t, worker)
@@ -732,7 +732,7 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	// Attach with a distinctive message and a long grace, so the window is Attached
 	// but its finalize deadline has not fired.
@@ -740,7 +740,7 @@ func TestAttach_ResyncCutOffCarriesMessageAndResolvesOnPush(t *testing.T) {
 	req := attachReq("alice", 300*time.Second)
 	req.Message = message
 	serviceAttach(loop, req)
-	require.NotNil(t, loop.openWindow.pendingCR, "the window must be attached")
+	require.NotNil(t, loop.windows.only().pendingCR, "the window must be attached")
 	_, resolved := outcome(t, worker)
 	require.False(t, resolved, "the request must not resolve before its window is finalized")
 
@@ -971,7 +971,7 @@ func TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	serviceAttach(loop, attachReq("alice", 0))
 
 	require.Len(t, loop.pendingWrites, 1, "the window committed locally and is retained")
@@ -1072,12 +1072,12 @@ func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("someone-elses-save", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	loop.endWake(0)
 
-	assert.Nil(t, loop.openWindow.pendingCR,
+	assert.Nil(t, loop.windows.only().pendingCR,
 		"a request whose window is already committed must not claim a second window")
-	assert.Empty(t, loop.openWindow.pendingMessage,
+	assert.Empty(t, loop.windows.only().pendingMessage,
 		"and must not lend its message to a commit its author did not make")
 }
 

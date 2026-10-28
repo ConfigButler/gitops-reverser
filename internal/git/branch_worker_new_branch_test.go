@@ -412,7 +412,7 @@ func TestBranchWorker_ParentMovesWhileTheWindowIsOpen(t *testing.T) {
 	f.warmOnParent()
 
 	liveWrite(loop, "cm1")
-	require.NotNil(t, loop.openWindow, "the window is still collecting")
+	require.NotNil(t, loop.windows.only(), "the window is still collecting")
 	hashB := f.pushToMain(map[string]string{"LATEST.md": "from main at B\n"})
 
 	require.True(t, loop.finalizeOpenWindow())
