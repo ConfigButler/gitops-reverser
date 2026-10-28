@@ -73,7 +73,7 @@ func TestReplayFailure_DoesNotLetThePushSettleWorkThatWasReset(t *testing.T) {
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	// One retained write, committed locally and waiting out the push cooldown.
@@ -122,7 +122,7 @@ func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T)
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -183,7 +183,7 @@ func TestReplayFailure_HoldsAWholeBatchNotJustItsFirstWrite(t *testing.T) {
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	// Two retained writes, each its own local commit.
@@ -221,7 +221,7 @@ func TestReplayFailure_RecoveryRunsBeforeEveryCommitPathToo(t *testing.T) {
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -261,7 +261,7 @@ func TestReplayFailure_OnTheContentionPathIsAlsoHeld(t *testing.T) {
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -313,7 +313,7 @@ func TestReplayFailure_AResetThatDiesHalfwayIsAlsoHeld(t *testing.T) {
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{

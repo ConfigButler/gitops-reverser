@@ -3109,7 +3109,7 @@ the gap.
 
 `maxDuration`, and `idleTimeout` when set, cover the span of the save's own writes after the
 attach. The worst case from registration to the finalize is `attachTimeout` plus `maxDuration`; the
-push follows, with its cooldown and any retries.
+push follows at once, without the push cooldown, with any retries a remote that refuses it needs.
 
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting `attachTimeout` resolves the request `Ready=True` with reason `NoWindow` while the

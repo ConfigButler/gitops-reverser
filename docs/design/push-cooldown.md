@@ -46,6 +46,7 @@ if l.awaitingRetry() { return }                          // a failed attempt has
 if l.lastPushAt.IsZero() || l.publishesAtOnce() {       // never pushed, or an apply waits: go now
     l.pushPending(); return
 }
+if l.pendingCarriesCommitRequest() { l.pushPending(); return } // a save waits: go now
 if time.Since(l.lastPushAt) >= PushCooldown { l.pushPending(); return }
 if l.pushTimer == nil { l.pushTimer = time.NewTimer(...) } // otherwise wait out the remainder
 ```
@@ -55,7 +56,9 @@ and does not pace retries. The publication backoff does that separately. Parent 
 its attempts while active, and new commits wait for its deadline; see the
 [worker event model](branch-worker-event-model.md). A flush for an apply skips the cooldown: the
 writes up to the flush mark are pushed at once (`publishesAtOnce`), because the apply waits for
-them ([the apply trigger](apply-trigger.md#flush-then-apply)).
+them ([the apply trigger](apply-trigger.md#flush-then-apply)). A push that a `CommitRequest` waits on
+skips it too: a person waits for the save, and an author has one save in progress at a time, so
+saves cannot make the burst the cooldown exists to batch. Plain writes keep it.
 
 ## 2. Ordinary timer closures already space a single identity
 

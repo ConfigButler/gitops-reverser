@@ -125,7 +125,7 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsABranchIsNotOrphaned(t *testing.
 	require.NoError(t, err)
 	f := newRealServerNewBranch(t, "empty-gains-main", nil)
 
-	f.loop.lastPushAt = time.Now() // cooldown: the write is retained
+	holdPushes(f.loop) // cooldown: the write is retained
 	req := standbyRequest()
 	serviceAttach(f.loop, req)
 	liveWrite(f.loop, "cm1")
@@ -151,7 +151,7 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsABranchIsNotOrphaned(t *testing.
 func TestBranchWorker_AnEmptyRepositoryThatGainsABranchKeepsANoOpAbsent(t *testing.T) {
 	f := newRealServerNewBranch(t, "empty-gains-main-noop", nil)
 
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 	deleted := configMapTargetEvent("never-written", "alice", newBranchTarget)
 	deleted.Operation = "DELETE"
 	deleted.Object = nil
@@ -170,7 +170,7 @@ func TestBranchWorker_AnEmptyRepositoryThatGainsABranchKeepsANoOpAbsent(t *testi
 func TestBranchWorker_AnEmptyRepositoryThatGainsOnlyATagWaits(t *testing.T) {
 	f := newRealServerNewBranch(t, "empty-gains-tag", nil)
 
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 	liveWrite(f.loop, "cm1")
 	require.Len(t, f.loop.pendingWrites, 1)
 

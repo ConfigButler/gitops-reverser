@@ -131,6 +131,7 @@ a publication succeeds. These clocks overlap.
 | Retained-byte threshold | Default `8Mi` | Estimated open plus retained bytes reach the threshold | Close the open window under memory pressure |
 | Shutdown | Immediate attempt | The worker exits | Attempt to publish finalized work without waiting for cooldown |
 | Apply due | Immediate | An applier on the branch has an apply due | Close the open window and publish every write decided so far without waiting for cooldown, so the apply includes them |
+| Save | Immediate | A pending write carries a `CommitRequest` | Publish without waiting for cooldown, because a person waits for the save; one save per author at a time keeps this from becoming a burst |
 
 The first publication can push as soon as a commit is ready. There is no initial five-second
 push wait. Setting `commit.window.idleTimeout: 0s` makes local commits immediately; subsequent publications
@@ -283,12 +284,12 @@ are never held by the same worker.
 
 ## Story 3: save now, and know what reached Git
 
-A `CommitRequest` attaches to a matching author-and-target window and closes it. It does not
-bypass the push cooldown. Two settings with separate clocks set the timing: `attachTimeout` runs
-from the worker's registration of the request and bounds the wait for a window, and `maxDuration`
-runs from the attach, or from the request's first write into a window that was already open, and
-bounds the collection that follows. They default to `5s` and `2s` and accept `0s` to `5m`. A repeat
-attach restarts neither clock.
+A `CommitRequest` attaches to a matching author-and-target window and closes it. Its commit is
+pushed at once, without waiting for the push cooldown. Two settings with separate clocks set the
+timing: `attachTimeout` runs from the worker's registration of the request and bounds the wait for
+a window, and `maxDuration` runs from the attach, or from the request's first write into a window
+that was already open, and bounds the collection that follows. They default to `5s` and `2s` and
+accept `0s` to `5m`. A repeat attach restarts neither clock.
 
 ```mermaid
 sequenceDiagram

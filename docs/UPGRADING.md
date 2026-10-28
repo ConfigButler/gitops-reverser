@@ -24,6 +24,12 @@ the objects in a folder, now commits when the `GitTarget`'s idle interval or tha
 rather than `maxDuration` after the attach. With the defaults that is about five seconds instead
 of two.
 
+## A save is pushed at once
+
+A push that a `CommitRequest` waits on no longer waits out the five-second push cooldown, as a push
+an apply waits on already did not. Two saves in a row each resolve as soon as their commit is
+pushed. Commits that no save waits on still share one push per cooldown.
+
 ## Upgrading from 0.54.0: drain the `CommitRequest`s first
 
 Existing providers, branches, targets and claims keep running across this upgrade; none of the
