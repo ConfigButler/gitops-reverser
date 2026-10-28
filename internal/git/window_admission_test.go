@@ -279,7 +279,7 @@ func TestFootprint_UnknownReasons(t *testing.T) {
 		event     Event
 		why       string
 	}{
-		"a field patch":    {event: patch, why: "a field patch"},
+		"a field patch":     {event: patch, why: "a field patch"},
 		"an encrypted type": {event: secret, why: "an encrypted type"},
 		"a generated object": {
 			files: map[string]string{echoTarget + "/kustomization.yaml": kustomization(
@@ -328,7 +328,7 @@ func TestFootprint_UnknownReasons(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			files := map[string]string{
-				echoTarget + "/README.md":                   "readme\n",
+				echoTarget + "/README.md":                  "readme\n",
 				echoTarget + "/" + gitTargetIgnoreFileName: "\n",
 			}
 			maps.Copy(files, tc.files)
