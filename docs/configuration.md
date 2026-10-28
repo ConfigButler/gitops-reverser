@@ -3104,6 +3104,45 @@ request never resolves `NoWindow` while its commit waits out the push cooldown. 
 and a request together gives no ordering guarantee between controllers and watch streams. See the
 [request contract](spec/commitrequest-design.md).
 
+#### Saving a folder with `kubectl apply`
+
+To save the objects of a folder in one commit with your message, put a `CommitRequest` in the
+folder, next to them, and give it a new name for every apply:
+
+```yaml
+# save-2026-10-28-checkout-limits.yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: CommitRequest
+metadata:
+  name: save-2026-10-28-checkout-limits
+spec:
+  gitTargetRef:
+    name: example-target
+  message: "feat: raise the checkout limits"
+```
+
+`kubectl apply -f folder/` then makes one commit of the folder's changes, authored by you, with the
+request's message. kubectl applies the files in name order, so the request can land before or after
+the objects, and the defaults handle both: with `attach: CurrentOrNext` the request attaches to the
+window the objects already opened, or waits for the one they open. Do not use `attach: Next` here:
+it would close the objects' window under the generated message, then wait for a write that never
+comes. Another unclaimed edit of yours on the same `GitTarget`, still in its window, shares the
+commit.
+
+The name is what makes the next apply a save. Applying the same folder again does this:
+
+- **Nothing changed:** kubectl sends no write for an unchanged object, so there is nothing to save,
+  and the finished request keeps its outcome. If the request was already deleted (see
+  [finished requests](#finished-requests-are-deleted-after-48-hours)), the apply creates it again,
+  and it ends `NoWindow`.
+- **Objects changed, same request:** the request is unchanged and finished, so it saves nothing.
+  The edits commit on the `GitTarget`'s own timers, under the generated message.
+- **Message edited, same name:** the API server refuses the request, because its spec is
+  immutable, and kubectl exits with an error after applying the other files. Their edits commit
+  under the generated message.
+
+The request itself is never mirrored, even when a `WatchRule` covers its folder or its type.
+
 ### Who may save: `spec.allowedCommitRequests`
 
 A `GitTarget` says which `CommitRequest`s may save its windows in `spec.allowedCommitRequests`, a
