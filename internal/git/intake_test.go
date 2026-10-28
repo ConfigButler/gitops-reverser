@@ -84,7 +84,7 @@ func TestIntake_EveryKindOfHeldWorkCounts(t *testing.T) {
 		"a registered save is charged for what it keeps")
 	held = loop.heldBytes()
 
-	loop.windowBytes = 2048
+	loop.windows.windowBytes = 2048
 	assert.Equal(t, held+2048, loop.heldBytes(), "and so is the open window")
 }
 
@@ -233,10 +233,10 @@ func TestIntake_AWindowChargesAReplacedEventOnce(t *testing.T) {
 		}})
 	}
 	edit()
-	require.NotNil(t, loop.openWindow)
-	once := loop.windowBytes
+	require.NotNil(t, loop.windows.only())
+	once := loop.windows.bytes()
 	edit()
-	assert.Equal(t, once, loop.windowBytes)
+	assert.Equal(t, once, loop.windows.bytes())
 }
 
 // deleteEvent is a live delete for the ledger target, which carries no object.
@@ -260,8 +260,8 @@ func TestIntake_AnAttachedSaveStaysCharged(t *testing.T) {
 
 	require.True(t, f.worker.Enqueue(configMapTargetEvent("opens-window", "alice", ledgerTargetName)))
 	loop.handleQueueItem(<-f.worker.eventQueue)
-	require.NotNil(t, loop.openWindow)
-	require.NotNil(t, loop.openWindow.pendingCR, "the save attached to the window")
+	require.NotNil(t, loop.windows.only())
+	require.NotNil(t, loop.windows.only().pendingCR, "the save attached to the window")
 	assert.Greater(t, loop.heldBytes(), waiting, "the window holds the save and its event")
 
 	require.True(t, loop.finalizeOpenWindow())

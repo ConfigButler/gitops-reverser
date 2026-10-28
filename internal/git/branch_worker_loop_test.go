@@ -123,7 +123,7 @@ func TestEventLoop_TotalRetainedBytes(t *testing.T) {
 
 	assert.Equal(t, int64(0), loop.totalRetainedBytes())
 
-	loop.windowBytes = 100
+	loop.windows.windowBytes = 100
 	loop.pendingWritesBytes = 250
 	assert.Equal(t, int64(350), loop.totalRetainedBytes(),
 		"cap is enforced against the open window + pendingWrites combined")

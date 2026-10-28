@@ -38,21 +38,21 @@ func TestWindowClock_TheIdleTimeoutIsMeasuredOnTheWorkersClock(t *testing.T) {
 	holdPushes(loop) // hold the push, so the local commit stays inspectable
 
 	writeTo(loop, "first")
-	require.NotNil(t, loop.openWindow)
-	assert.Equal(t, clock.Now(), loop.openWindow.openedAt, "the window opens at the clock's time")
+	require.NotNil(t, loop.windows.only())
+	assert.Equal(t, clock.Now(), loop.windows.only().openedAt, "the window opens at the clock's time")
 
 	clock.advance(9 * time.Second)
 	timerWake(loop)
-	require.NotNil(t, loop.openWindow, "a second short of the idle timeout")
+	require.NotNil(t, loop.windows.only(), "a second short of the idle timeout")
 
 	writeTo(loop, "second") // restarts the idle interval
 	clock.advance(9 * time.Second)
 	timerWake(loop)
-	require.NotNil(t, loop.openWindow, "the second write restarted it")
+	require.NotNil(t, loop.windows.only(), "the second write restarted it")
 
 	clock.advance(time.Second)
 	timerWake(loop)
-	assert.Nil(t, loop.openWindow, "idle for the whole timeout")
+	assert.Nil(t, loop.windows.only(), "idle for the whole timeout")
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Len(t, loop.pendingWrites[0].Events, 2)
 }
@@ -68,11 +68,11 @@ func TestWindowClock_MaxDurationIsMeasuredOnTheWorkersClock(t *testing.T) {
 
 	for i, name := range []string{"a", "b", "c"} {
 		writeTo(loop, name)
-		require.NotNil(t, loop.openWindow, "write %d keeps the window busy", i)
+		require.NotNil(t, loop.windows.only(), "write %d keeps the window busy", i)
 		clock.advance(9 * time.Second)
 		timerWake(loop)
 	}
-	assert.Nil(t, loop.openWindow, "27s after it opened, past its 25s maxDuration")
+	assert.Nil(t, loop.windows.only(), "27s after it opened, past its 25s maxDuration")
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Len(t, loop.pendingWrites[0].Events, 3)
 }
@@ -89,16 +89,16 @@ func TestWindowClock_AnAttachedRequestsTimersRunFromTheAttachOnTheWorkersClock(t
 	req := attachReq("alice", time.Hour)
 	req.MaxDuration = 30 * time.Second
 	serviceAttach(loop, req)
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: attached")
-	assert.Equal(t, clock.Now().Add(30*time.Second), loop.openWindow.timers.maxAt)
+	require.NotNil(t, loop.windows.only().pendingCR, "precondition: attached")
+	assert.Equal(t, clock.Now().Add(30*time.Second), loop.windows.only().timers.maxAt)
 
 	clock.advance(29 * time.Second)
 	timerWake(loop)
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 
 	clock.advance(time.Second)
 	timerWake(loop)
-	assert.Nil(t, loop.openWindow, "the request's maxDuration ran out")
+	assert.Nil(t, loop.windows.only(), "the request's maxDuration ran out")
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)

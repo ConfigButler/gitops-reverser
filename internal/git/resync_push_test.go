@@ -328,7 +328,7 @@ func TestHandleResyncRequest_ClosedWindowIsPushedEvenWhenNoOpResync(t *testing.T
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("held", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow, "the edit must open a window")
+	require.NotNil(t, loop.windows.only(), "the edit must open a window")
 
 	// A type-scoped resync for a DIFFERENT type with an empty desired set: it closes
 	// the open window (resync-before-apply) but its own mark-and-sweep — scoped to a

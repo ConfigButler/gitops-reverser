@@ -370,12 +370,12 @@ func TestCloseWindowForPushHint_PublishesTheOpenWindowNow(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("edited", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow, "an hour-long window is still open")
+	require.NotNil(t, loop.windows.only(), "an hour-long window is still open")
 
 	loop.handleRefreshRequest(&RefreshRequest{PushNotice: true})
 	loop.closeWindowForPushHint()
 
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 	assert.Len(t, loop.pendingWrites, 1, "the window's write is decided, to be published")
 }
 
@@ -391,14 +391,14 @@ func TestCloseWindowForPushHint_LeavesASavesWindowToTheSave(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("edited", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow, "an hour-long window is still open")
+	require.NotNil(t, loop.windows.only(), "an hour-long window is still open")
 	id := commitRequestID{Namespace: "team-a", Name: "save", UID: "uid-save"}
-	loop.openWindow.pendingCR = &id
+	loop.windows.only().pendingCR = &id
 
 	loop.handleRefreshRequest(&RefreshRequest{PushNotice: true})
 	loop.closeWindowForPushHint()
 
-	assert.NotNil(t, loop.openWindow, "the save's window is still open")
+	assert.NotNil(t, loop.windows.only(), "the save's window is still open")
 	assert.Empty(t, loop.pendingWrites)
 }
 

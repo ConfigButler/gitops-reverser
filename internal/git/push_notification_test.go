@@ -48,7 +48,7 @@ func TestPushNotice_ARunOfReportsQueuesOneLook(t *testing.T) {
 				Spec:       configv1alpha3.GitProviderSpec{URL: "https://github.com/acme/platform"},
 			})
 			loop.w.recordRemoteObservation("ours", ObservedByPush)
-			loop.openWindow = &openWindow{}
+			loop.windows.setOnly(&openWindow{})
 
 			for _, after := range tc.reports {
 				loop.w.EnqueuePushNotification(after)
