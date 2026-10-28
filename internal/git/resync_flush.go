@@ -57,6 +57,9 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		return
 	}
 	pendingWrite.Desired, pendingWrite.ownedElsewhere = l.withoutOwnedElsewhere(req)
+	// The snapshot holds what the cluster runs, a withheld apply's values included: they are set
+	// back as in a live event (withheld_fields.go).
+	pendingWrite.Desired = l.restoreWithheldSnapshot(pendingWrite.Desired)
 	pendingWrite.Committed = new(bool)
 	pendingWrite.origin.resync = req
 	l.decide(*pendingWrite)

@@ -606,7 +606,8 @@ mirrors and the applier applies.
 
 ## Decided while building
 
-The build departs from the plan above in twelve places, decided on 2026-10-20:
+The build departs from the plan above in thirteen places, the first twelve decided on 2026-10-20 and
+the last on 2026-10-28:
 
 1. **Siblings do not count for F3.** Whether Git is ahead, and the apply epoch, are per worker: an
    apply due on another worker writing the same branch does not hold this worker's resyncs. This
@@ -672,6 +673,24 @@ The build departs from the plan above in twelve places, decided on 2026-10-20:
     attempt is sent for the tip that holds the siblings' writes. A sibling's push is foreign to the
     others, as it was when they found it by a fetch: its appliers may apply another cluster. A
     sibling's edit made while the apply runs stays unprotected, as it was before this change.
+13. **A withheld apply's values are kept out of the next edit.** The plan withheld the apply and left
+    the rest to the `Repair`, but the apply did land: until the `Repair`, the cluster runs its values,
+    and the next event of the object, by anyone, carried each one its author did not change. A window
+    commits whole objects, so that author's commit wrote the apply's values, the edit was lost, and
+    the `Repair` applied the loss. The worker now keeps, per object, the last version an apply window
+    or a flush recorded as an edit (the last accepted version), and on a withhold records each field
+    where the withheld object differs from it: the accepted value and the applier's, either of which
+    may be absent. Every later event of the object, mirrored or not and the `Repair`'s own landing
+    included, and every resync snapshot of it, is restored against that record: a field still
+    holding the applier's value was carried over and is set back to the accepted value; a field
+    holding any other value was changed by someone and leaves the record; a delete clears it. This is
+    the desired view of
+    [`window-field-ownership-and-apply-hold.md`](window-field-ownership-and-apply-hold.md#convergence-is-a-separate-operation),
+    limited to the fields a withheld apply reverted: commits stay whole objects, and no window owns
+    fields. Three limits are accepted. A list is one field, so an edit to another item of a list the
+    apply reverted still carries the reverted item. An author setting a field to the applier's value
+    cannot be told from carrying it, and is set back. The record lives in memory, so a restart loses
+    it ([`withheld_fields.go`](../../internal/git/withheld_fields.go)).
 
 ## References
 
