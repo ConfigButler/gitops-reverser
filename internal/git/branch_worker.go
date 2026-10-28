@@ -1350,6 +1350,9 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 		}
 		window.lastWriteAt = l.w.now()
 		l.commitWindows.charge(window, eventRetainedCharge(&event))
+		if !opened {
+			l.startAwaitedRequestTimers(window)
+		}
 
 		if opened {
 			// A waiting CommitRequest gets the new window BEFORE anything can close it: before the
@@ -1358,7 +1361,7 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 			// this very step, and a waiting request would miss the write it was waiting for — or,
 			// waiting on another author, never see the window that refuses it.
 			l.noteForeignWindow()
-			l.attachWaitingCommitRequests()
+			l.attachWaitingCommitRequests(window)
 			if !l.commitWindows.isOpen(window) {
 				return // the attached request's maxDuration: 0s closed it already
 			}
@@ -2913,13 +2916,9 @@ func (w *BranchWorker) recordWindowClosed(window *openWindow, reason windowFinal
 		attribute.String("gittarget_name", window.GitTarget),
 	}
 	if telemetry.GitCommitWindowsTotal != nil {
-		source := windowTimerSourceTarget
-		if window.pendingCR != nil {
-			source = windowTimerSourceCommitRequest
-		}
 		telemetry.GitCommitWindowsTotal.Add(ctx, 1, metric.WithAttributes(append(target,
 			attribute.String("close_reason", reason.metricLabel()),
-			attribute.String("timer_source", source),
+			attribute.String("timer_source", window.timerSource(reason)),
 		)...))
 	}
 	if telemetry.GitCommitWindowDurationSeconds != nil {

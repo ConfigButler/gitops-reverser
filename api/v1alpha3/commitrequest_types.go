@@ -158,8 +158,8 @@ type CommitRequestWindow struct {
 	AttachTimeout *metav1.Duration `json:"attachTimeout,omitempty"`
 
 	// IdleTimeout closes the attached window this long after its last write, as a
-	// Go duration. Omitted, only maxDuration closes it. At most "5m", and not more
-	// than maxDuration.
+	// Go duration. It starts when maxDuration does. Omitted, only maxDuration
+	// closes it. At most "5m", and not more than maxDuration.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
@@ -169,6 +169,12 @@ type CommitRequestWindow struct {
 	// MaxDuration closes the attached window this long after the request attached,
 	// however many writes keep arriving, as a Go duration. "0s" commits right
 	// after attaching. At most "5m". Defaults to "2s".
+	//
+	// A request that attaches to a window already open starts this at the first
+	// write the window collects after the attach, within attachTimeout. Until
+	// then the window keeps the GitTarget's timers, and closes no later than
+	// attachTimeout plus maxDuration after the attach. With attachTimeout "0s",
+	// it starts at the attach.
 	// +optional
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:Pattern="^([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$"
@@ -289,7 +295,7 @@ type CommitRequestStatus struct {
 // spec is immutable, and status.commit reports the commit once it is on the
 // remote.
 //
-// Schema revision 1, compatible from revision 1.
+// Schema revision 2, compatible from revision 1.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -331,7 +337,7 @@ func (s *CommitRequest) GitTargetKey() types.NamespacedName {
 // schema this operator was built with, and the oldest revision it can serve: the last line of the
 // kind's description.
 const (
-	CommitRequestSchemaRevision = 1
+	CommitRequestSchemaRevision = 2
 	CommitRequestSchemaFloor    = 1
 )
 

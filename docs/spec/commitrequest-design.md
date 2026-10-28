@@ -106,20 +106,26 @@ any deadline is consulted, so `attachTimeout: 0s` can attach at all. Otherwise i
 whose deadline has passed resolves and never takes a later window; when its deadline and a matching
 write are ready on the same wake, expiry wins.
 
-On attach, the request's `idleTimeout` and `maxDuration` replace the window's timers: `maxDuration`
-runs from the attach, and so does the first idle interval. A waiting request gets a new window before
-the target's own timers are applied, so a target with `idleTimeout: 0s` does not close the window
-before the request can attach.
+On attach, the request's `idleTimeout` and `maxDuration` replace the window's timers. When the
+request attaches to the window a write opens, both start at that write. When it attaches to a window
+already open at registration, the writes in it may not be its own, so its timers start at the first
+write the window collects after the attach, before the attach deadline. Until then the window keeps
+the GitTarget's timers, with the idle interval restarted at the attach, and closes no later than
+the attach deadline plus `maxDuration`. When no such write comes, the window closes on those timers
+and still carries the request's message: that is a folder applied with the request after its
+objects. A request with `attachTimeout: 0s` or `maxDuration: 0s` asks for no later write, so its
+timers start at the attach. A waiting request gets a new window before the target's own timers are
+applied, so a target with `idleTimeout: 0s` does not close the window before the request can attach.
 
 `attachTimeout` defaults to `"5s"` rather than `"0s"`, and counts from the worker's registration,
 which is after the request's own author was found. The write a request exists to publish reaches
 the worker through the same audit join, and on a busy cluster after it, so a zero wait is shorter
 than the window-open latency the pipeline can produce.
 The two durations are separate settings with separate clocks: `attachTimeout` runs from
-registration, `maxDuration` from the attach. Each is a pointer, so an omitted value and an explicit
-`"0s"` stay distinguishable. A zero `attachTimeout` attaches to a window already open, or gives up at
-once, and never shortens the collection that follows; a zero `maxDuration` finalizes right after the
-attach.
+registration, `maxDuration` from the attach, or from the request's first write after it. Each is a
+pointer, so an omitted value and an explicit `"0s"` stay distinguishable. A zero `attachTimeout`
+attaches to a window already open, or gives up at once, and never shortens the collection that
+follows; a zero `maxDuration` finalizes right after the attach.
 Other window closers can close an attached window early, carrying its message: an author or target
 change, the byte cap, a resync, or shutdown. An apply coming due does not. While a request is
 registered, from its registration until it resolves, the branch worker makes no

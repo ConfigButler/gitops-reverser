@@ -211,6 +211,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		message:            req.Message,
 		seq:                l.crSeq,
 		attachDeadline:     l.w.now().Add(req.AttachTimeout),
+		attachTimeout:      req.AttachTimeout,
 		idleTimeout:        req.IdleTimeout,
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
@@ -253,7 +254,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 	if window.pendingCR == nil {
 		// CurrentOrNext attaches to a window already open at registration before any deadline is
 		// consulted, which is what lets attachTimeout: 0s attach at all.
-		l.attachToWindow(window, pcr)
+		l.attachToWindow(window, pcr, false)
 	}
 }
 
@@ -294,7 +295,7 @@ func (l *branchWorkerEventLoop) serviceCommitRequests() {
 	}
 	l.noteForeignWindow()
 	l.expireWaitingCommitRequests()
-	l.attachWaitingCommitRequests()
+	l.attachWaitingCommitRequests(nil)
 	l.rearmAttachTimer()
 }
 
@@ -340,8 +341,9 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 
 // attachWaitingCommitRequests attaches, to each open window that carries no request yet, oldest
 // first, the first-registered waiting request that matches it. A window carries at most one request;
-// a second waits for the next window, and a request whose deadline has passed takes none.
-func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
+// a second waits for the next window, and a request whose deadline has passed takes none. opened is
+// the window the write being handled has just opened, or nil.
+func (l *branchWorkerEventLoop) attachWaitingCommitRequests(opened *openWindow) {
 	now := l.w.now()
 	for _, window := range l.commitWindows.all() {
 		if window.pendingCR != nil {
@@ -357,35 +359,92 @@ func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 			}
 		}
 		if first != nil {
-			l.attachToWindow(window, first)
+			l.attachToWindow(window, first, window == opened)
 		}
 	}
 }
 
-// attachToWindow binds a request's message to an open window and replaces the window's timers with
-// the request's own: the request's maxDuration runs from this attach, and so does its first idle
-// interval. A zero maxDuration closes the window right here. The message is the window's to keep
-// from now on, so it moves into the window's charge.
-func (l *branchWorkerEventLoop) attachToWindow(window *openWindow, pcr *pendingCommitRequest) {
+// attachToWindow binds a request's message to an open window and gives the window the request's
+// timers. atWrite says the write being handled opened the window, so every write in it is the
+// request's: its maxDuration and its first idle interval run from this attach, and a zero
+// maxDuration closes the window right here.
+//
+// A window that was already open holds writes the request may not have made: an earlier, unclaimed
+// edit of the same author, or a folder's objects applied before it. Closing it on the request's
+// timers from here would close it before the request's own writes arrive, and they would commit
+// under the generated message. So the request's timers start at the first write the window collects
+// after the attach, while the request could still have waited for a window (awaitRequestWrite).
+// A request with attachTimeout 0s or maxDuration 0s asks for no later write, so its timers start
+// here. The message is the window's to keep from now on, so it moves into the window's charge.
+func (l *branchWorkerEventLoop) attachToWindow(window *openWindow, pcr *pendingCommitRequest, atWrite bool) {
 	now := l.w.now()
 	window.pendingMessage = pcr.message
 	id := pcr.id
 	window.pendingCR = &id
 	pcr.attached = true
 	l.commitWindows.charge(window, attachCharge(pcr.message))
+	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
+	if atWrite || pcr.attachTimeout == 0 || pcr.maxDuration == 0 {
+		window.timers = requestTimers(pcr, now)
+		window.lastWriteAt = now
+		l.w.Log.Info("CommitRequest attached to open window",
+			"request", id.Namespace+"/"+id.Name,
+			"author", pcr.author,
+			"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
+			"maxDuration", pcr.maxDuration.String())
+	} else {
+		l.awaitRequestWrite(window, pcr, now)
+	}
+	l.closeOrArmWindow()
+}
+
+// awaitRequestWrite attaches a request to a window that was already open, and holds its timers for
+// the first write after the attach. Until then the window keeps its own timers, with the idle
+// interval restarted at the attach, and closes no later than the attach deadline plus the request's
+// maxDuration: the latest the request's timers could have closed it. When no write comes, the window
+// closes on those timers and still carries the request's message.
+func (l *branchWorkerEventLoop) awaitRequestWrite(window *openWindow, pcr *pendingCommitRequest, now time.Time) {
+	window.awaitingWrite = &awaitedRequestTimers{
+		deadline: pcr.attachDeadline, request: pcr, ownMaxAt: window.timers.maxAt,
+	}
+	if latest := pcr.attachDeadline.Add(pcr.maxDuration); latest.Before(window.timers.maxAt) {
+		window.timers.maxAt = latest
+	}
+	window.lastWriteAt = now
+	l.w.Log.Info("CommitRequest attached to open window; its timers start at its next write",
+		"request", pcr.id.Namespace+"/"+pcr.id.Name,
+		"author", pcr.author,
+		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
+		"maxDuration", pcr.maxDuration.String(),
+		"until", pcr.attachDeadline.Sub(now).String())
+}
+
+// startAwaitedRequestTimers starts the timers an attached request held for its first write, now that
+// window collected one. A write after the request's attach deadline starts nothing: the window keeps
+// the timers it has, which already end by then.
+func (l *branchWorkerEventLoop) startAwaitedRequestTimers(window *openWindow) {
+	awaited := window.awaitingWrite
+	if awaited == nil {
+		return
+	}
+	window.awaitingWrite = nil
+	now := l.w.now()
+	if !awaited.deadline.After(now) {
+		return
+	}
+	window.timers = requestTimers(awaited.request, now)
+	l.w.Log.Info("CommitRequest's first write after its attach; its timers start",
+		"request", awaited.request.id.Namespace+"/"+awaited.request.id.Name,
+		"maxDuration", awaited.request.maxDuration.String())
+}
+
+// requestTimers are a request's window timers, started at now.
+func requestTimers(pcr *pendingCommitRequest, now time.Time) windowTimers {
 	timers := windowTimers{noIdle: pcr.idleTimeout == nil, maxAt: now.Add(pcr.maxDuration)}
 	if pcr.idleTimeout != nil {
 		timers.idle = *pcr.idleTimeout
 	}
-	window.timers = timers
-	window.lastWriteAt = now
-	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
-	l.w.Log.Info("CommitRequest attached to open window",
-		"request", id.Namespace+"/"+id.Name,
-		"author", pcr.author,
-		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
-		"maxDuration", pcr.maxDuration.String())
-	l.closeOrArmWindow()
+	return timers
 }
 
 // expireWaitingCommitRequests resolves every request whose attach deadline passed while it was

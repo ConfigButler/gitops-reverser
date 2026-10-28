@@ -166,7 +166,8 @@ The idle timeout restarts on every matching edit, so continuous edits keep a win
 `maxDuration` (`1m` by default, counted from the window opening) or another closing condition, such
 as an identity change or the byte threshold. A five-second idle timeout therefore does not promise
 publication within five seconds of the first edit. A `CommitRequest` that attaches replaces both
-timers with its own `idleTimeout` and `maxDuration`, both counted from the attach; an omitted
+timers with its own `idleTimeout` and `maxDuration`, both counted from the attach, or, for a window
+that was already open, from the request's first write after it; an omitted
 `idleTimeout` leaves `maxDuration` alone to close the window. Its `attachTimeout` is separate: it
 runs from the worker's registration of the request and only bounds the wait for a window to attach
 to. The [commit-window contract](spec/commit-window-refactor.md) owns the full rules.
@@ -285,8 +286,9 @@ are never held by the same worker.
 A `CommitRequest` attaches to a matching author-and-target window and closes it. It does not
 bypass the push cooldown. Two settings with separate clocks set the timing: `attachTimeout` runs
 from the worker's registration of the request and bounds the wait for a window, and `maxDuration`
-runs from the attach and bounds the collection that follows. Both default to `2s` and accept `0s`
-to `5m`. A repeat attach restarts neither clock.
+runs from the attach, or from the request's first write into a window that was already open, and
+bounds the collection that follows. They default to `5s` and `2s` and accept `0s` to `5m`. A repeat
+attach restarts neither clock.
 
 ```mermaid
 sequenceDiagram

@@ -77,20 +77,27 @@ func TestWindowClock_MaxDurationIsMeasuredOnTheWorkersClock(t *testing.T) {
 	assert.Len(t, loop.pendingWrites[0].Events, 3)
 }
 
-func TestWindowClock_AnAttachedRequestsTimersRunFromTheAttachOnTheWorkersClock(t *testing.T) {
+func TestWindowClock_AnAttachedRequestsTimersRunFromItsOwnWriteOnTheWorkersClock(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 	clock := useTestClock(worker)
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
+	loop.defaultWindow.maxDuration = time.Hour
 
 	writeTo(loop, "first")
-	clock.advance(time.Minute)
-	req := attachReq("alice", time.Hour)
+	clock.advance(10 * time.Second)
+	req := attachReq("alice", time.Minute)
 	req.MaxDuration = 30 * time.Second
 	serviceAttach(loop, req)
 	require.NotNil(t, loop.openWindow.pendingCR, "precondition: attached")
-	assert.Equal(t, clock.Now().Add(30*time.Second), loop.openWindow.timers.maxAt)
+	assert.Equal(t, clock.Now().Add(time.Minute+30*time.Second), loop.openWindow.timers.maxAt,
+		"until its own write, the window closes no later than the attach deadline plus maxDuration")
+
+	clock.advance(20 * time.Second)
+	writeTo(loop, "second")
+	assert.Equal(t, clock.Now().Add(30*time.Second), loop.openWindow.timers.maxAt,
+		"the request's own write starts its maxDuration")
 
 	clock.advance(29 * time.Second)
 	timerWake(loop)
@@ -102,6 +109,67 @@ func TestWindowClock_AnAttachedRequestsTimersRunFromTheAttachOnTheWorkersClock(t
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
+}
+
+// TestWindowClock_ARequestAfterItsWritesClosesOnTheTargetsTimers pins the objects-first folder: a
+// request attached to a window already open, with no write after it, leaves the window on the
+// GitTarget's idle interval, restarted at the attach, and the window still carries its message. On a
+// GitTarget whose idle interval is longer, the attach deadline plus maxDuration closes it.
+func TestWindowClock_ARequestAfterItsWritesClosesOnTheTargetsTimers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		idle   time.Duration
+		closes time.Duration
+	}{
+		{name: "the target's idle interval", idle: 5 * time.Second, closes: 5 * time.Second},
+		{name: "the attach deadline plus maxDuration", idle: 5 * time.Minute, closes: 7 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			worker, _, _ := setupCommitPushSplitWorker(t)
+			createPlainGitTarget(t, worker, "team-a", "team-a")
+			clock := useTestClock(worker)
+			loop := newBranchWorkerEventLoop(worker, tc.idle)
+			defer loop.stopTimers()
+			loop.defaultWindow.maxDuration = time.Hour
+
+			writeTo(loop, "first")
+			clock.advance(3 * time.Second)
+			req := attachReq("alice", 5*time.Second)
+			req.MaxDuration = 2 * time.Second
+			req.Message = "save after the writes"
+			serviceAttach(loop, req)
+
+			clock.advance(tc.closes - time.Millisecond)
+			timerWake(loop)
+			require.NotNil(t, loop.openWindow, "open until %s after the attach", tc.closes)
+			clock.advance(time.Millisecond)
+			timerWake(loop)
+			assert.Nil(t, loop.openWindow)
+			res, ok := outcome(t, worker)
+			require.True(t, ok)
+			assert.Equal(t, FinalizeCommitted, res.Outcome)
+		})
+	}
+}
+
+// TestWindowClock_AZeroAttachTimeoutStartsTheTimersAtTheAttach pins that a request asking for no
+// write after it keeps the rule of a window it opens: its timers start at the attach.
+func TestWindowClock_AZeroAttachTimeoutStartsTheTimersAtTheAttach(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	clock := useTestClock(worker)
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+
+	writeTo(loop, "first")
+	clock.advance(time.Second)
+	req := attachReq("alice", 0)
+	req.MaxDuration = 2 * time.Second
+	serviceAttach(loop, req)
+	require.NotNil(t, loop.openWindow.pendingCR)
+	assert.Nil(t, loop.openWindow.awaitingWrite)
+	assert.Equal(t, clock.Now().Add(2*time.Second), loop.openWindow.timers.maxAt)
+	assert.True(t, loop.openWindow.timers.noIdle)
 }
 
 func TestWindowClock_TheAttachDeadlineIsMeasuredOnTheWorkersClock(t *testing.T) {

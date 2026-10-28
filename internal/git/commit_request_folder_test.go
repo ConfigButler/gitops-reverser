@@ -204,3 +204,46 @@ func TestSaveFolder_AnAppliedFolderMakesOneCommitUnderTheRequestsMessage(t *test
 		})
 	}
 }
+
+// TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange pins gitops-api ask #39: a write of the
+// same author that no request claimed leaves a window open, and three saves follow one another, each
+// filed, then written once the worker reports it registered (a poll, up to 2s later), then waited on.
+// Each save's message must land on the commit holding its own write: the earlier write may share
+// the first save's commit (the folder scenario), but no save's write is committed under the
+// generated message while its request is still collecting.
+func TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange(t *testing.T) {
+	r := newSaveRun(t)
+	r.write("unclaimed")
+
+	at := 300 * time.Millisecond
+	for _, name := range []string{"save-1", "save-2", "save-3"} {
+		r.until(at)
+		r.register(name, "feat: "+name)
+		r.until(at + 2100*time.Millisecond)
+		r.write("edit-of-" + name)
+		r.untilResolved(name)
+		res, ok := r.outcome(name)
+		require.True(t, ok, "%s is resolved", name)
+		require.NoError(t, res.Err)
+		require.Equal(t, FinalizeCommitted, res.Outcome, name)
+		at = r.clock.Now().Sub(r.start) + 500*time.Millisecond
+	}
+	r.until(at + time.Minute)
+
+	commits := r.commits()
+	for _, name := range []string{"save-1", "save-2", "save-3"} {
+		var holding *savedCommit
+		for i := range commits {
+			if slices.Contains(commits[i].configMaps, "edit-of-"+name) {
+				holding = &commits[i]
+			}
+		}
+		require.NotNil(t, holding, "%s's write is on the remote: %+v", name, commits)
+		assert.Equal(t, "feat: "+name, holding.message, "%s's message is on its own write", name)
+		res, _ := r.outcome(name)
+		assert.Equal(t, holding.hash, res.Commit, "%s reports the commit holding its write", name)
+	}
+	assert.Equal(t, []string{"edit-of-save-1", "unclaimed"}, commits[0].configMaps,
+		"the unclaimed write shares the first save's commit, as CurrentOrNext documents")
+	assert.Len(t, commits, 3, "one commit per save: %+v", commits)
+}
