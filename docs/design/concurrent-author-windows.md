@@ -220,6 +220,28 @@ is the point of the change, and it needs saying in `docs/configuration.md` when 
 - `SaveInProgress` is unchanged: it is already per author and `GitTarget`.
 - Each request settles exactly once, whichever trigger closes its window.
 
+### The window decisions are named facts
+
+The [event model](branch-worker-event-model.md#commands-facts-and-effects) wants every decision of
+the worker to become a fact named after that decision, so that a later journal can replay it
+without reading the clock or the tree again. This change adds decisions, so it names them now.
+Nothing persists them yet: the names are used in log lines, close reasons, metrics and the
+reference model.
+
+| Fact | Carries | When |
+| --- | --- | --- |
+| `WindowOpened` | window ID, author, `GitTarget`, footprint, revision, opening time | a write opens a window |
+| `WriteJoinedWindow` | window ID, the write, the footprint after it | a write joins an open window |
+| `FootprintReproved` | window ID, new revision, the footprint or unknown | the revision changes under an open window |
+| `WindowClosed` | window ID, close reason, the writes it holds | a window closes |
+| `SingleWindowFallback` | the paths a plan touched outside its footprint | the materialization check fails |
+
+The window ID is the opening sequence number. It is unique for the life of one worker; making it
+survive a restart belongs to the
+[HA and durable delivery plan](../future/ha-gittarget-distribution-plan.md), with the rest of the
+journal. Deadlines are not facts of this design: they follow from the opening time, the latest write
+and the timers, and the event model's deadline protocol covers them.
+
 ## How to test it: a reference model
 
 "Git equals the cluster at the end" is too weak a check for this change. A later write can repair a
