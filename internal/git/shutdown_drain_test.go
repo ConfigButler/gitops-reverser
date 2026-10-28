@@ -4,6 +4,10 @@ package git
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"testing"
 	"time"
 
@@ -134,4 +138,32 @@ func TestShutdown_TheManagerRunsTheSettleOnceTheWorkersStopped(t *testing.T) {
 	assert.Equal(t, FinalizeCommitted, settled.Outcome)
 	require.NoError(t, ctxErr, "the step runs on a live context")
 	assert.WithinDuration(t, time.Now().Add(afterWorkersStoppedBudget), deadline, afterWorkersStoppedBudget)
+}
+
+// shutdownGraceMargin is what a stop needs beyond the workers' drain and the settle step: the caches
+// and the rest of the runnables stopping, and the process exiting.
+const shutdownGraceMargin = 5 * time.Second
+
+// Both deployments give the pod time for the whole drain: the workers' last push
+// (workerShutdownBudget), then the CommitRequest outcomes written after it (afterWorkersStoppedBudget).
+// A shorter grace period has the kubelet kill the pod before the outcomes are written: the e2e
+// manifest once set 10s.
+func TestShutdown_EveryDeploymentWaitsForTheDrain(t *testing.T) {
+	need := workerShutdownBudget + afterWorkersStoppedBudget + shutdownGraceMargin
+	grace := regexp.MustCompile(`(?m)^\s*terminationGracePeriodSeconds:\s*(\d+)\s*$`)
+	for _, manifest := range []string{
+		"../../config/deployment.yaml",
+		"../../charts/gitops-reverser/templates/deployment.yaml",
+	} {
+		t.Run(filepath.Base(filepath.Dir(manifest))+"/"+filepath.Base(manifest), func(t *testing.T) {
+			content, err := os.ReadFile(manifest)
+			require.NoError(t, err)
+			match := grace.FindSubmatch(content)
+			require.NotNil(t, match, "the manifest sets terminationGracePeriodSeconds")
+			seconds, err := strconv.Atoi(string(match[1]))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, time.Duration(seconds)*time.Second, need,
+				"terminationGracePeriodSeconds covers the workers' drain, the settle step and a margin")
+		})
+	}
 }
