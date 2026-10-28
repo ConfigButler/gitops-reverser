@@ -43,9 +43,12 @@ func newRealServerNewBranch(t *testing.T, slug string, seed func(repoDir string)
 	return &realServerNewBranch{ledgerFixture: f, loop: loop}
 }
 
+// gitIn runs git in dir. A fixture's own commits are never signed, whatever the developer's global
+// commit.gpgSign says: CI signs nothing, and a signing agent that went away must not fail a test.
 func gitIn(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	unsigned := []string{"-C", dir, "-c", "commit.gpgSign=false"}
+	out, err := exec.Command("git", append(unsigned, args...)...).CombinedOutput()
 	require.NoError(t, err, "git %v: %s", args, out)
 	return strings.TrimSpace(string(out))
 }
