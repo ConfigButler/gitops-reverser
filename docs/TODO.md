@@ -17,7 +17,7 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
   - **gate:** the model retains work across failed pushes and retries before several windows are
     released. Today it publishes at once after every wake (`windowModelRun.wake`) and asserts no
     pending writes after it (`drained`), so decided-but-uncommitted writes with windows open
-    (cooldown, failed push, replay) are never modelled;
+    (cooldown, failed push, replay) are never modeled;
   - reach floors the model asserts: shutdown, flush and push hint with two or more windows open,
     `attach_next` with others open, a reproof overlap, `path_conflict`; a concurrency-biased profile;
     CI raised to about 20 seeds × 60 steps;
