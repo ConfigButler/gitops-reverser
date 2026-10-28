@@ -736,6 +736,7 @@ func (l *branchWorkerEventLoop) syncAppliers(targets []branchTarget) {
 	for ref, state := range l.appliers {
 		if _, ok := named[ref]; !ok {
 			l.dropSaves(state)
+			l.dropWithheldOf(state)
 			if state.inflight != nil {
 				state.inflight.abandon()
 			}

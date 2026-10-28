@@ -73,7 +73,7 @@ func carryWithheld(t *testing.T, slug string) *echoFixture {
 
 	f.writeWindow(carryApply("a1", "b1"))
 	require.True(t, f.echoApplier().repair, "the apply over E1 is withheld, and a Repair is pending")
-	require.Len(t, f.loop.withheld[carryKey()], 1, "the field the apply reverted is recorded")
+	require.Len(t, f.loop.withheld[carryKey()].Fields, 1, "the field the apply reverted is recorded")
 	return f
 }
 
@@ -113,7 +113,7 @@ func TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit(t *testing.T) 
 		assert.Contains(t, f.onMain(echoFile("y")), "a: a2",
 			"alice's commit of b keeps her own E1, not the withheld apply's a1")
 		assert.Contains(t, f.onMain(echoFile("y")), "b: b2")
-		assert.Len(t, f.loop.withheld[carryKey()], 1, "the cluster still runs a1: the record stays")
+		assert.Len(t, f.loop.withheld[carryKey()].Fields, 1, "the cluster still runs a1: the record stays")
 	})
 
 	t.Run("an edit of another author does not carry it either", func(t *testing.T) {
@@ -161,6 +161,93 @@ func TestApplyWindow_TheWithheldRecordEnds(t *testing.T) {
 		f.writeWindow(created)
 		f.publish()
 		assert.Contains(t, f.onMain(echoFile("y")), "a: a1", "the object made again is mirrored as it is")
+	})
+}
+
+// carryDeleteThenRecreate publishes alice's delete of y inside the open apply window, then has the
+// applier make y again, late: the apply is withheld, a Repair is pending, and the cluster runs y while
+// Git holds none.
+func carryDeleteThenRecreate(t *testing.T, slug string) *echoFixture {
+	t.Helper()
+	f := carryFlushOverAnEdit(t, slug)
+	f.publish()
+	deleted := carryEdit("alice", "a2", "b1")
+	deleted.Operation = string(itypes.OperationDelete)
+	f.writeWindow(deleted)
+	f.publish()
+	require.Empty(t, f.onMain(echoFile("y")), "precondition: alice's delete is published")
+
+	recreated := carryApply("a1", "b1")
+	recreated.Operation = string(itypes.OperationCreate)
+	f.writeWindow(recreated)
+	require.True(t, f.echoApplier().repair, "the apply that made y again is withheld, and a Repair is pending")
+	return f
+}
+
+// carryLabel is bob's kubectl label on y as the applier made it again: the whole object it carries
+// is the apply's.
+func carryLabel() Event {
+	event := carryApply("a1", "b1")
+	event.UserInfo.Username = "bob"
+	event.LastFieldManagers = []string{"kubectl-label"}
+	event.LastFieldManagedAt = time.Now().Add(2 * time.Hour)
+	event.Object.SetLabels(map[string]string{"team": "a"})
+	return event
+}
+
+// publishAny closes the open windows, if any, and pushes what is pending.
+func (f *echoFixture) publishAny() {
+	f.t.Helper()
+	f.loop.lastPushAt = time.Time{}
+	f.loop.finalizeOpenWindow()
+	f.loop.pushPending()
+}
+
+// TestApplyWindow_ADeleteInTheWindowStaysDeleted pins a delete as the last accepted version: an
+// apply that makes the object again, late, over the delete is withheld, and until the Repair's own
+// delete lands no later event of the object, by anyone, brings it back into Git.
+func TestApplyWindow_ADeleteInTheWindowStaysDeleted(t *testing.T) {
+	t.Run("a later edit does not bring it back", func(t *testing.T) {
+		f := carryDeleteThenRecreate(t, "carry-delete-label")
+		f.writeWindow(carryLabel())
+		f.publishAny()
+		assert.Empty(t, f.onMain(echoFile("y")),
+			"bob labelled the object the withheld apply made; committing it would undo alice's delete")
+		require.Len(t, f.loop.withheld[carryKey()].Fields, 1, "the record holds the object out")
+
+		repaired := carryApply("a1", "b1")
+		repaired.Operation = string(itypes.OperationDelete)
+		f.writeWindow(repaired) // the Repair deletes y on the cluster
+		f.publishAny()
+		assert.Empty(t, f.loop.withheld, "the Repair's delete clears the record")
+		assert.Empty(t, f.onMain(echoFile("y")))
+
+		created := carryEdit("bob", "a9", "b9")
+		created.Operation = string(itypes.OperationCreate)
+		f.writeWindow(created)
+		f.publishAny()
+		assert.Contains(t, f.onMain(echoFile("y")), "a: a9", "an object made after the Repair is mirrored")
+	})
+
+	t.Run("a resync does not bring it back", func(t *testing.T) {
+		f := carryDeleteThenRecreate(t, "carry-delete-resync")
+		snapshot := carryLabel()
+		req := &ResyncRequest{
+			Desired: []manifestanalyzer.DesiredResource{
+				{Resource: snapshot.Identifier, Object: snapshot.Object},
+				echoDesired("x", "x2"),
+			},
+			GitTargetName:      echoTarget,
+			GitTargetNamespace: "default",
+			Initial:            true,
+			Result:             make(chan ResyncResult, 1),
+		}
+		f.loop.handleQueueItem(resyncItem(req))
+		require.NoError(t, (<-req.Result).Err)
+		f.publishAny()
+
+		assert.Empty(t, f.onMain(echoFile("y")), "the snapshot holds y only because the apply made it again")
+		assert.Len(t, req.Desired, 2, "the snapshot itself is left as it was")
 	})
 }
 
@@ -217,7 +304,7 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 			Accepted: fieldValue{Value: []interface{}{"one", "two"}},
 			Applier:  fieldValue{Value: []interface{}{"one"}},
 		},
-	}, loop.withheld[key])
+	}, loop.withheld[key].Fields)
 
 	// A later object: b added, data.a carried, data.c still missing, extra changed by someone, the
 	// list carried.
@@ -230,7 +317,7 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"a": "a2", "b": "b2", "c": "c1"}, restored.Object["data"])
 	assert.Equal(t, "y", restored.Object["extra"], "a field someone changed is theirs")
 	assert.Equal(t, []interface{}{"one", "two"}, restored.Object["spec"].(map[string]interface{})["list"])
-	assert.Len(t, loop.withheld[key], 3, "extra left the record")
+	assert.Len(t, loop.withheld[key].Fields, 3, "extra left the record")
 
 	// A second withhold, over a version without data at all, replaces the fields inside it.
 	loop.keepAccepted(Event{Identifier: accepted.Identifier, Object: restored})
@@ -239,8 +326,8 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 	again.Object.Object["spec"] = map[string]interface{}{"list": []interface{}{"one"}}
 	again.Object.Object["extra"] = "y"
 	loop.recordWithheld(again)
-	paths := make([][]string, 0, len(loop.withheld[key]))
-	for _, field := range loop.withheld[key] {
+	paths := make([][]string, 0, len(loop.withheld[key].Fields))
+	for _, field := range loop.withheld[key].Fields {
 		paths = append(paths, field.Path)
 	}
 	assert.ElementsMatch(t, [][]string{{"data"}, {"spec", "list"}}, paths)

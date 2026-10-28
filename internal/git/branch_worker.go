@@ -1438,11 +1438,15 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 // target earlier go first, once its gate opened.
 //
 // Every event is first restored against the fields withheld applies reverted, mirrored or not, so
-// the event carries none of them into a commit (withheld_fields.go).
+// the event carries none of them into a commit, and an event of an object only a withheld apply made
+// again over a delete does not reach it (withheld_fields.go).
 func (l *branchWorkerEventLoop) mirrors(event *Event) bool {
-	l.restoreWithheldEvent(event)
+	keptOut := l.restoreWithheldEvent(event)
 	target := itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)
 	l.serviceHeld(target)
+	if keptOut {
+		return false
+	}
 	status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace)
 	if closed && status.State == RenderFidelityFalse {
 		l.dropAtRenderFidelity(target, status, event.Identifier.String())
