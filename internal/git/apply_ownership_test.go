@@ -92,7 +92,7 @@ func TestOwnership_ALiveWriteOfAnotherAppliersObjectIsNotMirrored(t *testing.T) 
 	event := windowEvent("alpha", "2", "kubectl-edit")
 	event.AppliedBy = other
 	loop.handleLiveEvents(&WriteRequest{Events: []Event{event}})
-	assert.Nil(t, loop.openWindow, "the object another applier owns opened no window")
+	assert.Nil(t, loop.windows.only(), "the object another applier owns opened no window")
 }
 
 // TestOwnership_ASnapshotObjectOfAnotherApplierIsNeitherUpsertedNorSwept: the resync drops the object

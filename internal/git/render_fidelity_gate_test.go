@@ -105,12 +105,12 @@ func TestRenderFidelityGate_PendingScopeCannotOpenLiveWindow(t *testing.T) {
 	event := Event{GitTargetName: target.Name, GitTargetNamespace: target.Namespace, Operation: "UPDATE"}
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
-	assert.Nil(t, loop.openWindow, "Unknown must block a new live window")
+	assert.Nil(t, loop.windows.only(), "Unknown must block a new live window")
 
 	_, applied := gate.RecordScopeClean(target, revisions[scope], scope)
 	require.True(t, applied)
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
-	assert.NotNil(t, loop.openWindow, "every scope reporting clean reopens normal writes")
+	assert.NotNil(t, loop.windows.only(), "every scope reporting clean reopens normal writes")
 }
 
 // restartAll is the whole-plan reconcile: every scope is restarted, which is what a forced

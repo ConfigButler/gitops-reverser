@@ -177,6 +177,7 @@ func (l *branchWorkerEventLoop) materialize() error {
 			l.w.recordMaterializationFailure(err)
 			return err
 		}
+		l.proveBeforeCommit(i)
 		err := l.w.commitPendingWrites(l.pendingWrites[i : i+1])
 		switch {
 		case err == nil:
@@ -442,6 +443,10 @@ func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err err
 func (l *branchWorkerEventLoop) settleFailedChange(pendingWrite PendingWrite, err error) {
 	name, namespace := pendingWrite.windowTarget()
 	collection := sourceCollectionForEvents(pendingWrite.Events)
+	var violation *footprintViolationError
+	if errors.As(err, &violation) {
+		l.fallBackToSingleWindow(pendingWrite, violation)
+	}
 	if isRefusal, refused := l.w.reportPathRefusal(err, name, namespace, collection); isRefusal {
 		l.w.recordCommitFailure(commitFailureRefused)
 		l.reapplyForRefusal(name, namespace, err.Error(), refused,

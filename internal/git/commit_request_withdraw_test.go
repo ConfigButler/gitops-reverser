@@ -42,8 +42,8 @@ func TestWithdraw_AWaitingRequestIsCancelledForGood(t *testing.T) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("late", "alice", "team-a")},
 	}})
-	require.NotNil(t, loop.openWindow)
-	assert.Nil(t, loop.openWindow.pendingCR, "a withdrawn request never attaches")
+	require.NotNil(t, loop.windows.only())
+	assert.Nil(t, loop.windows.only().pendingCR, "a withdrawn request never attaches")
 	assert.Empty(t, loop.pendingCRs)
 	res, _ = outcome(t, worker)
 	require.ErrorIs(t, res.Err, ErrCommitRequestWithdrawn)

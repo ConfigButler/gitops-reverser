@@ -53,7 +53,7 @@ func retainTwoWrites(t *testing.T, loop *branchWorkerEventLoop) {
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("refused-on-replay", "alice", ledgerTargetName)},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	req := attachReq("alice", 0)
 	req.GitTargetName = ledgerTargetName
 	req.Message = "save: lands in a folder that is refused before it is pushed"

@@ -152,7 +152,7 @@ func TestApplier_ARecoveredRefusalIsNotRetried(t *testing.T) {
 // Requests carry the uid, and the worker drops what was pending for an incarnation that is gone.
 func TestApplier_ARecreatedTargetInheritsNothing(t *testing.T) {
 	loop, requester := manualLoop(t, applierTestTarget("alpha", true, reapplying))
-	loop.openWindow = &openWindow{}
+	loop.windows.setOnly(&openWindow{})
 	addAlphaUnsentRefusal(loop)
 
 	old := &configv1alpha3.GitTarget{}
@@ -165,7 +165,7 @@ func TestApplier_ARecreatedTargetInheritsNothing(t *testing.T) {
 	recreated.UID = "uid-alpha-recreated"
 	require.NoError(t, loop.w.Client.Create(context.Background(), recreated))
 
-	loop.openWindow = nil
+	loop.windows.setOnly(nil)
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "the refusal was the old incarnation's")
 	assert.Empty(t, loop.unsentRefusals)
@@ -340,7 +340,7 @@ func TestPushNotice_TheTipAlreadySeenDoesNotCutAWindow(t *testing.T) {
 				Spec:       configv1alpha3.GitProviderSpec{URL: "https://github.com/acme/platform"},
 			})
 			loop.w.recordRemoteObservation("ours", ObservedByPush)
-			loop.openWindow = &openWindow{}
+			loop.windows.setOnly(&openWindow{})
 
 			loop.handleRefreshRequest(&RefreshRequest{PushNotice: true, After: tc.after})
 
