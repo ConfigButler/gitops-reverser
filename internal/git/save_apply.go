@@ -79,6 +79,7 @@ func (w *BranchWorker) recordSaveApply(id commitRequestID, apply SaveApply) {
 		askedAt = entry.askedAt
 	}
 	w.crApplies[id] = saveApplyEntry{apply: apply, askedAt: askedAt, updatedAt: now}
+	w.reportCommitRequestChange(id)
 }
 
 // LookupSaveApply reports where the apply a CommitRequest asked for stands, and false while the

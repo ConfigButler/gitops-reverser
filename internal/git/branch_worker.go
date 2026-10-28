@@ -399,6 +399,10 @@ type BranchWorker struct {
 	// publicationReporter is told when the worker's publication report changes. Set by the
 	// WorkerManager before Start; nil in tests that do not assert on it. See publication.go.
 	publicationReporter func()
+	// commitRequestReporter is told when a CommitRequest's standing on this worker changes. Set by
+	// the WorkerManager before Start; nil in tests that do not assert on it. See
+	// commit_request_changes.go.
+	commitRequestReporter func(CommitRequestChange)
 	// publication is the loop's latest publication report, and backlog what it keeps, for readers
 	// outside the loop. See publication.go.
 	publication atomic.Pointer[PublicationStatus]

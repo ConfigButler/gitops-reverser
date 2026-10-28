@@ -100,7 +100,10 @@ type commitRequestCore struct {
 	// controlRequests reads CommitRequests on the control cluster, uncached, for a source-cluster
 	// path to tell its own cluster from the control cluster (sourceRefusal); nil on the control path.
 	controlRequests client.Reader
-	finalizer       CommitRequestFinalizer
+	// wakeFallback is how often a request its worker registered is looked at, when the worker's
+	// changes wake its steps (CommitRequestWakes); zero polls it at commitRequestPollInterval.
+	wakeFallback time.Duration
+	finalizer    CommitRequestFinalizer
 	// authors finds a request's creator from audit facts; nil when author attribution is off.
 	authors watch.AuthorResolver
 	// streams holds the fact stream of commitrequests on each audit route a creator is looked up on.
@@ -572,14 +575,34 @@ func (c *commitRequestCore) recordPhase(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 	phase git.CommitRequestPhase, held string,
 ) (time.Duration, error) {
+	poll := commitRequestPollInterval
+	if registered(phase) {
+		poll = c.registeredPoll()
+	}
 	if progressRecorded(cr, phase, held) {
-		return commitRequestPollInterval, nil
+		return poll, nil
 	}
 	markCommitRequestProgressing(cr, phase, held)
 	if err := p.store.updateStatus(ctx, cr); err != nil {
-		return commitRequestPollInterval, ignoreConflict(err)
+		return poll, ignoreConflict(err)
 	}
-	return commitRequestPollInterval, nil
+	return poll, nil
+}
+
+// registered reports whether the worker has registered a request in this phase, so it reports the
+// request's every change from now on. Before that, while there is no worker or the attach is still
+// on its way, nothing would wake the step.
+func registered(phase git.CommitRequestPhase) bool {
+	return phase == git.PhaseWaitingForWindow || phase.Held()
+}
+
+// registeredPoll is how soon a step looks again at a request its worker has registered: the
+// fallback for a dropped change when the worker's changes wake the steps, the poll otherwise.
+func (c *commitRequestCore) registeredPoll() time.Duration {
+	if c.wakeFallback > 0 {
+		return c.wakeFallback
+	}
+	return commitRequestPollInterval
 }
 
 // refusePrunedGitTargetRef fails a request whose spec names no GitTarget, which can only be one

@@ -174,6 +174,10 @@ type WorkerManager struct {
 	// whose publication report changed. See GitBranchEvents.
 	gitBranchEvents chan event.GenericEvent
 
+	// commitRequestChanges carries the CommitRequests whose standing on a worker changed. See
+	// CommitRequestChanges.
+	commitRequestChanges chan CommitRequestChange
+
 	// claims is which GitBranch holds each repository branch (branch_owner.go). The GitBranch
 	// reconciler writes it; EnsureWorker and the sweep read it. Reach it through Claims, which makes
 	// one for a manager not built by NewWorkerManager.
@@ -218,19 +222,20 @@ func NewWorkerManager(
 	sensitiveResources types.SensitiveResourcePolicy,
 ) *WorkerManager {
 	return &WorkerManager{
-		Client:             client,
-		Log:                log,
-		limits:             limits.withDefaults(),
-		sensitiveResources: sensitiveResources,
-		workers:            make(map[BranchKey]*BranchWorker),
-		commitRequests:     &commitRequestOwners{},
-		remotes:            make(map[BranchKey]RemoteObservation),
-		replacements:       make(map[BranchKey]struct{}),
-		renderFidelityGate: NewRenderFidelityGate(),
-		publicationEvents:  make(chan event.GenericEvent, publicationEventBuffer),
-		gitBranchEvents:    make(chan event.GenericEvent, publicationEventBuffer),
-		claims:             NewBranchClaims(),
-		applierAdmitted:    authz.ApplierAdmitted,
+		Client:               client,
+		Log:                  log,
+		limits:               limits.withDefaults(),
+		sensitiveResources:   sensitiveResources,
+		workers:              make(map[BranchKey]*BranchWorker),
+		commitRequests:       &commitRequestOwners{},
+		remotes:              make(map[BranchKey]RemoteObservation),
+		replacements:         make(map[BranchKey]struct{}),
+		renderFidelityGate:   NewRenderFidelityGate(),
+		publicationEvents:    make(chan event.GenericEvent, publicationEventBuffer),
+		gitBranchEvents:      make(chan event.GenericEvent, publicationEventBuffer),
+		commitRequestChanges: make(chan CommitRequestChange, commitRequestChangeBuffer),
+		claims:               NewBranchClaims(),
+		applierAdmitted:      authz.ApplierAdmitted,
 	}
 }
 
@@ -529,6 +534,7 @@ func (m *WorkerManager) startWorkerLocked(key BranchKey, req WorkerRequest, gitB
 	managerCtx := m.ctx // read under m.mu; the worker's loop calls the reporter later
 	gitBranch := req.GitBranch
 	worker.publicationReporter = func() { go m.notifyPublication(managerCtx, gitBranch) }
+	worker.commitRequestReporter = m.notifyCommitRequestChange
 	worker.scanAcceptance = m.scanAcceptance
 	worker.applyRequester = m.applyRequester
 	worker.claimStatus = m.claimStatus

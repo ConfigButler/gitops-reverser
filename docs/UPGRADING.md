@@ -24,6 +24,17 @@ the objects in a folder, now commits when the `GitTarget`'s idle interval or tha
 rather than `maxDuration` after the attach. With the defaults that is about five seconds instead
 of two.
 
+## A `CommitRequest` reports each phase as the worker reaches it
+
+A request's progress and outcome are written as soon as its branch worker reports them, instead of
+at a two-second poll. Once the worker has registered a request, the poll is only a ten-second
+fallback.
+
+`SaveInProgress` is decided when the worker registers the request, after its author was found. A
+client that relies on it to keep two of its saves apart waits for the `Reconciling` reason
+`WaitingForWindow` or `CollectingWindow` before it makes the save's edits, not only for
+`Ready=Unknown`.
+
 ## A source-cluster request no path can serve ends `NotAllowed`
 
 A `CommitRequest` on a source cluster whose `GitTarget` mirrors another cluster, either the cluster

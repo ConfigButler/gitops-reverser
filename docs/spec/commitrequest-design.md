@@ -243,9 +243,12 @@ the remote, so the remote settles it: a no-diff request resolves `AlreadyPresent
 nothing to add, and `Committed` when the replay produced a commit after all.
 
 **A request whose write is decided stays identifiable until publication.** It remains attached to
-that write, and the controller keeps re-sending its attach every couple of seconds until it reads
-an outcome. The worker keeps that attachment even when local materialization is deferred, so
-the re-send is recognized as the same request: it cannot register afresh and expire into
+that write, and the controller keeps re-sending its attach until it reads an outcome: at once on
+every change the worker reports about the request (`CommitRequestChanges`), and at the latest every
+ten seconds, the fallback for a change that was dropped. Before the worker registers the request,
+the controller polls every two seconds, since nothing would report that the worker exists yet. The
+worker keeps that attachment even when local materialization is deferred, so the re-send is
+recognized as the same request: it cannot register afresh and expire into
 `NoWindow` while its commit waits out the push cooldown, and it cannot claim the next same-author
 window and stamp its message on somebody else's commit. Its attach deadline is spent and no longer
 arms anything.

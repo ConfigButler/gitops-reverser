@@ -12,7 +12,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/git"
@@ -163,6 +165,10 @@ type CommitRequestReconciler struct {
 	// CommitRequestDeleteAfterAnnotation at that moment; zero writes nothing, so the request stays.
 	TTL time.Duration
 
+	// Wakes reconciles a request as soon as its branch worker reports a change, so a registered
+	// request is polled only as the fallback. Nil polls every request.
+	Wakes *CommitRequestWakes
+
 	streamsOnce sync.Once
 	streams     *commitRequestStreams
 }
@@ -187,6 +193,7 @@ func (r *CommitRequestReconciler) core() *commitRequestCore {
 	r.streamsOnce.Do(func() { r.streams = &commitRequestStreams{set: r.FactStreams} })
 	return &commitRequestCore{
 		reader: r.Client, finalizer: r.Finalizer, authors: r.Authors, streams: r.streams, ttl: r.TTL,
+		wakeFallback: r.Wakes.fallback(),
 	}
 }
 
@@ -245,11 +252,14 @@ func (s typedCommitRequestStore) remove(ctx context.Context, cr *configbutleraiv
 // a step can wait out the attribution grace for its request's author, so they must, or one request's
 // wait would hold up every other.
 func (r *CommitRequestReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&configbutleraiv1alpha3.CommitRequest{}).
 		WithOptions(controller.Options{MaxConcurrentReconciles: commitRequestConcurrency}).
-		Named("commitrequest").
-		Complete(r)
+		Named("commitrequest")
+	if events := r.Wakes.Events(); events != nil {
+		b = b.WatchesRawSource(source.Channel(events, &handler.EnqueueRequestForObject{}))
+	}
+	return b.Complete(r)
 }
 
 // commitRequestConcurrency is how many CommitRequest steps run at once.

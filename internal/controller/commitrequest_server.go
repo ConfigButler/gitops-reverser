@@ -105,7 +105,10 @@ type CommitRequestServer struct {
 	FactStreams *queue.FactStreamSet
 	// TTL is how long a finished request is kept on a provider that deletes them.
 	TTL time.Duration
-	Log logr.Logger
+	// Wakes wakes a request's steps as soon as its branch worker reports a change, so a registered
+	// request is polled only as the fallback. Nil polls every request.
+	Wakes *CommitRequestWakes
+	Log   logr.Logger
 
 	mu       sync.Mutex
 	watchers map[k8stypes.NamespacedName]*commitRequestWatcher
@@ -572,6 +575,8 @@ func (s *CommitRequestServer) consider(
 	core := s.core()
 	go func() {
 		defer watcher.serving.Delete(u.GetUID())
+		woken, stop := s.Wakes.watch(u.GetUID())
+		defer stop()
 		for ctx.Err() == nil {
 			after, err := core.serve(ctx, watcher.path, key)
 			if err != nil {
@@ -585,6 +590,7 @@ func (s *CommitRequestServer) consider(
 			select {
 			case <-ctx.Done():
 			case <-time.After(after):
+			case <-woken:
 			}
 		}
 	}()
@@ -594,7 +600,7 @@ func (s *CommitRequestServer) core() *commitRequestCore {
 	s.streamsOnce.Do(func() { s.streams = &commitRequestStreams{set: s.FactStreams} })
 	return &commitRequestCore{
 		reader: s.Client, controlRequests: s.APIReader, finalizer: s.Finalizer, authors: s.Authors,
-		streams: s.streams, ttl: s.TTL,
+		streams: s.streams, ttl: s.TTL, wakeFallback: s.Wakes.fallback(),
 	}
 }
 

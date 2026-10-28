@@ -3306,6 +3306,12 @@ request produced a pushed commit:
   under the earlier request's message first. Saves by different authors never race, since each
   author has windows of its own.
 
+  `SaveInProgress` is decided when the branch worker registers the request, which is after its
+  author was found, not when it is created. A client that relies on it to keep two of its saves
+  apart waits until the `Reconciling` reason is `WaitingForWindow` or `CollectingWindow` before it
+  makes the save's edits, not only for `Ready=Unknown`: a request still `Saving` is not registered
+  yet, and its edits could reach the window of the save before it.
+
   `AlreadyPresent` means **the remote confirmed there was nothing to add**, so it is reported after
   the push rather than when the local plan found no difference. That costs a few seconds and buys a
   true answer: a competing Git-side edit can turn the same captured object into a real commit when
@@ -3314,7 +3320,8 @@ request produced a pushed commit:
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
   request is in progress, with the phase the branch worker reports as its reason: `Saving`
   (claimed, not yet registered), `WaitingForWorker` (the GitTarget has no branch worker yet),
-  `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`.
+  `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`. Each phase, and the outcome, is
+  written as soon as the branch worker reports it.
   `Stalled=True` when the request failed and needs attention (kstatus reports the object Failed).
 - **Pushed**: `True` once the commit, empty or not, is in the remote repository.
 - **Applied**: only with [`catchUp: AfterPush`](#applying-a-save-at-once), once `Ready=True`:
