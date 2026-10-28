@@ -120,6 +120,10 @@ type CommitRequestServer struct {
 
 	streamsOnce sync.Once
 	streams     *commitRequestStreams
+
+	// after is the timer a request's goroutine waits on between steps: time.After when nil. A test
+	// steps it, so only a wake or the test can take the next step.
+	after func(time.Duration) <-chan time.Time
 }
 
 // commitRequestWatcher is the watch of one KubeProvider's CommitRequests, in the namespaces it lends.
@@ -576,6 +580,10 @@ func (s *CommitRequestServer) consider(
 	}
 	key := k8stypes.NamespacedName{Namespace: u.GetNamespace(), Name: u.GetName()}
 	core := s.core()
+	wait := s.after
+	if wait == nil {
+		wait = time.After
+	}
 	go func() {
 		defer watcher.serving.Delete(u.GetUID())
 		woken, stop := s.Wakes.watch(u.GetUID())
@@ -592,7 +600,7 @@ func (s *CommitRequestServer) consider(
 			}
 			select {
 			case <-ctx.Done():
-			case <-time.After(after):
+			case <-wait(after):
 			case <-woken:
 			}
 		}

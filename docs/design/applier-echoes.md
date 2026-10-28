@@ -683,14 +683,20 @@ the last on 2026-10-28:
     may be absent. Every later event of the object, mirrored or not and the `Repair`'s own landing
     included, and every resync snapshot of it, is restored against that record: a field still
     holding the applier's value was carried over and is set back to the accepted value; a field
-    holding any other value was changed by someone and leaves the record; a delete clears it. This is
-    the desired view of
+    holding any other value was changed by someone and leaves the record; a delete clears it. A
+    delete is accepted too, as the object's absence: an apply that makes the object again over it is
+    recorded as the whole object, and every later event of the object is kept out of Git, and every
+    snapshot of it left out of a resync, until a delete (the `Repair`'s own) clears it. The record
+    also ends when the applier claim is removed, and when a resync of the object's collection no
+    longer finds the object. This is the desired view of
     [`window-field-ownership-and-apply-hold.md`](window-field-ownership-and-apply-hold.md#convergence-is-a-separate-operation),
     limited to the fields a withheld apply reverted: commits stay whole objects, and no window owns
-    fields. Three limits are accepted. A list is one field, so an edit to another item of a list the
+    fields. Four limits are accepted. A list is one field, so an edit to another item of a list the
     apply reverted still carries the reverted item. An author setting a field to the applier's value
-    cannot be told from carrying it, and is set back. The record lives in memory, so a restart loses
-    it ([`withheld_fields.go`](../../internal/git/withheld_fields.go)).
+    cannot be told from carrying it, and is set back. An update of an object the apply made again
+    cannot be told from carrying it either, so it is kept out of Git until the object is deleted;
+    an applier that does not prune keeps it out for as long as the record lives. The record lives
+    in memory, so a restart loses it ([`withheld_fields.go`](../../internal/git/withheld_fields.go)).
 
 ## References
 

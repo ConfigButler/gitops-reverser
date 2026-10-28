@@ -13,11 +13,14 @@ A request's progress and outcome are written as soon as its branch worker report
 at a two-second poll. Once the worker has registered a request, the poll is only a ten-second
 fallback.
 
-A save's own writes now land in its window. A client that waits for its request to be registered
-before it writes, as `SaveInProgress` asks, used to learn of the registration up to two seconds
-late, which is the whole default `maxDuration`. The window then closed on the earlier writes under
-the save's message, and the save's own writes committed under the generated message, or under the
-next save's message.
+A client that waits for its request to be registered before it writes, as `SaveInProgress` asks,
+learns of the registration sooner. It used to learn of it up to two seconds late, which is the whole
+default `maxDuration`, so the window often closed on the earlier writes under the save's message,
+and the save's own writes committed under the generated message, or under the next save's message.
+That is less likely now, not ruled out: the window's `maxDuration` still runs from the attach,
+whatever the client does, so a write delivered late (its audit fact names its author late), or a
+write of another author or `GitTarget` that closes the window, can still split a save. A save that
+must hold every write gives its request a longer `spec.window.maxDuration`.
 
 `SaveInProgress` is decided when the worker registers the request, after its author was found. A
 client that relies on it to keep two of its saves apart waits for the `Reconciling` reason

@@ -443,6 +443,9 @@ const (
 	// newer revision, finds overlapping another window's: it commits before the write that overlaps
 	// it (footprint.go).
 	windowFinalizeReasonPathConflict windowFinalizeReason = "path-conflict"
+	// windowFinalizeReasonFootprintFallback closes the windows open side by side when a commit outside
+	// its footprint makes the worker fall back to one window at a time (fallBackToSingleWindow).
+	windowFinalizeReasonFootprintFallback windowFinalizeReason = "footprint-fallback"
 )
 
 // NewBranchWorker creates a worker for a (provider, branch) combination. A zero
@@ -1438,11 +1441,15 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 // target earlier go first, once its gate opened.
 //
 // Every event is first restored against the fields withheld applies reverted, mirrored or not, so
-// the event carries none of them into a commit (withheld_fields.go).
+// the event carries none of them into a commit, and an event of an object only a withheld apply made
+// again over a delete does not reach it (withheld_fields.go).
 func (l *branchWorkerEventLoop) mirrors(event *Event) bool {
-	l.restoreWithheldEvent(event)
+	keptOut := l.restoreWithheldEvent(event)
 	target := itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)
 	l.serviceHeld(target)
+	if keptOut {
+		return false
+	}
 	status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace)
 	if closed && status.State == RenderFidelityFalse {
 		l.dropAtRenderFidelity(target, status, event.Identifier.String())
@@ -2976,31 +2983,17 @@ const (
 )
 
 // metricLabel is the commit_windows_total `close_reason` value for this reason. The log field keeps
-// its hyphenated form; a label value follows the snake_case the other labels use.
+// its hyphenated form; a label value follows the snake_case the other labels use. Only
+// identity_change is named apart from its log form, author-or-target-change.
 func (r windowFinalizeReason) metricLabel() string {
 	switch r {
-	case windowFinalizeReasonIdleTimeout:
-		return "idle_timeout"
-	case windowFinalizeReasonMaxDuration:
-		return "max_duration"
-	case windowFinalizeReasonAttachNext:
-		return "attach_next"
 	case windowFinalizeReasonIdentityChange:
 		return "identity_change"
-	case windowFinalizeReasonBufferLimit:
-		return "buffer_limit"
-	case windowFinalizeReasonResyncBeforeApply:
-		return "resync_before_apply"
-	case windowFinalizeReasonShutdown:
-		return "shutdown"
-	case windowFinalizeReasonForeignCommit:
-		return "foreign_commit"
-	case windowFinalizeReasonApplyDue:
-		return "apply_due"
-	case windowFinalizeReasonPathConflict:
-		return "path_conflict"
-	case windowFinalizeReasonUnspecified:
-		return "unspecified"
+	case windowFinalizeReasonIdleTimeout, windowFinalizeReasonMaxDuration, windowFinalizeReasonAttachNext,
+		windowFinalizeReasonBufferLimit, windowFinalizeReasonResyncBeforeApply, windowFinalizeReasonShutdown,
+		windowFinalizeReasonForeignCommit, windowFinalizeReasonApplyDue, windowFinalizeReasonPathConflict,
+		windowFinalizeReasonFootprintFallback, windowFinalizeReasonUnspecified:
+		return strings.ReplaceAll(string(r), "-", "_")
 	default:
 		return "unspecified"
 	}

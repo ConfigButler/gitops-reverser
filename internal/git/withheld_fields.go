@@ -31,18 +31,37 @@ import (
 // value was carried over, and is set back to the accepted value; a field holding any other value was
 // changed by someone since, and leaves the record. A delete clears the object's record.
 //
+// A delete is accepted too, as the object's absence. A withheld apply that makes the object again is
+// recorded as one field, the whole object (an empty Path): every later event of the object is kept
+// out of Git, and every resync snapshot of it left out, until a delete, the Repair's own included,
+// clears the record. No update can be told from carrying the apply's object: an author who changed
+// some field of it still changed an object only the apply made.
+//
+// The record also ends when nothing will put the accepted version back: the applier claim that would
+// repair it is gone (dropWithheldOf), or a resync of the object's collection no longer finds it.
+//
 // Decided limits: a list is one field, so an edit to another item of a list the apply reverted still
 // carries the reverted item; an author setting a field to the apply's value cannot be told from
-// carrying it, and is set back; and the record lives in memory, so a restart loses it.
+// carrying it, and is set back; an object made again stays out of Git until it is deleted, so an
+// applier that does not prune it keeps it out for as long as the record lives; and the record lives
+// in memory, so a restart loses it.
 
 // withheldFields is, by objectKey, the fields withheld applies reverted that no event has changed
 // since. It is plain data.
-type withheldFields map[string][]withheldField
+type withheldFields map[string]withheldObject
+
+// withheldObject is the record of one object: the GitTarget it is mirrored for and the object, which
+// a resync and an applier claim's removal match it by, and its fields.
+type withheldObject struct {
+	GitTarget  itypes.ResourceReference
+	Identifier itypes.ResourceIdentifier
+	Fields     []withheldField
+}
 
 // withheldField is one field a withheld apply reverted.
 type withheldField struct {
 	// Path is the field's map keys from the object's root. A list is one field: a path never goes
-	// into one.
+	// into one. An empty Path is the whole object, which the apply made again over a delete.
 	Path []string
 	// Accepted is what the object's last accepted version held at Path, Applier what the withheld
 	// apply wrote there.
@@ -62,16 +81,22 @@ func (v fieldValue) equal(other fieldValue) bool {
 }
 
 // keepAccepted keeps a live event's object as its object's last accepted version, after an apply
-// window or a flush recorded the event as an edit. A delete, and a field patch, which carries no
-// whole object, forget it: with no version to compare with, a withhold records nothing.
+// window or a flush recorded the event as an edit. A delete is kept as the object's absence, a nil
+// version. A field patch, which carries no whole object, forgets it: with no version to compare with,
+// a withhold records nothing.
 func (l *branchWorkerEventLoop) keepAccepted(event Event) {
 	key := objectKey(event.Identifier)
-	if event.Object == nil || event.Operation == string(itypes.OperationDelete) {
+	deleted := event.Operation == string(itypes.OperationDelete)
+	if event.Object == nil && !deleted {
 		delete(l.accepted, key)
 		return
 	}
 	if l.accepted == nil {
 		l.accepted = map[string]*unstructured.Unstructured{}
+	}
+	if deleted {
+		l.accepted[key] = nil
+		return
 	}
 	l.accepted[key] = event.Object.DeepCopy()
 }
@@ -110,85 +135,137 @@ func (l *branchWorkerEventLoop) editRecorded(key string, now time.Time) bool {
 }
 
 // recordWithheld records the fields a withheld apply reverted: where its object differs from the
-// object's last accepted version. A field recorded already is replaced, with any recorded inside it
-// or around it. With no accepted version kept there is nothing to compare with, and nothing is
-// recorded.
+// object's last accepted version, or, when that version is the object's absence, the whole object. A
+// field recorded already is replaced, with any recorded inside it or around it. With no accepted
+// version kept there is nothing to compare with, and nothing is recorded.
 //
 // The event was restored first (restoreWithheld), so a field it still carried from an earlier
 // withheld apply holds the accepted value, differs in nothing, and keeps its record.
 func (l *branchWorkerEventLoop) recordWithheld(event Event) {
 	key := objectKey(event.Identifier)
-	accepted := l.accepted[key]
-	if accepted == nil || event.Object == nil {
+	accepted, kept := l.accepted[key]
+	if !kept || event.Object == nil {
 		return
 	}
-	reverted := diffFields(nil, accepted.Object, event.Object.Object)
+	var reverted []withheldField
+	if accepted == nil {
+		reverted = []withheldField{{
+			Accepted: fieldValue{Absent: true},
+			Applier:  fieldValue{Value: copyValue(event.Object.Object)},
+		}}
+	} else {
+		reverted = diffFields(nil, accepted.Object, event.Object.Object)
+	}
 	if len(reverted) == 0 {
 		return
 	}
-	fields := slices.DeleteFunc(slices.Clone(l.withheld[key]), func(field withheldField) bool {
+	fields := slices.DeleteFunc(slices.Clone(l.withheld[key].Fields), func(field withheldField) bool {
 		return slices.ContainsFunc(reverted, func(other withheldField) bool { return overlaps(field.Path, other.Path) })
 	})
 	if l.withheld == nil {
 		l.withheld = withheldFields{}
 	}
-	l.withheld[key] = append(fields, reverted...)
+	l.withheld[key] = withheldObject{
+		GitTarget:  itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace),
+		Identifier: event.Identifier,
+		Fields:     append(fields, reverted...),
+	}
 	l.w.Log.V(1).Info("Recorded the fields a withheld apply reverted, so the next event of the object does "+
 		"not carry them into Git", "branch", l.w.Branch, "object", event.Identifier.String(), "fields", len(reverted))
 }
 
 // restoreWithheldEvent restores a live event against the record of its object, before it is
 // judged: a delete clears the record, and any other event with a whole object has each field it
-// carried from a withheld apply set back (restoreWithheld).
-func (l *branchWorkerEventLoop) restoreWithheldEvent(event *Event) {
+// carried from a withheld apply set back (restoreWithheld). It reports whether the event is kept out
+// of Git: its object was deleted, and exists again only because a withheld apply made it.
+func (l *branchWorkerEventLoop) restoreWithheldEvent(event *Event) bool {
 	key := objectKey(event.Identifier)
 	if event.Operation == string(itypes.OperationDelete) {
 		delete(l.withheld, key)
-		return
+		return false
 	}
-	if restored := l.restoreWithheld(key, event.Object); restored != event.Object {
+	restored := l.restoreWithheld(key, event.Object)
+	switch {
+	case restored == nil && event.Object != nil:
+		l.w.Log.Info("Kept an event out of Git: its object was deleted, and only a withheld apply made it again",
+			"branch", l.w.Branch, "object", event.Identifier.String(), "author", event.UserInfo.Username)
+		return true
+	case restored != event.Object:
 		l.w.Log.Info("Set back the fields a withheld apply reverted, which the event carried: the cluster "+
 			"still runs the apply's values, and the event's author did not change them",
 			"branch", l.w.Branch, "object", event.Identifier.String(), "author", event.UserInfo.Username)
 		event.Object = restored
 	}
+	return false
 }
 
 // restoreWithheldSnapshot restores each object of a resync's snapshot against its record, as a live
-// event is. The snapshot itself is left as it was: an object set back is a copy, in a copy of it.
+// event is, and leaves out an object a record keeps out of Git. The request's snapshot is left as it
+// was: an object set back is a copy, in a copy of it.
+//
+// The snapshot holds every object of its scope for its GitTarget, so a recorded object it does not
+// hold is gone from the cluster, and its record ends.
 func (l *branchWorkerEventLoop) restoreWithheldSnapshot(
-	desired []manifestanalyzer.DesiredResource,
+	req *ResyncRequest, desired []manifestanalyzer.DesiredResource,
 ) []manifestanalyzer.DesiredResource {
 	if len(l.withheld) == 0 {
 		return desired
 	}
-	var restored []manifestanalyzer.DesiredResource
-	for i, dr := range desired {
+	found := make(map[string]bool, len(req.Desired))
+	for _, dr := range req.Desired {
+		found[objectKey(dr.Resource)] = true
+	}
+	target := itypes.NewResourceReference(req.GitTargetName, req.GitTargetNamespace)
+	for key, record := range l.withheld {
+		if record.GitTarget == target && req.Scope.Matches(record.Identifier) && !found[key] {
+			delete(l.withheld, key)
+		}
+	}
+	restored := make([]manifestanalyzer.DesiredResource, 0, len(desired))
+	changed := false
+	for _, dr := range desired {
 		object := l.restoreWithheld(objectKey(dr.Resource), dr.Object)
-		if object == dr.Object {
+		if object != dr.Object {
+			changed = true
+		}
+		if object == nil && dr.Object != nil {
 			continue
 		}
-		if restored == nil {
-			restored = slices.Clone(desired)
-		}
-		restored[i].Object = object
+		dr.Object = object
+		restored = append(restored, dr)
 	}
-	if restored == nil {
+	if !changed {
 		return desired
 	}
 	return restored
 }
 
+// dropWithheldOf ends the records of the objects of an applier claim that is gone: no Repair of its
+// will put the accepted version back.
+func (l *branchWorkerEventLoop) dropWithheldOf(state *applierState) {
+	for key, record := range l.withheld {
+		if slices.ContainsFunc(state.targets, func(target branchTarget) bool {
+			return target.ref.Name == record.GitTarget.Name && target.ref.Namespace == record.GitTarget.Namespace
+		}) {
+			delete(l.withheld, key)
+		}
+	}
+}
+
 // restoreWithheld applies the record of an object to one of its later versions, and updates the
 // record: a field still holding the withheld apply's value is set back to the accepted value, and
 // stays recorded; a field holding any other value leaves the record. It returns the object to
-// mirror, a copy when a field was set back.
+// mirror, a copy when a field was set back, and nil while the record keeps the whole object out of
+// Git, which no later version ends.
 func (l *branchWorkerEventLoop) restoreWithheld(
 	key string, object *unstructured.Unstructured,
 ) *unstructured.Unstructured {
-	fields := l.withheld[key]
+	fields := l.withheld[key].Fields
 	if len(fields) == 0 || object == nil {
 		return object
+	}
+	if slices.ContainsFunc(fields, func(field withheldField) bool { return len(field.Path) == 0 }) {
+		return nil
 	}
 	restored := object
 	var kept []withheldField
@@ -206,7 +283,9 @@ func (l *branchWorkerEventLoop) restoreWithheld(
 	if len(kept) == 0 {
 		delete(l.withheld, key)
 	} else {
-		l.withheld[key] = kept
+		record := l.withheld[key]
+		record.Fields = kept
+		l.withheld[key] = record
 	}
 	return restored
 }

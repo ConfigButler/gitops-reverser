@@ -170,11 +170,74 @@ func TestCommitRequestsInFlight_AConflictReappliesTheOutcome(t *testing.T) {
 	assert.Equal(t, "c0ffee", fetchCommitRequest(t, c, "save").Status.Commit)
 }
 
+// A conflict whose fresh object holds an outcome already, written by a step that ran before the stop,
+// leaves that outcome, and the request is finished: Settle forgets it rather than listing it as left
+// without one.
+func TestCommitRequestsInFlight_AnOutcomeWrittenFirstIsForgotten(t *testing.T) {
+	conflicts := 1
+	fns := interceptor.Funcs{
+		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+			opts ...client.SubResourceUpdateOption) error {
+			cr, ok := obj.(*configv1alpha3.CommitRequest)
+			if ok && conflicts > 0 && commitRequestIsTerminal(cr) {
+				conflicts--
+				first := &configv1alpha3.CommitRequest{}
+				if err := c.Get(ctx, client.ObjectKeyFromObject(cr), first); err != nil {
+					return err
+				}
+				applyFinalizeResultToStatus(first, git.FinalizeResult{
+					Outcome: git.FinalizeCommitted, Commit: "beef", Branch: "main",
+				}, nil)
+				if err := c.SubResource(sub).Update(ctx, first, opts...); err != nil {
+					return err
+				}
+				return apierrors.NewConflict(commitRequestGVR().GroupResource(), cr.Name, nil)
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		},
+	}
+	c := newCommitRequestClient(t, &fns, withInProgress(newCommitRequest("save")))
+	worker := &drainingWorker{}
+	inFlight := &CommitRequestsInFlight{Log: logr.Discard()}
+	serveStep(t, &commitRequestCore{reader: c, finalizer: worker, inFlight: inFlight}, controlPath(c), "save")
+
+	worker.stop(shutdownCommit)
+	inFlight.Settle(context.Background())
+
+	assert.Zero(t, conflicts)
+	assert.Equal(t, "beef", fetchCommitRequest(t, c, "save").Status.Commit, "the outcome written first stays")
+	assert.Empty(t, inFlight.remembered(), "a request that holds an outcome is finished")
+}
+
+// A finished request is never written over: the write of an outcome checks for one before it applies
+// its own.
+func TestCommitRequestCore_AnOutcomeIsNotWrittenOverAFinishedRequest(t *testing.T) {
+	c := newCommitRequestClient(t, nil, withReadyCommitted(newCommitRequest("save")))
+	before := fetchCommitRequest(t, c, "save")
+	core := &commitRequestCore{reader: c}
+
+	_, written, err := core.writeOutcome(context.Background(), controlPath(c), before.DeepCopy(),
+		commitRequestOutcome{result: git.FinalizeResult{Branch: "main", Err: git.ErrBranchWorkerStopped},
+			err: git.ErrBranchWorkerStopped}, true)
+
+	require.NoError(t, err)
+	assert.False(t, written)
+	after := fetchCommitRequest(t, c, "save")
+	assert.Equal(t, before.ResourceVersion, after.ResourceVersion, "nothing is written")
+	assert.False(t, conditionIsTrue(after.Status.Conditions, ConditionTypeStalled))
+}
+
 // A request on a source cluster is settled through the identity that serves it, after the server's
-// watch has stopped with the rest of the controllers.
+// watch has stopped with the rest of the controllers. A control-cluster request of the same name is
+// another request, and is settled too: a request is remembered by its path as well as its name.
 func TestCommitRequestsInFlight_ASourceClusterRequestIsSettledOnItsCluster(t *testing.T) {
 	provider := kubeconfigProvider("edge", true)
-	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
+	control := newCommitRequest("save")
+	control.Spec.GitTargetRef.Name = "control-config"
+	controlTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "control-config", Namespace: "default"},
+	}
+	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider, controlTarget, withInProgress(control))
 	gvr := commitRequestGVR()
 	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, sourceCommitRequest("default", "save"))
@@ -199,13 +262,19 @@ func TestCommitRequestsInFlight_ASourceClusterRequestIsSettledOnItsCluster(t *te
 	}
 	require.Eventually(t, func() bool { return readReady() == string(git.PhaseCollectingWindow) },
 		10*time.Second, 20*time.Millisecond, "the request is attached through the provider's watch")
+	serveStep(t, &commitRequestCore{reader: c, finalizer: worker, inFlight: inFlight}, controlPath(c), "save")
+	require.Equal(t, string(git.PhaseCollectingWindow), commitRequestReady(t, c, "save").Reason,
+		"the control-cluster request is attached too")
 	cancel()
 	s.stopAll()
+	require.Len(t, inFlight.remembered(), 2)
 
 	worker.stop(shutdownCommit)
 	inFlight.Settle(context.Background())
 
 	assert.Equal(t, crReasonCommitted, readReady(), "written on the source cluster")
+	assert.Equal(t, crReasonCommitted, commitRequestReady(t, c, "save").Reason, "and on the control cluster")
+	assert.Empty(t, inFlight.remembered())
 }
 
 // A nil set remembers nothing, and settles nothing.

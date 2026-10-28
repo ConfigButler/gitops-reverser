@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/ConfigButler/gitops-reverser/internal/git/manifestedit"
@@ -469,25 +470,48 @@ func (l *branchWorkerEventLoop) proveBeforeCommit(i int) {
 // checkFootprint refuses the commit about to be made from the staged changes when it changes a file
 // outside the write's footprint. It checks a write's first commit only, against a footprint proven
 // on the tree the commit is planned on (proveBeforeCommit). A proof of another tree, after a reset
-// or a change of the GitTarget, says nothing about this one, and the commit is not checked.
-func (w *BranchWorker) checkFootprint(worktree *gogit.Worktree, pendingWrite *PendingWrite, first bool) error {
+// or a change of the GitTarget, says nothing about this one, and the commit is not checked
+// (FootprintCheckSkipped). It reports whether it checked the commit: the caller logs
+// FootprintChecked once the commit is made.
+func (w *BranchWorker) checkFootprint(
+	worktree *gogit.Worktree, pendingWrite *PendingWrite, first bool,
+) (bool, error) {
 	f := pendingWrite.footprint
 	if f == nil || !f.known() || !first {
-		return nil
+		return false, nil
 	}
 	if !w.provenOnCheckout(pendingWrite.Target(), f.revision) {
 		w.Log.V(1).Info("Not checking a commit against its window's footprint: the proof is of another tree",
-			"footprint", f.String(), "revision", f.revision.String())
-		return nil
+			"branch", w.Branch, "footprint", f.String(), "revision", f.revision.String(),
+			"decision", decisionFootprintCheckSkipped)
+		return false, nil
 	}
 	changed, err := stagedPaths(worktree)
 	if err != nil {
-		return fmt.Errorf("read the staged changes: %w", err)
+		return false, fmt.Errorf("read the staged changes: %w", err)
 	}
 	if outside := f.outside(changed); len(outside) > 0 {
-		return &footprintViolationError{outside: outside, footprint: *f}
+		return false, &footprintViolationError{outside: outside, footprint: *f}
 	}
-	return nil
+	return true, nil
+}
+
+// logFootprintChecked logs the commit checkFootprint checked, once it is made. The tree names what
+// was checked across a rebuild of the commit onto the same parent, which makes a new commit of it and
+// checks it no more: its actions were decided already.
+func (w *BranchWorker) logFootprintChecked(
+	repo *gogit.Repository, hash plumbing.Hash, pendingWrite *PendingWrite, checked bool,
+) {
+	if !checked {
+		return
+	}
+	var tree plumbing.Hash
+	if commit, err := repo.CommitObject(hash); err == nil {
+		tree = commit.TreeHash
+	}
+	w.Log.Info("Checked a commit against its window's footprint", "branch", w.Branch,
+		"commit", hash.String(), "tree", tree.String(), "footprint", pendingWrite.footprint.String(),
+		"decision", decisionFootprintChecked)
 }
 
 // provenOnCheckout reports whether rev is the revision the checkout is at now.
