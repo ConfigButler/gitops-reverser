@@ -16,7 +16,7 @@ import (
 //
 //   - a request no window reached (expireWaitingCommitRequests, before the record it may make);
 //   - the record itself (buildRequestRecordWrite);
-//   - a window a request is attached to (finalizeOpenWindowWithReason before it builds the write,
+//   - a window a request is attached to (finalizeWindow before it builds the write,
 //     and gateBuiltWindow after, right before the commit). A render-fidelity refusal seen at
 //     either look stops the whole window; suspension fails only the request, and the write still
 //     runs so the target's scan stays fresh.
