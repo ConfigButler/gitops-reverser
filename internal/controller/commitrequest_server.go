@@ -108,7 +108,10 @@ type CommitRequestServer struct {
 	// Wakes wakes a request's steps as soon as its branch worker reports a change, so a registered
 	// request is polled only as the fallback. Nil polls every request.
 	Wakes *CommitRequestWakes
-	Log   logr.Logger
+	// InFlight remembers the requests the server attached, so a shutdown writes the outcomes their
+	// workers decide while they drain, through the identity that serves them. Nil remembers nothing.
+	InFlight *CommitRequestsInFlight
+	Log      logr.Logger
 
 	mu       sync.Mutex
 	watchers map[k8stypes.NamespacedName]*commitRequestWatcher
@@ -600,7 +603,7 @@ func (s *CommitRequestServer) core() *commitRequestCore {
 	s.streamsOnce.Do(func() { s.streams = &commitRequestStreams{set: s.FactStreams} })
 	return &commitRequestCore{
 		reader: s.Client, controlRequests: s.APIReader, finalizer: s.Finalizer, authors: s.Authors,
-		streams: s.streams, ttl: s.TTL, wakeFallback: s.Wakes.fallback(),
+		streams: s.streams, ttl: s.TTL, wakeFallback: s.Wakes.fallback(), inFlight: s.InFlight,
 	}
 }
 

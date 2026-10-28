@@ -38,6 +38,9 @@ type CommitRequestFinalizer interface {
 	// answer: resolved with git.ErrCommitRequestWithdrawn when it is cancelled, the real outcome
 	// when the worker got there first, or resolved=false with the worker's phase while it decides.
 	WithdrawCommitRequest(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
+	// LookupCommitRequestOutcome reports the outcome the worker that holds the request decided, and
+	// false while it decided none or no worker holds it. It sends nothing to the worker.
+	LookupCommitRequestOutcome(ctx context.Context, attach git.AttachCommitRequest) (git.FinalizeResult, bool, error)
 	// LookupCommitRequestApply reports where the apply a request with catchUp:
 	// AfterPush asked for stands, and false while the worker knows nothing of it.
 	LookupCommitRequestApply(ctx context.Context, attach git.AttachCommitRequest) (git.SaveApply, bool, error)
@@ -169,6 +172,10 @@ type CommitRequestReconciler struct {
 	// request is polled only as the fallback. Nil polls every request.
 	Wakes *CommitRequestWakes
 
+	// InFlight remembers the requests this reconciler attached, so a shutdown writes the outcomes
+	// their workers decide while they drain. Nil remembers nothing.
+	InFlight *CommitRequestsInFlight
+
 	streamsOnce sync.Once
 	streams     *commitRequestStreams
 }
@@ -193,7 +200,7 @@ func (r *CommitRequestReconciler) core() *commitRequestCore {
 	r.streamsOnce.Do(func() { r.streams = &commitRequestStreams{set: r.FactStreams} })
 	return &commitRequestCore{
 		reader: r.Client, finalizer: r.Finalizer, authors: r.Authors, streams: r.streams, ttl: r.TTL,
-		wakeFallback: r.Wakes.fallback(),
+		wakeFallback: r.Wakes.fallback(), inFlight: r.InFlight,
 	}
 }
 

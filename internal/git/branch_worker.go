@@ -186,9 +186,12 @@ type BranchWorker struct {
 	// worker's, and no applier is asked for anything. Nil in the CLI and in tests.
 	replacementPending func() bool
 
-	// Event processing
+	// Event processing. The loop stops on stop and works on ctx, which outlives the stop by
+	// workerShutdownBudget, so a stopping loop can still close its windows, push and settle its saves.
+	// A worker built without Start has no stop, and stops with ctx.
 	eventQueue chan WorkItem
 	ctx        context.Context
+	stop       context.Context
 	cancelFunc context.CancelFunc
 	wg         sync.WaitGroup
 	started    bool
@@ -566,7 +569,13 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 		w.mu.Unlock()
 		return errors.New("worker already started")
 	}
-	w.ctx, w.cancelFunc = context.WithCancel(parentCtx)
+	// The parent's cancel is a stop, not the end of the work: a context canceled with it would refuse
+	// the shutdown's last push before it reached the remote, and fail every save it carried. The work
+	// ends workerShutdownBudget after the stop, or once the loop has exited, whichever is first.
+	work, endWork := context.WithCancel(context.WithoutCancel(parentCtx))
+	w.stop, w.cancelFunc = context.WithCancel(parentCtx)
+	context.AfterFunc(w.stop, func() { time.AfterFunc(workerShutdownBudget, endWork) })
+	w.ctx = work
 	w.started = true
 	w.mu.Unlock()
 
@@ -575,11 +584,29 @@ func (w *BranchWorker) Start(parentCtx context.Context) error {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+		defer endWork()
 		w.processEvents()
 		w.settleCommitRequestsAfterExit()
 	}()
 
 	return nil
+}
+
+// workerShutdownBudget bounds a stopping worker's last work: closing its open windows, pushing its
+// pending writes and settling its saves. Workers stop together, so it bounds the whole drain. With the
+// CommitRequest outcomes written after it (WorkerManager.SetAfterWorkersStopped), it fits the chart's
+// 20s terminationGracePeriodSeconds. A push still running then is cut off, and the saves it carried
+// fail as a refused last push fails them (failUnpushedCommitRequests).
+//
+//nolint:gochecknoglobals // a var, not a const, so a test can shorten it, like gitCallTimeout.
+var workerShutdownBudget = 10 * time.Second
+
+// stopping is closed once the worker is asked to stop.
+func (w *BranchWorker) stopping() <-chan struct{} {
+	if w.stop == nil {
+		return w.ctx.Done()
+	}
+	return w.stop.Done()
 }
 
 // Stop gracefully shuts down the worker.
@@ -1179,7 +1206,7 @@ func (l *branchWorkerEventLoop) run() {
 	for {
 		commitC, pushC, attachC, refusalC := l.timerChannels()
 		select {
-		case <-l.w.ctx.Done():
+		case <-l.w.stopping():
 			l.handleShutdown()
 			l.publishLoopState(0)
 			return

@@ -24,8 +24,9 @@ The write-path refactor in [`gittarget-branch-worker-pending-writes.md`](gittarg
 what this section asked for, in the order it set: ordered pending writes, one materializer for the
 checkout, and one retry deadline; then the watch's admission boundary (5a), Git operation deadlines
 (6), intake pause and resume (5b), and the publication status (5c). None of it depends on a storage
-backend or on HA. A saturated branch pauses intake while its recovery loop stays alive; a process
-restart still loses the pending writes and unanswered saves held in memory.
+backend or on HA. A saturated branch pauses intake while its recovery loop stays alive. A graceful
+stop pushes the pending writes and writes the saves' outcomes before it exits; a crash, or a stop
+that runs out of time, still loses the pending writes and unanswered saves held in memory.
 
 What comes next is the [transition boundary](#prepare-the-transition-boundary-for-later-durability):
 recording timers, attaches, withdrawals, and refreshes as transitions, then the HA plan's journal.
@@ -554,9 +555,11 @@ The live producer is
 attribution and never independently supplies mirrored object state.
 
 The [event router](../../internal/watch/event_router.go) binds an already-held request to its
-original worker during retirement. Today shutdown is best effort: it tries to finalize and push,
-then fails unresolved requests and discards unhandled work. Durable worker retirement needs an
-explicit transfer or terminal decision before that responsibility can be released.
+original worker during retirement. Today shutdown is best effort, within a 10s budget: it finalizes
+and pushes, fails the requests riding a write it could not push, and discards unhandled work; the
+controller then writes every outcome the stopped workers decided (`CommitRequestsInFlight.Settle`).
+Durable worker retirement needs an explicit transfer or terminal decision before that responsibility
+can be released.
 
 Snapshots establish render fidelity even while ordinary live writes are refused. Suspension
 suppresses writes while allowing observation. A single dispatcher-level write gate would block
