@@ -324,14 +324,13 @@ Represent intent, decisions, and external work separately so recovery knows what
 These names are illustrative. Use a versioned journal schema when choosing the implementation.
 Facts describe decisions already made; a duplicate command must find its previous decision.
 
-**Name each fact after the one decision it records**, in the product's words: `SaveAttached`,
-`WindowClosed` with its reason, not a generic `StateChanged` or `WindowUpdated` that leaves the
-reader to compare two states to learn what happened. A fact carries the identities it is about
-(request UID, window ID) and the reason for the decision. A change that adds a decision to the
-worker names that decision as a fact in its design, even while nothing persists facts yet, so the
-vocabulary is settled before the journal is built.
-[Concurrent author windows](concurrent-author-windows.md#the-window-decisions-are-named-facts) is
-the first design to do so.
+**Give each decision a specific name and a reason**, in the product's words: `SaveAttached`,
+`WindowClosed` with its close reason, rather than a generic `StateChanged` that leaves the reader to
+compare two states. Today those names serve log lines, close reasons and tests, with the identities
+the decision is about (request UID, window ID). They are not a journal schema. Whether restart
+recovery stores durable current state (pending work, deadlines, receipts) or an event history is
+still open; the HA plan decides it from the guarantees it needs and their measured cost. Git
+already keeps the authored history of every published change, which weighs toward current state.
 
 ```mermaid
 flowchart TD

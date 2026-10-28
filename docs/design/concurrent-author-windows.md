@@ -162,10 +162,14 @@ generation change), the worker recomputes every open window's footprint against 
 **before** the next write is admitted beside others. A footprint that is now unknown, or that now
 overlaps another window's, closes the windows involved, oldest first, with `path_conflict`.
 
-A last check runs at materialization: the files the write plan touched (`writeBatch.touched`) must
-be inside the window's footprint. A plan that touched more is a footprint bug. The worker cannot
-undo the order of what is already decided, so it logs the paths, counts it in a metric, and falls
-back to one window for the rest of its life. The reference model treats it as a test failure.
+A last check runs at materialization, **before the commit**: every path the write's commit would
+change must be inside the window's footprint. That is the whole batch's changed files;
+`writeBatch.touched` covers one event at a time and is not enough. A write that changes more is a
+footprint bug, and committing it could put an older value over a newer one, so the worker refuses
+it: it undoes the worktree, fails the window's save with the paths in its message, falls back to
+one window for the rest of its life, and asks a resync of the `GitTarget`, which brings Git back to
+the cluster without depending on the order of the windows. The reference model treats it as a test
+failure.
 
 ### Every close trigger keeps its exceptions
 
@@ -220,15 +224,15 @@ is the point of the change, and it needs saying in `docs/configuration.md` when 
 - `SaveInProgress` is unchanged: it is already per author and `GitTarget`.
 - Each request settles exactly once, whichever trigger closes its window.
 
-### The window decisions are named facts
+### The window decisions have specific names
 
-The [event model](branch-worker-event-model.md#commands-facts-and-effects) wants every decision of
-the worker to become a fact named after that decision, so that a later journal can replay it
-without reading the clock or the tree again. This change adds decisions, so it names them now.
-Nothing persists them yet: the names are used in log lines, close reasons, metrics and the
-reference model.
+Concurrent windows do not depend on persistence: they keep explicit identities, deadlines and
+decision reasons, and leave how a restart recovers them to the
+[event model](branch-worker-event-model.md#commands-facts-and-effects) and the HA plan. Each decision
+gets a specific name, used in log lines, close reasons and the reference model. A log line carries
+the branch with the window ID, since the ID resets with the worker; the ID is never a metric label.
 
-| Fact | Carries | When |
+| Decision | Logged with | When |
 | --- | --- | --- |
 | `WindowOpened` | window ID, author, `GitTarget`, footprint, revision, opening time | a write opens a window |
 | `WriteJoinedWindow` | window ID, the write, the footprint after it | a write joins an open window |
@@ -236,11 +240,8 @@ reference model.
 | `WindowClosed` | window ID, close reason, the writes it holds | a window closes |
 | `SingleWindowFallback` | the paths a plan touched outside its footprint | the materialization check fails |
 
-The window ID is the opening sequence number. It is unique for the life of one worker; making it
-survive a restart belongs to the
-[HA and durable delivery plan](../future/ha-gittarget-distribution-plan.md), with the rest of the
-journal. Deadlines are not facts of this design: they follow from the opening time, the latest write
-and the timers, and the event model's deadline protocol covers them.
+The window ID is the opening sequence number, unique for the life of one worker. Deadlines follow
+from the opening time, the latest write and the timers.
 
 ## How to test it: a reference model
 
@@ -322,8 +323,9 @@ the reference model checks every commit.
 - **P1. A footprint that is too small.** A write lands somewhere its footprint did not name (an
   existing document in an unexpected file, a generator source, a removal that edits a shared file),
   and two windows commit to one file in the wrong order. *Mitigation:* footprints are proven or
-  unknown, never guessed; the table's "no" rows stay serial; the reference model includes shared
-  files and generator layouts.
+  unknown, never guessed; the table's "no" rows stay serial; the check before the commit refuses a
+  write that changes more than its footprint; the reference model includes shared files and
+  generator layouts.
 - **P2. A close trigger loses its exception.** A push hint or an apply flush that closes a window
   carrying a save splits a save that is protected today. *Mitigation:* the trigger table above is the
   specification, and each exception has a test in stage 3.
@@ -336,8 +338,8 @@ the reference model checks every commit.
   every step, as well as once drained.
 - **P6. A stale footprint proof.** A proof made against one tree is used after an own commit, a
   replay or a `GitTarget` change moved the index. *Mitigation:* proofs carry their revision, are
-  recomputed before the next concurrent admission, and the materialization check falls back to one
-  window if a plan ever touches a file outside its footprint.
+  recomputed before the next concurrent admission, and the check before the commit refuses a write
+  that changes a file outside its footprint.
 - **P7. The flush starts waiting again.** A change that makes `apply_due` wait for windows to close
   on their own reintroduces the starvation S1 removed. *Mitigation:* the flush closes every window
   at once, as today; only the save exception holds it.
