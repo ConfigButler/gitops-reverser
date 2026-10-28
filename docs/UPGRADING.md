@@ -7,28 +7,17 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
-## A save's timers start at its own first write
-
-A `CommitRequest` that attaches to its author's window while that window is already open no longer
-closes it on the request's timers straight away. Its `maxDuration` and `idleTimeout` start at the
-first write the window collects after the attach, within `attachTimeout`. Until then the window
-keeps the `GitTarget`'s timers, with the idle interval restarted at the attach, and it closes no
-later than `attachTimeout` plus `maxDuration` after the attach. A save whose writes follow it
-therefore commits them under its message, together with the earlier writes, instead of leaving
-them to commit under the generated message. A request that attaches to the window its own write
-opens, or that sets `attachTimeout: "0s"` or `maxDuration: "0s"`, starts its timers at the attach,
-as before.
-
-What you may notice: a request created after its writes, such as a `CommitRequest` applied after
-the objects in a folder, now commits when the `GitTarget`'s idle interval or that bound ends,
-rather than `maxDuration` after the attach. With the defaults that is about five seconds instead
-of two.
-
 ## A `CommitRequest` reports each phase as the worker reaches it
 
 A request's progress and outcome are written as soon as its branch worker reports them, instead of
 at a two-second poll. Once the worker has registered a request, the poll is only a ten-second
 fallback.
+
+A save's own writes now land in its window. A client that waits for its request to be registered
+before it writes, as `SaveInProgress` asks, used to learn of the registration up to two seconds
+late, which is the whole default `maxDuration`. The window then closed on the earlier writes under
+the save's message, and the save's own writes committed under the generated message, or under the
+next save's message.
 
 `SaveInProgress` is decided when the worker registers the request, after its author was found. A
 client that relies on it to keep two of its saves apart waits for the `Reconciling` reason

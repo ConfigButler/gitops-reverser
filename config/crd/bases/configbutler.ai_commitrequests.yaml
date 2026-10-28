@@ -60,7 +60,7 @@ spec:
           spec is immutable, and status.commit reports the commit once it is on the
           remote.
 
-          Schema revision 2, compatible from revision 1.
+          Schema revision 1, compatible from revision 1.
         properties:
           apiVersion:
             description: |-
@@ -192,8 +192,8 @@ spec:
                   idleTimeout:
                     description: |-
                       IdleTimeout closes the attached window this long after its last write, as a
-                      Go duration. It starts when maxDuration does. Omitted, only maxDuration
-                      closes it. At most "5m", and not more than maxDuration.
+                      Go duration. Omitted, only maxDuration closes it. At most "5m", and not more
+                      than maxDuration.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:
@@ -205,12 +205,6 @@ spec:
                       MaxDuration closes the attached window this long after the request attached,
                       however many writes keep arriving, as a Go duration. "0s" commits right
                       after attaching. At most "5m". Defaults to "2s".
-
-                      A request that attaches to a window already open starts this at the first
-                      write the window collects after the attach, within attachTimeout. Until
-                      then the window keeps the GitTarget's timers, and closes no later than
-                      attachTimeout plus maxDuration after the attach. With attachTimeout "0s",
-                      it starts at the attach.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$
                     type: string
                     x-kubernetes-validations:

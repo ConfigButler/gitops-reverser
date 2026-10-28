@@ -1781,9 +1781,7 @@ to one core, which takes one step at a time, each decided again from the object 
    and only then **attaches** the request to the worker (`AttachCommitRequest`), which waits for a
    window until `registration + attachTimeout`. The worker binds it to an open window only when the
    author state and GitTarget match, first come first served, and replaces the window's timers with the
-   request's own, so time spent waiting never shortens the collection. For a window already open at
-   registration they start at the request's first write after the attach, so writes made before it
-   never close the window under the request before its own writes arrive. It **never finalizes another
+   request's own, so time spent waiting never shortens the collection. It **never finalizes another
    author's window**; a window carries at most one request. The owner reports the phase the worker
    reports: `WaitingForWindow`, `CollectingWindow`, `WaitingForPush`.
 4. The window finalizes when the request's timers close it (or when it closes for any other reason).

@@ -142,10 +142,8 @@ var _ = Describe("Save Request", Label("commit-request", "audit-consumer"), Orde
 		)
 
 		By("verifying the window this save closed is counted and timed under its GitTarget")
-		// The save attached to the Deployment's window, which was already open, and no write followed
-		// it, so the bound it set closed the window: its attachTimeout plus its maxDuration (5s and 2s,
-		// the defaults) after the attach, well inside the target's 300s. That is the request's timer,
-		// not the target's.
+		// The save attached to the Deployment's window and its own maxDuration (the 2s default)
+		// closed it, so the window is counted under the request's timers, not the target's.
 		waitForMetric(
 			fmt.Sprintf(
 				`sum(gitopsreverser_git_commit_windows_total{close_reason="max_duration",`+

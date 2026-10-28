@@ -189,9 +189,6 @@ type pendingCommitRequest struct {
 	// (idempotent re-sends keep it). A request still waiting when it passes resolves, and never
 	// takes a later window.
 	attachDeadline time.Time
-	// attachTimeout is the wait attachDeadline was stamped from. Zero asks for the window open at
-	// registration and for no write after it.
-	attachTimeout time.Duration
 	// timers are the request's own window timers, applied to the window it attaches to in place
 	// of the GitTarget's.
 	idleTimeout *time.Duration

@@ -76,8 +76,6 @@ type modelSave struct {
 	maxDuration           time.Duration
 	attached              bool
 	sawForeign            bool
-	// askedForWrites is a positive attachTimeout and maxDuration: the save may write after it attaches.
-	askedForWrites bool
 }
 
 type modelWindow struct {
@@ -90,9 +88,6 @@ type modelWindow struct {
 	maxAt       time.Time
 	lastWriteAt time.Time
 	charge      int64
-	// awaiting is the attached save whose timers wait for its first write: it attached to a window
-	// that was already open.
-	awaiting *modelSave
 }
 
 func (w *modelWindow) closeAt() (time.Time, windowFinalizeReason) {
@@ -217,16 +212,9 @@ func (m *windowModel) write(author string, edit modelEdit, pressure bool) {
 	w.latest[edit.obj] = edit
 	w.charge += edit.charge
 	w.lastWriteAt = m.now
-	if s := w.awaiting; !opened && s != nil {
-		// The save's first write after it attached, if it came while the save could still wait.
-		w.awaiting = nil
-		if s.deadline.After(m.now) {
-			m.startTimers(w, s)
-		}
-	}
 	if opened {
 		m.noteForeign()
-		m.attachWaiting(true)
+		m.attachWaiting()
 		if m.window != w {
 			return
 		}
@@ -253,7 +241,6 @@ func (m *windowModel) register(s *modelSave, attachTimeout time.Duration) {
 	m.saveSeq++
 	s.seq = m.saveSeq
 	s.deadline = m.now.Add(attachTimeout)
-	s.askedForWrites = attachTimeout > 0 && s.maxDuration > 0
 	m.saves[s.name] = s
 	if m.window == nil {
 		return
@@ -267,37 +254,21 @@ func (m *windowModel) register(s *modelSave, attachTimeout time.Duration) {
 		return
 	}
 	if m.window.save == nil {
-		m.attach(s, false)
+		m.attach(s)
 	}
 }
 
-// attach binds s to the open window. atWrite says the write being handled opened it. A save that
-// joins a window already open, and may write after it, keeps the window's own timers until its first
-// write, with the idle restarted now and the close no later than its deadline plus its maxDuration.
-func (m *windowModel) attach(s *modelSave, atWrite bool) {
+func (m *windowModel) attach(s *modelSave) {
 	w := m.window
 	w.save, s.attached = s, true
 	w.charge += attachCharge(s.message)
-	if atWrite || !s.askedForWrites {
-		m.startTimers(w, s)
-	} else {
-		w.awaiting = s
-		if latest := s.deadline.Add(s.maxDuration); latest.Before(w.maxAt) {
-			w.maxAt = latest
-		}
-		w.lastWriteAt = m.now
-	}
-	m.closeOrArm()
-}
-
-// startTimers gives w the save's timers, from now.
-func (m *windowModel) startTimers(w *modelWindow, s *modelSave) {
 	w.noIdle = s.idle == nil
 	if s.idle != nil {
 		w.idle = *s.idle
 	}
 	w.maxAt = m.now.Add(s.maxDuration)
 	w.lastWriteAt = m.now
+	m.closeOrArm()
 }
 
 func (m *windowModel) closeOrArm() {
@@ -317,7 +288,7 @@ func (m *windowModel) noteForeign() {
 	}
 }
 
-func (m *windowModel) attachWaiting(atWrite bool) {
+func (m *windowModel) attachWaiting() {
 	if m.window == nil || m.window.save != nil {
 		return
 	}
@@ -328,7 +299,7 @@ func (m *windowModel) attachWaiting(atWrite bool) {
 		}
 	}
 	if first != nil {
-		m.attach(first, atWrite)
+		m.attach(first)
 	}
 }
 
@@ -433,7 +404,7 @@ func (m *windowModel) endWake() bool {
 	if len(m.saves) > 0 {
 		m.noteForeign()
 		m.expire()
-		m.attachWaiting(false)
+		m.attachWaiting()
 	}
 	if m.hinted {
 		m.hinted = false

@@ -207,10 +207,12 @@ func TestSaveFolder_AnAppliedFolderMakesOneCommitUnderTheRequestsMessage(t *test
 
 // TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange pins gitops-api ask #39: a write of the
 // same author that no request claimed leaves a window open, and three saves follow one another, each
-// filed, then written once the worker reports it registered (a poll, up to 2s later), then waited on.
+// filed, then written once the worker reports it registered, then waited on. The report reaches the
+// client within milliseconds (CommitRequestChanges); the 100ms here also covers the client's write.
 // Each save's message must land on the commit holding its own write: the earlier write may share
 // the first save's commit (the folder scenario), but no save's write is committed under the
-// generated message while its request is still collecting.
+// generated message. The shift by one the ask measured came from a 2s poll for that report, as long
+// as the default maxDuration, so the write arrived after the request's window had closed.
 func TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange(t *testing.T) {
 	r := newSaveRun(t)
 	r.write("unclaimed")
@@ -219,7 +221,7 @@ func TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange(t *testing.T) 
 	for _, name := range []string{"save-1", "save-2", "save-3"} {
 		r.until(at)
 		r.register(name, "feat: "+name)
-		r.until(at + 2100*time.Millisecond)
+		r.until(at + 100*time.Millisecond)
 		r.write("edit-of-" + name)
 		r.untilResolved(name)
 		res, ok := r.outcome(name)

@@ -3039,20 +3039,17 @@ Only the path the `GitTarget`'s `KubeProvider` picks writes a request's progress
 ### The request window (`spec.window`)
 
 A request never opens a window; only writes do. It waits for one, attaches to at most one, and
-replaces that window's timers with its own, shorter or longer. They start at the attach when the
-request attaches to the window its first write opens. When it attaches to a window that was
-already open, they start at the first write the window collects after the attach, while
-`attachTimeout` lasts; see [a window that was already open](#a-window-that-was-already-open).
+replaces that window's timers with its own, shorter or longer:
 
 | Field | Meaning | Default |
 |---|---|---|
 | `attach` | `CurrentOrNext` attaches to the author's window if one is open when the worker registers the request, and otherwise to the next one a write opens. `Next` first closes the author's open window, under the message it already carries, and attaches to the next one | `CurrentOrNext` |
 | `attachTimeout` | stop waiting for a window this long after the worker registers the request | `5s` |
 | `idleTimeout` | close the attached window after this much silence; every write restarts it | no idle close |
-| `maxDuration` | close the attached window this long after the attach, or after the request's first write into a window already open, however much keeps arriving | `2s` |
+| `maxDuration` | close the attached window this long after the attach, however much keeps arriving | `2s` |
 
-The defaults are a fixed two-second cutoff after the save's first write, so an explicit save
-finishes promptly. For a save whose writes trickle in, ask for rolling collection, which `maxDuration` still ends:
+The defaults are a fixed two-second cutoff after the attach, so an explicit save finishes promptly.
+For a save whose writes trickle in, ask for rolling collection, which `maxDuration` still ends:
 `idleTimeout: "1s"` with `maxDuration: "10s"`. Durations are at most `5m`, `idleTimeout` may not
 exceed `maxDuration`, and `attach: Next` needs a positive `attachTimeout`.
 
@@ -3062,22 +3059,6 @@ attach; `idleTimeout: "0s"` closes on the first silence. A request whose `attach
 never takes a later window: the write that arrives afterward commits on its own, without the
 request's message. Author or target changes, the memory limit, a drain before a resync, and
 shutdown still close an attached window early, and its message goes with it.
-
-#### A window that was already open
-
-A window open when the request is registered holds writes the request may not have made: an
-earlier edit of yours that no request saved, or the objects of a folder applied before the request.
-Its timers therefore wait for the request's own first write:
-
-- Until that write, the window keeps the `GitTarget`'s timers, with the idle interval restarted at
-  the attach, and it closes no later than `attachTimeout` plus `maxDuration` after the attach.
-- The first write after the attach, within `attachTimeout`, starts `maxDuration` and `idleTimeout`.
-- When no write comes, the window closes on the `GitTarget`'s timers, or at that bound, and still
-  carries the request's message. With the defaults that is five seconds after the attach.
-
-The earlier writes share the commit, which is what `CurrentOrNext` is for. A request with
-`attachTimeout: "0s"` or `maxDuration: "0s"` asks for no write after it, so its timers start at the
-attach.
 
 **Pick `attach` by when the request is created.** A save made *after* its writes, like the
 [commit-window example](demo/commit-window.md), wants `CurrentOrNext`. A save created *before* its

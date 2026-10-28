@@ -49,10 +49,6 @@ type openWindow struct {
 	// timers decide when the window closes. They are the GitTarget's, snapshotted when the window
 	// opened, until a CommitRequest attaches and replaces them with its own.
 	timers windowTimers
-	// awaitingWrite is set while the attached CommitRequest holds its timers for its first write:
-	// it attached to a window that was already open. Nil once they started, or when they started at
-	// the attach.
-	awaitingWrite *awaitedRequestTimers
 	// openedAt is when the write that opened the window arrived, on the worker's clock (set by
 	// commitWindows.open). Unlike the timers and lastWriteAt it never moves, not even when a
 	// CommitRequest attaches, so it is what the window's collection time is measured from.
@@ -78,33 +74,6 @@ type windowTimers struct {
 	// maxAt closes the window whatever keeps arriving: the window's opening (or the attach) plus
 	// maxDuration.
 	maxAt time.Time
-}
-
-// awaitedRequestTimers are the timers of a CommitRequest attached to a window that was already open,
-// held until the window collects a write before deadline, the request's attach deadline.
-type awaitedRequestTimers struct {
-	deadline time.Time
-	request  *pendingCommitRequest
-	// ownMaxAt is the window's own maxAt from before the attach, which the request may have
-	// brought forward.
-	ownMaxAt time.Time
-}
-
-// timerSource is which timers closed the window for reason: the GitTarget's, or the attached
-// request's. A request that still waits for its first write closes the window on the GitTarget's
-// timers, unless the bound it set on maxAt is what closed it.
-func (w *openWindow) timerSource(reason windowFinalizeReason) string {
-	if w.pendingCR == nil {
-		return windowTimerSourceTarget
-	}
-	if a := w.awaitingWrite; a != nil {
-		ownIdle := reason == windowFinalizeReasonIdleTimeout
-		ownMax := reason == windowFinalizeReasonMaxDuration && w.timers.maxAt.Equal(a.ownMaxAt)
-		if ownIdle || ownMax {
-			return windowTimerSourceTarget
-		}
-	}
-	return windowTimerSourceCommitRequest
 }
 
 // closeAt is when the window closes, and which timer closes it. The first deadline reached wins.
