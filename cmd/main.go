@@ -330,6 +330,7 @@ func main() {
 	// KubeProvider whose spec.commitRequests reconciles them, attributed from that cluster's audit facts.
 	commitRequestServer := &controller.CommitRequestServer{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Clusters:    watchMgr,
 		Finalizer:   eventRouter,
 		Authors:     watchMgr.AuthorResolver,

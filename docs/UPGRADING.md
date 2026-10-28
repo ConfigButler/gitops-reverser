@@ -24,6 +24,13 @@ the objects in a folder, now commits when the `GitTarget`'s idle interval or tha
 rather than `maxDuration` after the attach. With the defaults that is about five seconds instead
 of two.
 
+## A source-cluster request no path can serve ends `NotAllowed`
+
+A `CommitRequest` on a source cluster whose `GitTarget` mirrors another cluster, either the cluster
+GitOps Reverser runs in or one whose `KubeProvider` serves no `CommitRequest`s, ends `Ready=False`
+with reason `NotAllowed`, naming both clusters. It used to keep no status at all. It finishes, so on
+a `KubeProvider` with `commitRequests: ReconcileAndDeleteFinished` it is deleted after the TTL.
+
 ## A save is pushed at once
 
 A push that a `CommitRequest` waits on no longer waits out the five-second push cooldown, as a push

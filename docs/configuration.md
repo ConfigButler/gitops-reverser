@@ -3023,6 +3023,14 @@ The `GitTarget` a request names decides where it belongs, through the `KubeProvi
   other one's. Create it on the other cluster instead. When that `KubeProvider` does serve them, the
   request is left alone, since the kubeconfig may point back at this cluster and then its own watch
   serves the request. If it points elsewhere, nothing serves the request and it gets no status.
+- **A request on a source cluster, for a `GitTarget` that mirrors another cluster, is refused** with
+  reason `NotAllowed`, and the message names both clusters, when nothing can serve it from there:
+  the `GitTarget` mirrors the cluster GitOps Reverser runs in, or its `KubeProvider` serves no
+  `CommitRequest`s. Create it on the cluster the `GitTarget` mirrors. A refused request finishes,
+  so a `KubeProvider` with `ReconcileAndDeleteFinished` deletes it after the TTL. A kubeconfig that
+  points back at the cluster GitOps Reverser runs in sees that cluster's own requests, and leaves
+  them to it. A request whose `GitTarget`'s `KubeProvider` does serve `CommitRequest`s is left
+  alone, since that `KubeProvider` may connect to the same cluster under another identity.
 
 Only the path the `GitTarget`'s `KubeProvider` picks writes a request's progress, so several
 `KubeProvider`s that watch one cluster never fight over a request. Any of them may report

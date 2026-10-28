@@ -39,15 +39,19 @@ The named `GitTarget`'s `KubeProvider` alone picks the path that serves a reques
 | the control cluster | a kubeconfig, with a `Reconcile` value | left alone: the kubeconfig may point back at the control cluster, and then its watch serves it |
 | the control cluster | a kubeconfig, with `commitRequests: Ignore` | `NotAllowed`, saying to create the request on that cluster |
 | a source cluster that provider P watches | P | P's watch serves it |
-| a source cluster that provider P watches | any other provider | left alone |
+| a source cluster that provider P watches | `inCluster`, and the request is not the control cluster's own object (by UID) | `NotAllowed`, naming both clusters |
+| a source cluster that provider P watches | `inCluster`, and the request is the control cluster's own object | left alone: P's kubeconfig points back at the control cluster, whose path serves it |
+| a source cluster that provider P watches | another provider, with `commitRequests: Ignore` | `NotAllowed`, naming both clusters |
+| a source cluster that provider P watches | another provider, with a `Reconcile` value | left alone: it may watch the same cluster |
 | a source cluster | `gitTargetRef` names no namespace | not picked up, and no status |
 | either | the `GitTarget` does not exist | `GitTargetNotFound` once `attachTimeout` has passed since creation |
 
 Three rules keep several observers of one request safe:
 
 1. **A path writes only what it knows to be true.** Only the owner serves a request and writes its
-   progress. A path that is not the owner writes only `GitTargetNotFound`, and only into an empty
-   status, because nothing else is true for every observer.
+   progress. A path that is not the owner writes only `GitTargetNotFound`, or `NotAllowed` when it
+   can show no path serves the request, and only into an empty status, because nothing else is true
+   for every observer.
 2. **Every status write is conditional on the resourceVersion its decision was made from.** On a
    conflict the writer reads the request again and decides again, so a `GitTargetNotFound` decided
    from an older version never overwrites an owner that has started.
@@ -66,7 +70,10 @@ served, because its author would come from the control cluster's audit and its e
 other cluster's. A request on a source cluster must name the `GitTarget`'s namespace, because that
 namespace belongs to the control cluster; the path cannot refuse a request without one, since a
 kubeconfig pointing back at the control cluster sees the control cluster's requests, where an
-omitted namespace is valid. Known gap: a control-cluster request whose `GitTarget`'s provider has a
+omitted namespace is valid. A source-cluster request for a `GitTarget` that mirrors the control
+cluster is refused only once an uncached read of the control cluster finds no request of that UID:
+the same UID means the watch's kubeconfig points back at the control cluster, whose path serves it.
+Known gap: a control-cluster request whose `GitTarget`'s provider has a
 `Reconcile` value and points somewhere else gets no status from anyone.
 
 ### Admission

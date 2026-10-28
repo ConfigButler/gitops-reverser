@@ -628,3 +628,82 @@ func TestCommitRequestCore_AWatcherCarriesNextAndCommitEmpty(t *testing.T) {
 	assert.Equal(t, configv1alpha3.AttachNext, f.calls[0].Attach)
 	assert.True(t, f.calls[0].CommitEmpty)
 }
+
+// A request on a source cluster that names a GitTarget no path can serve from there ends NotAllowed,
+// naming both clusters, instead of waiting with no status: gitops-api ask #38. It is never attached.
+// A kubeconfig that points back at the control cluster sees the control cluster's own request, the
+// same object, and leaves it to the control-cluster path; so does a request whose GitTarget's
+// KubeProvider serves CommitRequests, since it may watch this same cluster.
+func TestCommitRequestCore_ASourceRequestForAGitTargetOfAnotherCluster(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		target     string
+		providers  []client.Object
+		pointsBack bool
+		wantIn     []string
+	}{
+		{name: "the GitTarget mirrors the control cluster", target: localProvider,
+			providers: []client.Object{kubeconfigProvider("edge", true)},
+			wantIn: []string{"the cluster KubeProvider default/edge connects to",
+				"mirrors the cluster GitOps Reverser runs in"}},
+		{name: "the GitTarget's KubeProvider serves no CommitRequests", target: "other",
+			providers: []client.Object{kubeconfigProvider("edge", true), kubeconfigProvider("other", false)},
+			wantIn: []string{"the cluster KubeProvider default/edge connects to",
+				"the cluster KubeProvider default/other connects to, which serves no CommitRequests"}},
+		{name: "a kubeconfig that points back at the control cluster", target: localProvider,
+			providers: []client.Object{kubeconfigProvider("edge", true)}, pointsBack: true},
+		{name: "the GitTarget's KubeProvider serves CommitRequests", target: "other",
+			providers: []client.Object{kubeconfigProvider("edge", true), kubeconfigProvider("other", true)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cr := newCommitRequest("save")
+			cr.Spec.GitTargetRef.Namespace = "default"
+			objects := append([]client.Object{mirroringTarget(tc.target)}, tc.providers...)
+			if tc.pointsBack {
+				objects = append(objects, cr.DeepCopy())
+			}
+			// The control cluster, and a source cluster of its own, whose requests are not on it.
+			control := newCommitRequestClient(t, nil, objects...)
+			src := newCommitRequestClient(t, nil, cr)
+			f := committed()
+			core := &commitRequestCore{reader: control, controlRequests: control, finalizer: f}
+
+			after := serveStep(t, core, watcherPath(src, "edge", false), "save")
+
+			assert.Empty(t, f.calls, "never attached")
+			ready := commitRequestReady(t, src, "save")
+			if len(tc.wantIn) == 0 {
+				assert.Nil(t, ready, "left alone")
+				assert.Equal(t, commitRequestUnownedRecheck, after)
+				return
+			}
+			require.NotNil(t, ready)
+			assert.Equal(t, metav1.ConditionFalse, ready.Status)
+			assert.Equal(t, crReasonNotAllowed, ready.Reason)
+			for _, want := range tc.wantIn {
+				assert.Contains(t, ready.Message, want)
+			}
+		})
+	}
+}
+
+// A refused source request finishes, so a watcher that deletes finished requests stamps and then
+// deletes it: a tenant without delete on the type no longer keeps it for ever.
+func TestCommitRequestCore_ARefusedSourceRequestIsCollected(t *testing.T) {
+	cr := newCommitRequest("save")
+	cr.Spec.GitTargetRef.Namespace = "default"
+	control := newCommitRequestClient(t, nil, mirroringTarget(localProvider), kubeconfigProvider("edge", true))
+	src := newCommitRequestClient(t, nil, cr)
+	core := &commitRequestCore{reader: control, controlRequests: control, finalizer: committed(), ttl: time.Hour}
+	p := watcherPath(src, "edge", true)
+
+	serveStep(t, core, p, "save")
+	got := fetchCommitRequest(t, src, "save")
+	require.True(t, commitRequestIsTerminal(&got))
+	require.Contains(t, got.Annotations, CommitRequestDeleteAfterAnnotation, "stamped when it was refused")
+
+	got.Annotations[CommitRequestDeleteAfterAnnotation] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	require.NoError(t, src.Update(context.Background(), &got))
+	serveStep(t, core, p, "save")
+	assert.False(t, commitRequestExists(t, src, "save"), "deleted once its time passed")
+}

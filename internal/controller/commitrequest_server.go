@@ -92,7 +92,10 @@ type CommitRequestsReport struct {
 // the leader only, as every status writer does.
 type CommitRequestServer struct {
 	// Client reads KubeProviders, GitTargets and Namespaces on the control cluster.
-	Client    client.Client
+	Client client.Client
+	// APIReader reads CommitRequests on the control cluster, uncached, to tell a source cluster from a
+	// kubeconfig that points back at the control cluster. Nil refuses no request for that reason.
+	APIReader client.Reader
 	Clusters  CommitRequestClusters
 	Finalizer CommitRequestFinalizer
 	// Authors finds a request's creator from the source cluster's audit facts; nil with attribution
@@ -590,7 +593,8 @@ func (s *CommitRequestServer) consider(
 func (s *CommitRequestServer) core() *commitRequestCore {
 	s.streamsOnce.Do(func() { s.streams = &commitRequestStreams{set: s.FactStreams} })
 	return &commitRequestCore{
-		reader: s.Client, finalizer: s.Finalizer, authors: s.Authors, streams: s.streams, ttl: s.TTL,
+		reader: s.Client, controlRequests: s.APIReader, finalizer: s.Finalizer, authors: s.Authors,
+		streams: s.streams, ttl: s.TTL,
 	}
 }
 
