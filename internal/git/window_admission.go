@@ -179,7 +179,8 @@ func (l *branchWorkerEventLoop) closeBeforeWrite(
 // fallBackToSingleWindow is the answer to a commit refused for changing a file outside its window's
 // footprint: the footprint rules are wrong somewhere, so the worker stops trusting them and holds one
 // window at a time for the rest of its life, and a resync of the GitTarget brings Git back to the
-// cluster whatever order the windows closed in.
+// cluster whatever order the windows closed in. The windows those rules admitted side by side close
+// now, oldest first, all but the newest, as the next write of another author would close them.
 func (l *branchWorkerEventLoop) fallBackToSingleWindow(pendingWrite PendingWrite, violation *footprintViolationError) {
 	name, namespace := pendingWrite.windowTarget()
 	l.singleWindow = true
@@ -190,6 +191,10 @@ func (l *branchWorkerEventLoop) fallBackToSingleWindow(pendingWrite PendingWrite
 		"outside", violation.outside,
 		"footprint", violation.footprint.String(),
 		"decision", decisionSingleWindowFallback)
+	open := l.windows.all()
+	for _, window := range open[:max(len(open)-1, 0)] {
+		l.finalizeWindow(window, windowFinalizeReasonFootprintFallback)
+	}
 	if l.w.resyncRecheck != nil {
 		l.w.resyncRecheck(itypes.NewResourceReference(name, namespace))
 	}

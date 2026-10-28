@@ -3,6 +3,7 @@
 package git
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -175,6 +176,31 @@ func TestWindowAdmission_ACommitOutsideItsFootprintIsRefusedAndTheWorkerFallsBac
 	require.True(t, resolved)
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), echoFile("x"), "the save says which path broke the footprint")
+}
+
+// TestWindowAdmission_AFallbackLeavesOneWindowOpen pins the fallback closing the windows the wrong
+// rules admitted side by side: every one but the newest, oldest first, with footprint_fallback.
+func TestWindowAdmission_AFallbackLeavesOneWindowOpen(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-fallback-closes", nil)
+	reader := captureInfo(f.worker)
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	f.writeBy("carol", "q", "q3")
+	require.Len(t, f.loop.windows.all(), 3)
+	decided := len(f.loop.pendingWrites)
+
+	refused, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{echoEvent("w", "w1")})
+	require.NoError(t, err)
+	f.loop.pendingWrites = append(f.loop.pendingWrites, *refused)
+	violation := &footprintViolationError{outside: []string{echoFile("w")}, footprint: footprint{}}
+	f.loop.settleFailed(len(f.loop.pendingWrites)-1, fmt.Errorf("%w: %w", errWriteFailed, violation))
+
+	require.True(t, f.loop.singleWindow)
+	assert.Equal(t, []string{"carol"}, authorsOf(f.loop.windows.all()), "at most one window stays open")
+	require.Len(t, f.loop.pendingWrites, decided+2, "alice's and bob's windows are decided")
+	assert.Equal(t, "alice", f.loop.pendingWrites[decided].Author(), "oldest first")
+	assert.Equal(t, "bob", f.loop.pendingWrites[decided+1].Author())
+	assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="footprint-fallback"`), 2)
 }
 
 func TestFootprint_OverlapUnionAndOutside(t *testing.T) {

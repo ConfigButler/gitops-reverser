@@ -189,6 +189,7 @@ unrelated push split a save that is protected today.
 | `shutdown` | every window | none |
 | `buffer_limit` | every window | none; closing only the largest is an open question |
 | `path_conflict` | the windows whose footprint the new write overlaps | none |
+| `footprint_fallback` | every window but the newest, when a commit outside its footprint makes the worker hold one window at a time | none |
 | `identity_change` | every other window | stays for writes of another `GitTarget` and for unproven footprints |
 | `idle_timeout`, `max_duration`, `attach_next` | that window only | none |
 

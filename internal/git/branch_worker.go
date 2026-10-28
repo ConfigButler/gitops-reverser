@@ -443,6 +443,9 @@ const (
 	// newer revision, finds overlapping another window's: it commits before the write that overlaps
 	// it (footprint.go).
 	windowFinalizeReasonPathConflict windowFinalizeReason = "path-conflict"
+	// windowFinalizeReasonFootprintFallback closes the windows open side by side when a commit outside
+	// its footprint makes the worker fall back to one window at a time (fallBackToSingleWindow).
+	windowFinalizeReasonFootprintFallback windowFinalizeReason = "footprint-fallback"
 )
 
 // NewBranchWorker creates a worker for a (provider, branch) combination. A zero
@@ -3003,6 +3006,8 @@ func (r windowFinalizeReason) metricLabel() string {
 		return "apply_due"
 	case windowFinalizeReasonPathConflict:
 		return "path_conflict"
+	case windowFinalizeReasonFootprintFallback:
+		return "footprint_fallback"
 	case windowFinalizeReasonUnspecified:
 		return "unspecified"
 	default:
