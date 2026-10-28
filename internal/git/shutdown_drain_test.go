@@ -16,7 +16,10 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -72,6 +75,53 @@ func TestShutdown_AStalledLastPushEndsAtTheBudget(t *testing.T) {
 	require.True(t, ok)
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), "worker stopped")
+}
+
+// A worker retired or replaced while the process runs is stopped with its parent still live, and gets
+// the same last push a shutdown does: Stop is a stop, not the end of the work.
+func TestShutdown_AWorkerStoppedWhileTheProcessRunsPushesItsLastWindow(t *testing.T) {
+	f := newLedgerFixture(t, "stop-push", true)
+	worker := startDrainWorker(t, f)
+	require.NoError(t, worker.Start(context.Background()))
+
+	const message = "save: the window open at retirement"
+	collectAttached(t, worker, "saved-at-retirement", message)
+
+	worker.Stop()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok, "the save is settled before the worker exits")
+	require.NoError(t, res.Err)
+	assert.Equal(t, FinalizeCommitted, res.Outcome)
+	tip := remoteTip(t, f.repoDir)
+	assert.Equal(t, tip.Hash.String(), res.Commit, "the save reports the commit on the remote")
+	assert.Equal(t, message, tip.Message)
+}
+
+// The work context ends once the loop has exited, not workerShutdownBudget later, whatever made it
+// exit: a Stop, or a loop that never ran because the GitProvider could not be read.
+func TestShutdown_TheWorkEndsWhenTheLoopExits(t *testing.T) {
+	t.Run("after Stop", func(t *testing.T) {
+		f := newLedgerFixture(t, "stop-ends-work", true)
+		worker := startDrainWorker(t, f)
+		require.NoError(t, worker.Start(context.Background()))
+
+		worker.Stop()
+
+		assert.Error(t, worker.ctx.Err(), "nothing runs on the work context any more")
+	})
+
+	t.Run("when the GitProvider cannot be read", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		require.NoError(t, configv1alpha3.AddToScheme(scheme))
+		worker := NewBranchWorker(fake.NewClientBuilder().WithScheme(scheme).Build(), logr.Discard(),
+			"missing", "default", "main", RepoIdentity{URL: "file:///nowhere"}, nil, BranchWorkerLimits{})
+		require.NoError(t, worker.Start(context.Background()))
+		t.Cleanup(worker.Stop)
+
+		require.Eventually(t, func() bool { return worker.ctx.Err() != nil }, 5*time.Second, 10*time.Millisecond,
+			"the loop exited at once, and its work context with it")
+	})
 }
 
 // startDrainWorker readies the fixture's worker to run its own loop on team-a.

@@ -228,10 +228,16 @@ func TestCommitRequestCore_AnOutcomeIsNotWrittenOverAFinishedRequest(t *testing.
 }
 
 // A request on a source cluster is settled through the identity that serves it, after the server's
-// watch has stopped with the rest of the controllers.
+// watch has stopped with the rest of the controllers. A control-cluster request of the same name is
+// another request, and is settled too: a request is remembered by its path as well as its name.
 func TestCommitRequestsInFlight_ASourceClusterRequestIsSettledOnItsCluster(t *testing.T) {
 	provider := kubeconfigProvider("edge", true)
-	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
+	control := newCommitRequest("save")
+	control.Spec.GitTargetRef.Name = "control-config"
+	controlTarget := &configv1alpha3.GitTarget{
+		ObjectMeta: metav1.ObjectMeta{Name: "control-config", Namespace: "default"},
+	}
+	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider, controlTarget, withInProgress(control))
 	gvr := commitRequestGVR()
 	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, sourceCommitRequest("default", "save"))
@@ -256,13 +262,19 @@ func TestCommitRequestsInFlight_ASourceClusterRequestIsSettledOnItsCluster(t *te
 	}
 	require.Eventually(t, func() bool { return readReady() == string(git.PhaseCollectingWindow) },
 		10*time.Second, 20*time.Millisecond, "the request is attached through the provider's watch")
+	serveStep(t, &commitRequestCore{reader: c, finalizer: worker, inFlight: inFlight}, controlPath(c), "save")
+	require.Equal(t, string(git.PhaseCollectingWindow), commitRequestReady(t, c, "save").Reason,
+		"the control-cluster request is attached too")
 	cancel()
 	s.stopAll()
+	require.Len(t, inFlight.remembered(), 2)
 
 	worker.stop(shutdownCommit)
 	inFlight.Settle(context.Background())
 
 	assert.Equal(t, crReasonCommitted, readReady(), "written on the source cluster")
+	assert.Equal(t, crReasonCommitted, commitRequestReady(t, c, "save").Reason, "and on the control cluster")
+	assert.Empty(t, inFlight.remembered())
 }
 
 // A nil set remembers nothing, and settles nothing.
