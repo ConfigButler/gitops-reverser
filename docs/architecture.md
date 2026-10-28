@@ -1553,8 +1553,10 @@ out, the retained buffer reaches `--branch-buffer-max-size` (default `8Mi`), an 
 or an apply comes due for an applier on the branch. The timers
 are the GitTarget's `spec.commit.window` until a `CommitRequest` attaches and replaces them. Successful local commits
 are retained until a fixed push cooldown (`5s`) allows a push, which prevents remote push storms during
-bursts. The one exception is an apply's flush: the writes decided before the apply came due are
-pushed at once, cooldown or not, because the apply waits for them.
+bursts. Two things push at once, cooldown or not, because something waits for the push: an apply's
+flush, for the writes decided before the apply came due, and a `CommitRequest`'s commit, for the
+person who saved. Saves cannot burst the way plain writes can, since an author has one save in
+progress at a time, so the cooldown still paces every stream of plain writes.
 
 ### Local clones and conflict retry
 

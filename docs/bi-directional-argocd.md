@@ -430,15 +430,16 @@ applier on the branch, whether or not the push touched its folder, and a `CatchU
 create in the folder and when a `GitTarget` first names the applier claim.
 
 **The apply window.** Until 10 seconds after the sync's operation completes, however long that
-takes, Argo CD's own write to an object nobody edited is the sync landing, and is not mirrored. An
-API edit to a field the `Application` sets, one made after the flush included, can be reverted on
-the cluster by the sync. GitOps Reverser recognizes that write by Argo CD's field manager
-(`argocd-controller`, for a client-side and a server-side apply alike, or
-`argocd-application-controller` for a `Replace=true` sync), withholds it from Git, and asks for a
-`Repair` sync pinned to the tip that holds the edit, but only when Argo CD's entry is as new as the
-edit or newer: undoing an edit can leave an older entry of Argo CD's as the newest, and that undo
-is mirrored. When Argo CD and another manager wrote in the same second, the write is mirrored and
-counted as `ambiguous`.
+takes, and until the watch has delivered every write the cluster held then, for at most two minutes
+([the life of an apply](bi-directional.md#the-life-of-an-apply)), Argo CD's own write to an object
+nobody edited is the sync landing, and is not mirrored. An API edit to a field the `Application`
+sets, one made after the flush included, can be reverted on the cluster by the sync. GitOps Reverser
+recognizes that write by Argo CD's field manager (`argocd-controller`, for a client-side and a
+server-side apply alike, or `argocd-application-controller` for a `Replace=true` sync), withholds it
+from Git, and asks for a `Repair` sync pinned to the tip that holds the edit, but only when Argo
+CD's entry is as new as the edit or newer: undoing an edit can leave an older entry of Argo CD's as
+the newest, and that undo is mirrored. When Argo CD and another manager wrote in the same second,
+the write is mirrored and counted as `ambiguous`.
 
 A request that fails, and a sync that ends `Failed` or `Error`, is decided again from scratch, after
 that `Application`'s own backoff. A sync still running after 5 minutes is `Unresolved`: GitOps

@@ -3093,8 +3093,9 @@ A request is registered with the branch worker only once its own audit event has
 and its edit is attributed the same way, so a request created just before its edit does not always
 reach the worker first. On a `GitTarget` whose windows close on the first silence (`idleTimeout:
 "0s"`), such an edit can commit alone before the request is there to attach to it. Make the edit
-once the request is claimed (`Ready=Unknown`), or give the `GitTarget` an `idleTimeout` that covers
-the gap.
+once the request is registered, when its `Reconciling` reason is `WaitingForWindow` (see
+[its status](#its-status)), or give the `GitTarget` an `idleTimeout` that covers the gap.
+`Ready=Unknown` alone is too early: it starts at reason `Saving`, before the registration.
 
 `maxDuration`, and `idleTimeout` when set, cover the span of the save's own writes after the
 attach. The worst case from registration to the finalize is `attachTimeout` plus `maxDuration`; the
@@ -3129,13 +3130,27 @@ spec:
   message: "feat: raise the checkout limits"
 ```
 
-`kubectl apply -f folder/` then makes one commit of the folder's changes, authored by you, with the
-request's message. kubectl applies the files in name order, so the request can land before or after
-the objects, and the defaults handle both: with `attach: CurrentOrNext` the request attaches to the
-window the objects already opened, or waits for the one they open. Do not use `attach: Next` here:
-it would close the objects' window under the generated message, then wait for a write that never
-comes. Another unclaimed edit of yours on the same `GitTarget`, still in its window, shares the
-commit.
+`kubectl apply -f folder/` then commits the folder's changes, authored by you, with the request's
+message. kubectl applies the files in name order, so the request can land before or after the
+objects: with `attach: CurrentOrNext` the request attaches to the window the objects already opened,
+or waits for the one they open. Do not use `attach: Next` here: it would close the objects' window
+under the generated message, then wait for a write that never comes. Another unclaimed edit of yours
+on the same `GitTarget`, still in its window, shares the commit.
+
+It is one commit only when the window holds every write, and a window is not a transaction. Two
+things split it:
+
+- **Time.** With the defaults the window closes 2 seconds after the attach. Writes reach the branch
+  worker once their audit facts have named their author, so on a large folder, a loaded API server or
+  a source cluster with slow audit delivery, the last writes can arrive later than kubectl sent them.
+  A write after the close commits on its own, under the generated message. For such a folder, give
+  the request a longer window, `spec.window.maxDuration: "10s"` for example, or rolling collection
+  (see [the request window](#the-request-window-specwindow)); the commit lands that much later.
+- **Other writes on the branch.** A branch worker holds one window at a time, so a write by another
+  author, or for another `GitTarget` on the same branch, closes yours early, with the request's
+  message, and your later writes commit under the generated message.
+
+The request then ends `Committed` with the writes its window held.
 
 The name is what makes the next apply a save. Applying the same folder again does this:
 
@@ -3284,8 +3299,9 @@ request produced a pushed commit:
   message, so the two would race for it and one message would be lost without a word; the later
   request is refused at once instead. Save again with a new request once the earlier one is `Ready`.
   A request for the `Next` window is not refused by one that is collecting: it closes that window
-  under the earlier request's message first. Saves by different authors never race, since each
-  author has windows of its own.
+  under the earlier request's message first. Saves by different authors do not race for a
+  message: a write by another author closes the open window, and its message, before it opens one
+  of its own.
 
   `SaveInProgress` is decided when the branch worker registers the request, which is after its
   author was found, not when it is created. A client that relies on it to keep two of its saves
