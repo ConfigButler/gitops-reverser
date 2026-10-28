@@ -41,7 +41,7 @@ func newReplayRefusalFixture(t *testing.T, slug string) (*ledgerFixture, *branch
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	t.Cleanup(loop.stopTimers)
 	return f, loop
 }

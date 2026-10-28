@@ -35,7 +35,7 @@ func TestWindowClock_TheIdleTimeoutIsMeasuredOnTheWorkersClock(t *testing.T) {
 	clock := useTestClock(worker)
 	loop := newBranchWorkerEventLoop(worker, 10*time.Second)
 	defer loop.stopTimers()
-	loop.lastPushAt = time.Now() // hold the push, so the local commit stays inspectable
+	holdPushes(loop) // hold the push, so the local commit stays inspectable
 
 	writeTo(loop, "first")
 	require.NotNil(t, loop.openWindow)
@@ -64,7 +64,7 @@ func TestWindowClock_MaxDurationIsMeasuredOnTheWorkersClock(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, 10*time.Second)
 	defer loop.stopTimers()
 	loop.defaultWindow.maxDuration = 25 * time.Second
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	for i, name := range []string{"a", "b", "c"} {
 		writeTo(loop, name)

@@ -158,7 +158,7 @@ func TestBranchWorker_AParentChangeBeforeAdmissionReplaysOntoTheNewParent(t *tes
 	loop := newBranchWorkerEventLoop(f.worker, 0)
 	defer loop.stopTimers()
 
-	loop.lastPushAt = time.Now() // cooldown: the write is retained
+	holdPushes(loop) // cooldown: the write is retained
 	liveWrite(loop, "cm1")
 	require.Len(t, loop.pendingWrites, 1)
 
@@ -240,7 +240,7 @@ func TestBranchWorker_AParentChangeToAMissingParentKeepsTheWork(t *testing.T) {
 		f.warmOnParent()
 		loop := newBranchWorkerEventLoop(f.worker, 0)
 		defer loop.stopTimers()
-		loop.lastPushAt = time.Now()
+		holdPushes(loop)
 		liveWrite(loop, "cm1")
 		require.Len(t, loop.pendingWrites, 1)
 		beforePushAdmission = func() { f.worker.SetParentBranch("release") }

@@ -328,13 +328,18 @@ func main() {
 	fatalIfErr(mgr.Add(watchMgr), "unable to add watch ingestion manager")
 	// CommitRequests created on a source cluster, next to the edits they save: served through every
 	// KubeProvider whose spec.commitRequests reconciles them, attributed from that cluster's audit facts.
+	// A worker's change to a CommitRequest takes the request's next step at once, on either path.
+	commitRequestWakes := controller.NewCommitRequestWakes(workerManager.CommitRequestChanges())
+	fatalIfErr(mgr.Add(commitRequestWakes), "unable to add the CommitRequest wakes")
 	commitRequestServer := &controller.CommitRequestServer{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Clusters:    watchMgr,
 		Finalizer:   eventRouter,
 		Authors:     watchMgr.AuthorResolver,
 		FactStreams: watchMgr.FactStreams,
 		TTL:         cfg.commitRequestTTL,
+		Wakes:       commitRequestWakes,
 		Log:         ctrl.Log.WithName("commitrequests"),
 	}
 	fatalIfErr(mgr.Add(commitRequestServer), "unable to add the CommitRequest server")
@@ -423,6 +428,7 @@ func main() {
 		Authors:     watchMgr.AuthorResolver,
 		FactStreams: watchMgr.FactStreams,
 		TTL:         cfg.commitRequestTTL,
+		Wakes:       commitRequestWakes,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)

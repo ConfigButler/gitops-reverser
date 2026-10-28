@@ -97,7 +97,7 @@ func TestEventLoop_MaybeSchedulePush_CooldownGate(t *testing.T) {
 	// pushTimer rather than push immediately.
 	loop.pendingWrites = []PendingWrite{{Kind: PendingWriteCommit}}
 	loop.pendingWritesBytes = 1
-	loop.lastPushAt = time.Now() // pretend we just pushed
+	holdPushes(loop) // pretend we just pushed
 	loop.maybeSchedulePush()
 	require.NotNil(t, loop.pushTimer, "cooldown active → pushTimer scheduled")
 

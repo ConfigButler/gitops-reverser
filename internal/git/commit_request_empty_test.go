@@ -460,7 +460,7 @@ func TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves(t *testing.T) {
 		createPlainGitTarget(t, worker, "team-a", "team-a")
 		worker.branchBufferMaxBytes = 1
 		loop := newBranchWorkerEventLoop(worker, time.Hour)
-		loop.lastPushAt = time.Now() // hold the pushes, so the retained writes can be counted
+		holdPushes(loop) // hold the pushes, so the retained writes can be counted
 		defer loop.stopTimers()
 
 		serviceAttach(loop, commitEmptyReq("bob", "bob's save"))

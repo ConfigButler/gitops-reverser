@@ -53,7 +53,7 @@ func TestDecidedWrite_SurvivesAFailedRebuildAndLandsThroughTheRetry(t *testing.T
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now() // the first write waits out the push cooldown
+	holdPushes(loop) // the first write waits out the push cooldown
 	defer loop.stopTimers()
 
 	// One write is committed and retained, and then the checkout has to be rebuilt before anything
@@ -163,7 +163,7 @@ func TestDecidedWrite_AdmissionClosesAtTheBudgetDuringAnOutage(t *testing.T) {
 	f.publish("prime")
 	f.worker.branchBufferMaxBytes = 1 // any retained write fills it
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 	write := func(name string) {
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -289,7 +289,7 @@ func TestDecidedWrite_SameObjectEditsReplayAsDecidedOntoARemoteHoldingTheLast(t 
 	f.publish("prime")
 	loop := newBranchWorkerEventLoop(f.worker, 0)
 	t.Cleanup(loop.stopTimers)
-	loop.lastPushAt = time.Now() // the cooldown holds both writes back
+	holdPushes(loop) // the cooldown holds both writes back
 
 	edit := func(value string) []byte {
 		event := configMapTargetEvent("settings", "alice", ledgerTargetName)

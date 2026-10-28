@@ -67,7 +67,7 @@ func refuseResync(t *testing.T, f *ledgerFixture, l *branchWorkerEventLoop, imag
 	}
 	f.worker.lastReapply["default/"+ledgerTargetName] = time.Now().Add(-2 * refusalReapplyInterval)
 	f.worker.refusalMu.Unlock()
-	l.lastPushAt = time.Now()
+	holdPushes(l)
 
 	event := overridesDeploymentEvent(image, 3)
 	scope := deploymentResyncScope()
@@ -543,7 +543,7 @@ func TestRefusalReapply_RecoveryCancelsARequestQueuedForTheSameCollection(t *tes
 	f := overlayRefusalFixture(t, "recovery-cancels-queued")
 	l := newBranchWorkerEventLoop(f.worker, time.Hour)
 	t.Cleanup(l.stopTimers)
-	l.lastPushAt = time.Now()
+	holdPushes(l)
 
 	scope := ResyncScopeFor(
 		schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "production")

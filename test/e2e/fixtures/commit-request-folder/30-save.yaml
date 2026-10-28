@@ -1,0 +1,11 @@
+# The save, applied with the objects it saves. kubectl applies a folder's files in name order, so
+# this request lands after the ConfigMaps. Give it a new name for every apply: the spec is
+# immutable, and a finished request saves nothing more.
+apiVersion: configbutler.ai/v1alpha3
+kind: CommitRequest
+metadata:
+  name: save-app-config
+spec:
+  gitTargetRef:
+    name: __E2E_GITTARGET__
+  message: "feat: add the app config from a folder"
