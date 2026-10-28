@@ -3326,7 +3326,12 @@ request produced a pushed commit:
   does not mean the commit was applied.
 
 A request is served again after GitOps Reverser restarts: the path that owns it finds its own
-claim, and resumes with the author it recorded.
+claim, and resumes with the author it recorded. A graceful stop, such as an upgrade or a rollout,
+first finishes the saves it holds: a request collecting its window is committed with its message,
+pushed, and its outcome written before the pod exits. A request still waiting for a window is
+picked up again by the next pod. A crash, or a stop that runs out of its grace period, loses the
+open window: the next pod's startup replay writes its edits under a generated message, and the
+request attaches again as if new, so it can end `NoWindow`.
 
 ### How long a request lives
 

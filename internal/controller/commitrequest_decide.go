@@ -93,6 +93,7 @@ func (c *commitRequestCore) decide(
 	if err != nil || !written {
 		return commitRequestRequeueNow, err
 	}
+	c.inFlight.forget(p, client.ObjectKeyFromObject(current))
 	if !afterClaim {
 		recordCommitRequestOutcome(ctx, o.metricOutcome(), target)
 	}

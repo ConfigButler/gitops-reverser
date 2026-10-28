@@ -11,9 +11,20 @@ Nothing open.
 
 ## Applier claims and bi-directional editing
 
-- [ ] **Persist the withheld-field record.** The fields a withheld apply reverted are kept in memory
-  (`internal/git/withheld_fields.go`), so after a restart the next edit of such an object carries the
-  apply's values into Git again, until the `Repair` lands.
+- [ ] **Restart recovery: persist current state.** A graceful stop pushes its windows and writes the
+  outcomes of the saves they carried (`CommitRequestsInFlight.Settle`); everything else the branch
+  worker keeps in memory is lost on any restart, and a crash, or a stop past its grace period, loses
+  all of it. Nothing is persisted. What must survive: the
+  open windows with absolute deadlines, author, attribution, message and membership; each attached
+  save's `attachDeadline`, `seq` and window; save outcomes until their TTL; the pending writes; the
+  withheld-field records (`internal/git/withheld_fields.go`: after a restart the next edit of such an
+  object carries the apply's values into Git again, until the `Repair` lands). "Git took the push,
+  then the process died" is made safe by writing a push intent {old, new, request→SHA} before every
+  `PushAtomic` and comparing it with the remote tip on restart: commits carry no trailers, and SHAs
+  are not reproducible. Two restore traps: the startup cold replay (no Redis) closes any restored
+  window (`resync_flush.go`), and `finalizeWindow` drops a window while render fidelity is Unknown,
+  which it is after a restart. The worker state root `/tmp` is an `emptyDir` a new pod loses.
+  [branch-worker-event-model.md](design/branch-worker-event-model.md#saves-lose-execution-identity-across-a-restart).
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on
   `RenderMatchesLive=False` clears only on an explicit recheck (the
   `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope; the render

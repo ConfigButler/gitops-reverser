@@ -178,6 +178,9 @@ type WorkerManager struct {
 	// CommitRequestChanges.
 	commitRequestChanges chan CommitRequestChange
 
+	// afterWorkersStopped runs once every worker has stopped at shutdown. See SetAfterWorkersStopped.
+	afterWorkersStopped func(ctx context.Context)
+
 	// claims is which GitBranch holds each repository branch (branch_owner.go). The GitBranch
 	// reconciler writes it; EnsureWorker and the sweep read it. Reach it through Claims, which makes
 	// one for a manager not built by NewWorkerManager.
@@ -295,6 +298,22 @@ func (m *WorkerManager) SetApplyBarrier(barrier ApplyBarrierFunc) {
 	defer m.mu.Unlock()
 	m.applyBarrier = barrier
 }
+
+// SetAfterWorkersStopped injects what runs at shutdown once every worker has stopped: the workers
+// have closed their windows, pushed and settled their saves, and nothing will settle another. It runs
+// on a context of its own, bounded by afterWorkersStoppedBudget, because the manager's is canceled by
+// then. The CommitRequest controllers write the outcomes the workers decided there, while the caches
+// they read still run: those stop only once this runnable has returned. Like SetMapper, it is called
+// once at startup.
+func (m *WorkerManager) SetAfterWorkersStopped(fn func(ctx context.Context)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.afterWorkersStopped = fn
+}
+
+// afterWorkersStoppedBudget bounds SetAfterWorkersStopped's step. With workerShutdownBudget before it,
+// it fits the chart's 20s terminationGracePeriodSeconds.
+const afterWorkersStoppedBudget = 5 * time.Second
 
 // SetSSHHostKeyConfig injects the SSH host-key resolution config used by every worker's credential
 // reads. Like SetMapper, it is called once at startup before any worker is created.
@@ -904,13 +923,29 @@ func (m *WorkerManager) Start(ctx context.Context) error {
 	m.workers = make(map[BranchKey]*BranchWorker)
 	m.mu.Unlock()
 
-	// Stop all workers gracefully
+	// Every worker saw the cancel and is draining already, so these waits overlap: the whole drain takes
+	// about as long as the slowest worker, at most workerShutdownBudget.
 	for key, worker := range workers {
 		m.Log.Info("Stopping worker for shutdown", "key", key.String())
 		worker.Stop()
 	}
 	m.Log.Info("WorkerManager stopped")
+	m.runAfterWorkersStopped(ctx)
 	return nil
+}
+
+// runAfterWorkersStopped runs the step SetAfterWorkersStopped injected, on a context that is not the
+// manager's canceled one.
+func (m *WorkerManager) runAfterWorkersStopped(ctx context.Context) {
+	m.mu.RLock()
+	fn := m.afterWorkersStopped
+	m.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), afterWorkersStoppedBudget)
+	defer cancel()
+	fn(settleCtx)
 }
 
 // WorkerSweepInterval is the floor under the orphan sweep. It is a FLOOR and not the mechanism: a

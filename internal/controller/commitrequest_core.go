@@ -110,6 +110,8 @@ type commitRequestCore struct {
 	streams *commitRequestStreams
 	// ttl is how long a finished request is kept, written as its delete-after time; zero writes none.
 	ttl time.Duration
+	// inFlight remembers the requests this core attached, for the shutdown to settle; nil remembers none.
+	inFlight *CommitRequestsInFlight
 }
 
 // serve takes one step for the request key on path p, and says how soon to take the next. Zero means
@@ -119,12 +121,17 @@ func (c *commitRequestCore) serve(
 ) (time.Duration, error) {
 	cr, err := p.store.get(ctx, key)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			c.inFlight.forget(p, key)
+		}
 		return 0, client.IgnoreNotFound(err)
 	}
 	if !cr.DeletionTimestamp.IsZero() {
+		c.inFlight.forget(p, key)
 		return 0, nil
 	}
 	if commitRequestIsTerminal(cr) {
+		c.inFlight.forget(p, key)
 		return c.serveFinished(ctx, p, cr)
 	}
 	if c.finalizer == nil {
@@ -483,6 +490,8 @@ func (c *commitRequestCore) drive(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 	target *configbutleraiv1alpha3.GitTarget, provider *configbutleraiv1alpha3.KubeProvider,
 ) (time.Duration, error) {
+	// Remembered before anything reaches a worker, so whatever it decides is written at shutdown.
+	c.inFlight.track(c, p, client.ObjectKeyFromObject(cr))
 	attach := c.attachFor(cr)
 	if target != nil && string(target.UID) != cr.Status.GitTargetUID {
 		admitted, refusal, err := c.admit(ctx, p, cr, target, provider)
