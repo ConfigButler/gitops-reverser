@@ -1,8 +1,9 @@
 # Design: one commit window per author, open at the same time
 
 Status: **stages 1 and 2 built** (`internal/git/window_set.go`, `footprint.go`,
-`window_admission.go`; see [what stage 2 built](#what-stage-2-built)). Stage 2 ships without the
-startup flag of stage 4, so stage 3 lands before the next release (`docs/TODO.md`). Raised by
+`window_admission.go`; see [what stage 2 built](#what-stage-2-built)); **stages 3 to 5 proposed**.
+Stage 2 is on with no startup flag, so **stage 3 gates the next release**: it must land before the
+next tag is cut (`docs/TODO.md`, "Before the next release"). Raised by
 gitops-api's review of the source-side save (PR #456):
 with saves created straight from a browser, a second person's edit splits the first person's change
 into two commits. This page sets out the change that fixes that, the rules it must keep, how to test
@@ -285,21 +286,25 @@ window, so they are proven against today's behavior before they are used to judg
 
 ## Stages
 
-1. **Extract window management without changing behavior.** Move the window bookkeeping
+Stages 1 and 2 are built; stages 3, 4 and 5 are proposed. Stage 3 gates the next release, because
+stage 2 shipped without stage 4's flag.
+
+1. **Built. Extract window management without changing behavior.** Move the window bookkeeping
    (`openWindow`, its timers, attach and finalize) behind one type that holds a set of windows, with
    one window allowed. Add the controllable clock, the opening sequence number, and the reference
    model. Every existing test passes unchanged.
-2. **Allow several windows for proven-independent destinations.** Writes keep whole-object commits
+2. **Built. Allow several windows for proven-independent destinations.** Writes keep whole-object commits
    and apply behavior stays as it is. Writes of another `GitTarget` keep closing other windows
    (`identity_change`), and every layout in the footprint table's "no" rows stays serial.
-3. **Test the failure boundaries.** Both close orders, conflicting writes, delete and recreate,
-   `attach_next`, zero-duration windows, resync, shutdown, failed publication and replay, and buffer
-   pressure, each against the reference model.
-4. **Ship behind a startup flag**, off by default at first. The flag is read once, at start; changing
+3. **Proposed; gates the next release. Test the failure boundaries.** Both close orders,
+   conflicting writes, delete and recreate, `attach_next`, zero-duration windows, resync, shutdown,
+   failed publication and replay, and buffer pressure, each against the reference model, which
+   first has to keep work pending across failed pushes and retries.
+4. **Proposed. Ship behind a startup flag**, off by default at first. The flag is read once, at start; changing
    it takes a restart, and the restart drains every open window through the normal shutdown path
    (opening order, close reason `shutdown`), so there is no live transition to get right. Measure concurrent-window
    counts, forced splits by reason, save outcomes, and memory before turning it on by default.
-5. **Reconsider the follow-ups** in
+5. **Proposed. Reconsider the follow-ups** in
    [window-field-ownership-and-apply-hold.md](window-field-ownership-and-apply-hold.md), using those
    measurements. Field ownership and the apply hold are separate changes, each with its own
    state-machine review.
@@ -321,7 +326,9 @@ The rules above, with these choices where the page left room:
   write before it. After a reset or a `GitTarget` change the proof is of another tree, and the
   commit is not checked. A refusal fails the write as terminal: the worktree is undone, its save
   fails with the paths, the worker logs `SingleWindowFallback` and holds one window at a time until
-  it restarts, and a resync of the `GitTarget` is asked for.
+  it restarts, closing every open window but the newest (`footprint_fallback`), and a resync of the
+  `GitTarget` is asked for. Each commit checked logs `FootprintChecked` with its tree, and the
+  reference model requires one for every commit it gave a footprint.
 - **A request's own author's window stands in no one's way.** A save waiting while another author's
   window is open records a mismatch only when no window of its own author is open.
 - **The window ID** (`window`) is in the open, close and finalized log lines, with the branch.
