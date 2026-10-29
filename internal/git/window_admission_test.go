@@ -164,6 +164,34 @@ func TestWindowAdmission_ShutdownClosesEveryWindowOldestFirst(t *testing.T) {
 	assert.Equal(t, echoDocument("z", "z2"), f.onMain(echoFile("z")))
 }
 
+// TestWindowAdmission_ShutdownDecidesTheWritesAlreadyQueued pins the writes the worker accepted and
+// had not handled when the shutdown began: Enqueue told the watch they were taken, so the last push
+// carries them, each in its author's window, and the items the loop does not decide at shutdown are
+// still drained.
+func TestWindowAdmission_ShutdownDecidesTheWritesAlreadyQueued(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-shutdown-queued", nil)
+	f.loop.pushPending()
+	f.writeBy("alice", "x", "x2")
+	queued := func(author, name, value string) Event {
+		event := echoEvent(name, value)
+		event.UserInfo.Username = author
+		return event
+	}
+	require.True(t, f.worker.Enqueue(queued("alice", "x", "x3")))
+	f.worker.EnqueueAttach(&AttachCommitRequest{Namespace: "default", Name: "save", Author: "carol"})
+	require.True(t, f.worker.Enqueue(queued("bob", "z", "z2")))
+
+	f.loop.handleShutdown()
+
+	assert.Empty(t, f.worker.eventQueue)
+	assert.Equal(t, int64(0), f.worker.inflightItems.Load(), "every queued item is released")
+	assert.Equal(t, echoDocument("x", "x3"), f.onMain(echoFile("x")), "alice's queued write is published")
+	assert.Equal(t, echoDocument("z", "z2"), f.onMain(echoFile("z")), "bob's queued write is published")
+	assert.Equal(t, []string{"alice", "bob"},
+		splitLines(gitIn(t, f.repoDir, "log", "--reverse", "--format=%an", "-2", "main")),
+		"each in its author's window")
+}
+
 func TestWindowAdmission_AWriteOfAnotherGitTargetClosesTheOpenWindows(t *testing.T) {
 	f := newAdmissionFixture(t, "admission-other-target", nil)
 	reader := captureInfo(f.worker)

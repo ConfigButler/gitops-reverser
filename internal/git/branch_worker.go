@@ -199,17 +199,18 @@ type BranchWorker struct {
 
 	// stoppingState closes the queue to new work from the moment Stop is called.
 	//
-	// Shutdown drains whatever is still on the FIFO without processing it, so an item accepted
-	// after that point is silently thrown away, while Enqueue's "true" has already told a watch
-	// loop it may advance its durable cursor past the event. That cost nothing while Stop was
+	// Shutdown decides the live writes still on the FIFO and drains every other item without
+	// processing it (decideQueuedWrites), so an item accepted after that point is silently thrown
+	// away, while Enqueue's "true" has already told a watch loop it may advance its durable cursor
+	// past the event. That cost nothing while Stop was
 	// only ever called at process exit. A worker REPLACED because its GitProvider names a
 	// different repository is stopped with the process still running, and the sibling GitTargets
 	// on its branch go on holding streams that point at it until their own next reconcile, which
 	// is minutes of accepted-and-discarded events.
 	//
 	// Refusing them turns a silent loss into the drop path every producer already handles: the
-	// watch leaves its cursor where it is and redelivers to the replacement. Items already ON the
-	// queue when Stop is called are still drained, which is the behaviour shutdown always had.
+	// watch leaves its cursor where it is and redelivers to the replacement. Writes already ON the
+	// queue when Stop is called are still decided and pushed, and other items drained.
 	//
 	// It is written and read under pendingResyncsMu, the lock every enqueue already holds across
 	// its send. Checking it outside that lock is not enough: an enqueue could pass the check,
@@ -1506,6 +1507,7 @@ func (l *branchWorkerEventLoop) armCommitTimer() {
 
 func (l *branchWorkerEventLoop) handleShutdown() {
 	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
+	l.decideQueuedWrites()
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
 	l.dropHeldAtShutdown()
 	if len(l.pendingWrites) > 0 {
@@ -1515,6 +1517,30 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 	}
 	l.failUnpushedCommitRequests()
 	l.drainUnhandledQueueItems()
+}
+
+// decideQueuedWrites decides the live writes already on the FIFO when the shutdown began, before the
+// windows close, so the last push carries them. Enqueue answered "accepted" for each, and a watch may
+// have moved its cursor past it: dropped, the edit would come back only through a later resync, with
+// no author and no window of its own. It takes only what the FIFO held when the shutdown began, so a
+// producer still sending (the manager's cancel stops the worker before Stop closes admission) cannot
+// keep it going. Writes are decided locally; every other item, which may read the remote or bind a
+// save, is left to the drain, as before.
+func (l *branchWorkerEventLoop) decideQueuedWrites() {
+	for range len(l.w.eventQueue) {
+		var item WorkItem
+		select {
+		case item = <-l.w.eventQueue:
+		default:
+			return
+		}
+		if item.Request == nil {
+			l.w.dropQueueItem(item)
+			continue
+		}
+		l.publishLoopState(l.dispatch(item))
+		l.w.releaseInflightItem()
+	}
 }
 
 // failUnpushedCommitRequests settles every CommitRequest still riding a write the exiting loop
@@ -1548,19 +1574,24 @@ func (w *BranchWorker) drainQueue() {
 	for {
 		select {
 		case item := <-w.eventQueue:
-			if item.Attach != nil {
-				w.uncountQueuedAttach(item.Attach.id())
-			}
-			charge := item.charge
-			if item.Resync != nil {
-				_, charge = w.takePendingResync(item.Resync)
-			}
-			w.intake.release(charge)
-			w.releaseInflightItem()
+			w.dropQueueItem(item)
 		default:
 			return
 		}
 	}
+}
+
+// dropQueueItem clears one item no loop will handle: see drainQueue.
+func (w *BranchWorker) dropQueueItem(item WorkItem) {
+	if item.Attach != nil {
+		w.uncountQueuedAttach(item.Attach.id())
+	}
+	charge := item.charge
+	if item.Resync != nil {
+		_, charge = w.takePendingResync(item.Resync)
+	}
+	w.intake.release(charge)
+	w.releaseInflightItem()
 }
 
 func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {
