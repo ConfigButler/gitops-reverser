@@ -226,12 +226,13 @@ func TestEnqueueRequest_FullQueueCountsTheDrop(t *testing.T) {
 
 // On shutdown the loop must drain items still buffered on eventQueue so the depth reads 0. Each
 // buffered item was counted into inflightItems at enqueue; left undrained, the exiting worker would
-// report a non-zero depth that never clears.
+// report a non-zero depth that never clears. Queued writes are decided at shutdown instead
+// (TestWindowAdmission_ShutdownDecidesTheWritesAlreadyQueued).
 func TestHandleShutdown_DrainsBufferedItemsToZeroDepth(t *testing.T) {
 	w := newMetricsTestWorker()
-	// Two write requests accepted onto the queue but never handled by the loop.
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
-	w.enqueueRequest(&WriteRequest{Events: []Event{{}}})
+	// Two refreshes accepted onto the queue but never handled by the loop.
+	require.True(t, w.EnqueueRefresh(&RefreshRequest{}))
+	require.True(t, w.EnqueueRefresh(&RefreshRequest{}))
 	require.Equal(t, int64(2), w.inflightItems.Load())
 
 	loop := newBranchWorkerEventLoop(w, time.Second)

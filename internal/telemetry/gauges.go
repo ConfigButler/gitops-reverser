@@ -68,6 +68,13 @@ const (
 	// snapshot barrier holds back: a GitTarget they cover is not mirrored yet, or its folder is not on
 	// the branch. Read from what the branch worker's loop last published.
 	GaugeAppliersHeld = "apply_appliers_held"
+	// GaugeGitCommitWindowsOpen is how many commit windows a branch worker holds open, one per author
+	// whose files are proven not to overlap the others'. GaugeGitCommitWindowsSingle is 1 once the
+	// worker has fallen back to one window at a time, for the rest of its life, after a commit would
+	// have changed a file outside its window's footprint. Both are read from what the loop last
+	// published.
+	GaugeGitCommitWindowsOpen   = "git_commit_windows_open"
+	GaugeGitCommitWindowsSingle = "git_commit_windows_single"
 )
 
 var (

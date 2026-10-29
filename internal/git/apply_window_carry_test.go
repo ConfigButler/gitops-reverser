@@ -78,8 +78,8 @@ func carryWithheld(t *testing.T, slug string) *echoFixture {
 	return f
 }
 
-// carryKey is y's objectKey.
-func carryKey() string { return objectKey(carryEdit("alice", "", "").Identifier) }
+// carryKey is y's key in the record, as team-a mirrors it.
+func carryKey() withheldKey { return withheldKeyOf(carryEdit("alice", "", "")) }
 
 // TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit pins the withheld-field record
 // (withheld_fields.go).
@@ -328,7 +328,9 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 	assert.Len(t, loop.withheld[key].Fields, 3, "extra left the record")
 
 	// A second withhold, over a version without data at all, replaces the fields inside it.
-	loop.keepAccepted(Event{Identifier: accepted.Identifier, Object: restored})
+	restoredEvent := accepted
+	restoredEvent.Object = restored
+	loop.keepAccepted(restoredEvent)
 	again := carryApply("", "")
 	delete(again.Object.Object, "data")
 	again.Object.Object["spec"] = map[string]interface{}{"list": []interface{}{"one"}}
@@ -452,6 +454,37 @@ func TestApplyWindow_TheRecordEndsWhenNothingWillRepairIt(t *testing.T) {
 		assert.Len(t, f.loop.withheld, 1, "a resync of another collection says nothing about y")
 		resync(nil)
 		assert.Empty(t, f.loop.withheld, "y is gone from the cluster")
+	})
+}
+
+// TestApplyWindow_AWithheldApplyStaysWithItsGitTarget pins the record to the GitTarget the withheld
+// apply was mirrored for. Another GitTarget on the branch can mirror an object of the same name, from
+// another cluster or into another folder: its writes are neither restored against the record nor
+// kept out of Git by it.
+func TestApplyWindow_AWithheldApplyStaysWithItsGitTarget(t *testing.T) {
+	teamB := func(f *echoFixture, a, b string) Event {
+		createGitTargetWithPruneMode(t, f.worker, "team-b", "team-b", configv1alpha3.PruneOnEvent)
+		event := carryEdit("bob", a, b)
+		event.GitTargetName = "team-b"
+		return event
+	}
+
+	t.Run("a reverted field", func(t *testing.T) {
+		f := carryWithheld(t, "carry-other-target-field")
+		f.writeWindow(teamB(f, "a1", "b2"))
+		f.publishAny()
+		assert.Contains(t, f.onMain("team-b/default/configmaps/y.yaml"), "a: a1",
+			"team-a's withheld apply does not set team-b's field back")
+		assert.Len(t, f.loop.withheld[carryKey()].Fields, 1, "team-a's record stays")
+	})
+
+	t.Run("an object made again", func(t *testing.T) {
+		f := carryDeleteThenRecreate(t, "carry-other-target-object")
+		f.writeWindow(teamB(f, "a9", "b9"))
+		f.publishAny()
+		assert.Contains(t, f.onMain("team-b/default/configmaps/y.yaml"), "a: a9",
+			"team-a's withheld apply does not keep team-b's object out of Git")
+		assert.Empty(t, f.onMain(echoFile("y")), "team-a's object stays out")
 	})
 }
 
