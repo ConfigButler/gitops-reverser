@@ -147,6 +147,84 @@ func TestWindowAdmission_ClosingOneWindowArmsTheTimerForTheOthers(t *testing.T) 
 	assert.Equal(t, bobAt, f.loop.commitTimerAt)
 }
 
+// TestWindowAdmission_ADocumentAtItsOwnPathIsProvenWhereItLives pins an existing object outside the
+// built-in path: alone in its file, that file is its footprint, and its author keeps a window beside
+// another's.
+func TestWindowAdmission_ADocumentAtItsOwnPathIsProvenWhereItLives(t *testing.T) {
+	custom := echoTarget + "/custom/named.yaml"
+	f := newAdmissionFixture(t, "admission-custom-path", map[string]string{custom: echoDocument("named", "v1")})
+	f.writeBy("alice", "named", "v2")
+	f.writeBy("bob", "z", "z2")
+
+	require.Equal(t, []string{"alice", "bob"}, authorsOf(f.loop.windows.all()))
+	assert.Equal(t, []string{custom}, f.loop.windows.all()[0].footprint.paths)
+	f.publishAny()
+	assert.Equal(t, echoDocument("named", "v2"), f.onMain(custom))
+	assert.Equal(t, echoDocument("z", "z2"), f.onMain(echoFile("z")))
+}
+
+// TestWindowAdmission_ThePushCooldownKeepsWindowsSideBySide pins the commit of a decided write ahead of
+// its push: while the cooldown holds the push, the checkout already holds the write, so a later write
+// is still proven and opens beside the windows left open.
+func TestWindowAdmission_ThePushCooldownKeepsWindowsSideBySide(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-cooldown", nil)
+	f.loop.cooldownHoldsSaves = false
+	f.loop.pushPending()
+	f.loop.lastPushAt = time.Now()
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	f.loop.finalizeWindow(f.loop.windows.all()[0], windowFinalizeReasonIdleTimeout)
+	f.loop.endWake(0)
+	require.Len(t, f.loop.pendingWrites, 1)
+	require.NotNil(t, f.loop.pushTimer, "the cooldown holds alice's push")
+	require.True(t, f.loop.checkoutCurrent(), "and her write is committed already")
+
+	f.writeBy("carol", "q", "q3")
+	f.writeBy("bob", "z", "z3")
+	assert.Equal(t, []string{"bob", "carol"}, authorsOf(f.loop.windows.all()))
+
+	f.loop.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
+	f.loop.endWake(0)
+	f.loop.pushPending()
+	assert.Equal(t, echoDocument("x", "x2"), f.onMain(echoFile("x")))
+	assert.Equal(t, echoDocument("z", "z3"), f.onMain(echoFile("z")))
+	assert.Equal(t, echoDocument("q", "q3"), f.onMain(echoFile("q")))
+}
+
+// TestWindowAdmission_AFailedPushKeepsItsWritesBesideTheOpenWindows pins an outage with windows open:
+// the write the failed push carried stays committed and pending, the other windows go on collecting,
+// and the retry publishes all of it without another edit.
+func TestWindowAdmission_AFailedPushKeepsItsWritesBesideTheOpenWindows(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-outage", nil)
+	f.loop.cooldownHoldsSaves = false
+	f.loop.pushPending()
+	restore := failPushes(t, f.worker)
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	f.loop.lastPushAt = time.Time{}
+	f.loop.finalizeWindow(f.loop.windows.all()[0], windowFinalizeReasonIdleTimeout)
+	f.loop.endWake(0)
+	require.True(t, f.loop.retry.pending())
+	require.Len(t, f.loop.pendingWrites, 1)
+
+	f.writeBy("carol", "q", "q3")
+	f.writeBy("bob", "z", "z3")
+	assert.Equal(t, []string{"bob", "carol"}, authorsOf(f.loop.windows.all()))
+	f.loop.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
+	f.loop.endWake(0)
+	require.Len(t, f.loop.pendingWrites, 3)
+	assert.Equal(t, 3, f.loop.materializedPrefix(), "each is committed locally")
+	assert.Equal(t, echoDocument("x", "x1"), f.onMain(echoFile("x")), "and none is published")
+
+	restore()
+	f.loop.retry.due = time.Now().Add(-time.Second)
+	fireRetry(f.loop)
+	assert.Empty(t, f.loop.pendingWrites)
+	assert.Equal(t, echoDocument("x", "x2"), f.onMain(echoFile("x")))
+	assert.Equal(t, echoDocument("z", "z3"), f.onMain(echoFile("z")))
+	assert.Equal(t, echoDocument("q", "q3"), f.onMain(echoFile("q")))
+}
+
 func TestWindowAdmission_ShutdownClosesEveryWindowOldestFirst(t *testing.T) {
 	f := newAdmissionFixture(t, "admission-shutdown", nil)
 	f.writeBy("alice", "x", "x2")
