@@ -226,8 +226,10 @@ The solution, in the vocabulary used throughout this document:
   `unknown (attribution unresolved)`, so an installation that expects attribution can investigate its audit
   policy, ingress, Redis connection, or source identity instead of mistaking the result for configured-author mode.
 - **One `BranchWorker` per Git branch serializes all writes.** Every write to a branch funnels through a
-  single worker and a single commit window, which keeps concurrent GitTargets and authors from racing
-  each other into a corrupt tree.
+  single worker and its one event loop, which owns the checkout and orders every Git operation, so
+  concurrent GitTargets and authors cannot race each other into a corrupt tree. The loop may hold
+  several commit windows, one per author, only while it proves their files do not overlap
+  ([concurrent-author-windows.md](design/concurrent-author-windows.md)).
 
 ***
 
@@ -756,9 +758,10 @@ flowchart TD
     PUSH --> DONE[Remote branch updated]
 ```
 
-The important boundary is the open window: it accepts only the same author and `GitTarget`. A
-`CommitRequest` from another author never closes someone else's window; it resolves as a benign no-commit
-instead.
+The important boundary is the window: each accepts only the same author and `GitTarget`. Two
+authors keep a window each, side by side, while their files are proven not to overlap; otherwise the
+newcomer's write closes the other window first. A `CommitRequest` attaches only to its own author's
+window and never closes someone else's; with none to attach to, it resolves as a benign no-commit.
 
 ### Remote moved while we were writing
 

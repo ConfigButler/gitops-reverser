@@ -25,8 +25,12 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
     `attachWaitingCommitRequests` survives its removal); a late stale applier write (the model
     never withholds);
   - the GitTarget-generation and checkout-reset parts of a footprint revision are untested;
-  - a counter for window fallbacks (`footprint_fallback` counts the windows it closes, not the
-    fallback).
+  - measure the footprint index on realistic repositories and commit rates before widening the
+    layouts it proves. It is rebuilt whenever its revision changes, every local commit included;
+    a review measured a rebuild at about 3.5 ms and 3.9 MB allocated for 100 small manifests, and
+    33 ms and 37 MB for 1,000 (allocation, not retained heap), against 19 µs for a reuse. The
+    retained-byte budget does not charge the indexes, the accepted versions or the withheld-field
+    records, so a full budget does not bound the worker's memory.
 
 ## Applier claims and bi-directional editing
 
