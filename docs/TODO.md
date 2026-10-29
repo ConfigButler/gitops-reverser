@@ -46,7 +46,7 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
   [branch-worker-event-model.md](design/branch-worker-event-model.md#saves-lose-execution-identity-across-a-restart).
 - [ ] **Gaps in the withheld-field record** (`internal/git/withheld_fields.go`): a field patch in the
   apply window forgets the object's accepted version, so a withhold over it records nothing;
-  `objectKey` leaves out the GitTarget and the cluster (it predates #466); accepted versions held
+  accepted versions held
   for render fidelity (`recordUnpublishedEdits`) and resyncs with `Initial: false` are untested;
   no counter shows how many fields are withheld.
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on

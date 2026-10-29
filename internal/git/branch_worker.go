@@ -1152,10 +1152,10 @@ type branchWorkerEventLoop struct {
 	flushing   bool
 	flushMark  uint64
 	flushEdits map[itypes.ResourceReference]map[string]time.Time
-	// accepted is, by objectKey, the object of the last event an open apply window or the flush
+	// accepted is, by withheldKey, the object of the last event an open apply window or the flush
 	// recorded as an edit, and withheld the fields withheld applies reverted that no event has
 	// changed since: the next event of the object is restored against them (withheld_fields.go).
-	accepted map[string]*unstructured.Unstructured
+	accepted map[withheldKey]*unstructured.Unstructured
 	withheld withheldFields
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
