@@ -159,6 +159,11 @@ type BranchWorker struct {
 	// heldAppliers is how many of this branch's appliers the barrier holds a reason back for, as the
 	// loop last published it, for the apply_appliers_held gauge (barrier.go).
 	heldAppliers atomic.Int64
+	// openWindows is how many commit windows the loop holds open, and singleWindow whether it holds
+	// one at a time since a footprint fallback, as the loop last published them, for the
+	// git_commit_windows_open and git_commit_windows_single gauges.
+	openWindows  atomic.Int64
+	singleWindow atomic.Bool
 	// applyEpoch, appliersAhead and hasAppliers are the loop's ApplyState for the watch side, which
 	// reads it when a snapshot's collection starts (apply_epoch.go).
 	applyEpoch    atomic.Uint64
@@ -1290,6 +1295,8 @@ func (l *branchWorkerEventLoop) endWake(released int64) {
 // there would report a drained queue for a worker that has work.
 func (l *branchWorkerEventLoop) publishLoopState(released int64) {
 	l.w.hasUnpushedWork.Store(l.windows.anyOpen() || len(l.pendingWrites) > 0 || len(l.held) > 0)
+	l.w.openWindows.Store(int64(l.windows.count()))
+	l.w.singleWindow.Store(l.singleWindow)
 	l.syncAdmission(released)
 }
 

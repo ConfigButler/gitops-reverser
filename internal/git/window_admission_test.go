@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
+	"github.com/ConfigButler/gitops-reverser/internal/telemetry"
 	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
@@ -433,6 +435,45 @@ func TestWindowAdmission_AFallbackLeavesOneWindowOpen(t *testing.T) {
 	assert.Equal(t, "alice", f.loop.pendingWrites[decided].Author(), "oldest first")
 	assert.Equal(t, "bob", f.loop.pendingWrites[decided+1].Author())
 	assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="footprint-fallback"`), 2)
+}
+
+// TestWindowAdmission_TheGaugesShowConcurrencyAndAFallback pins what an operator sees of concurrent
+// windows: how many are open side by side, and that a worker has fallen back to one at a time.
+func TestWindowAdmission_TheGaugesShowConcurrencyAndAFallback(t *testing.T) {
+	reader, err := telemetry.InitTestExporter()
+	require.NoError(t, err)
+	f := newAdmissionFixture(t, "admission-gauges", nil)
+	manager := &WorkerManager{Log: logr.Discard(), workers: map[BranchKey]*BranchWorker{{Branch: "main"}: f.worker}}
+	manager.setPublicationGaugeSources()
+	t.Cleanup(func() {
+		for _, name := range publicationGauges {
+			telemetry.SetGaugeSource(name, nil)
+		}
+	})
+	gauge := func(name string) int64 {
+		t.Helper()
+		value, ok := telemetry.CollectInt64Sum(reader, "gitopsreverser_"+name, map[string]string{
+			"gitbranch_namespace": f.worker.GitBranch.Namespace,
+			"gitbranch_name":      f.worker.GitBranch.Name,
+		})
+		require.True(t, ok, name)
+		return value
+	}
+
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	assert.Equal(t, int64(2), gauge(telemetry.GaugeGitCommitWindowsOpen))
+	assert.Zero(t, gauge(telemetry.GaugeGitCommitWindowsSingle))
+
+	refused, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{echoEvent("w", "w1")})
+	require.NoError(t, err)
+	f.loop.pendingWrites = append(f.loop.pendingWrites, *refused)
+	violation := &footprintViolationError{outside: []string{echoFile("w")}, footprint: footprint{}}
+	f.loop.settleFailed(len(f.loop.pendingWrites)-1, fmt.Errorf("%w: %w", errWriteFailed, violation))
+	f.loop.publishLoopState(0)
+
+	assert.Equal(t, int64(1), gauge(telemetry.GaugeGitCommitWindowsOpen))
+	assert.Equal(t, int64(1), gauge(telemetry.GaugeGitCommitWindowsSingle), "the fallback lasts")
 }
 
 func TestFootprint_OverlapUnionAndOutside(t *testing.T) {
