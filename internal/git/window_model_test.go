@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
@@ -1314,17 +1315,62 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 	}
 }
 
+// TestWindowModel_AFootprintCheckVouchesOnlyForItsOwnChange pins the model's evidence that a commit
+// was checked against its footprint. Alice's commit x2 is checked; bob's x3 and carol's return to x2
+// are made with the check skipped. Carol's commit has the tree alice's had, from another parent, so
+// matching the log by tree alone took alice's check as carol's.
+func TestWindowModel_AFootprintCheckVouchesOnlyForItsOwnChange(t *testing.T) {
+	f := newAdmissionFixture(t, "model-footprint-witness", nil)
+	f.loop.pushPending()
+	logs := captureInfo(f.worker)
+	f.writeBy("sentinel", "z", "z2") // company, so every window after it is proven
+	commit := func(author, value string, skipCheck bool) string {
+		f.writeBy(author, "x", value)
+		windows := f.loop.windows.all()
+		require.Len(t, windows, 2)
+		if skipCheck {
+			windows[1].footprint = nil
+		}
+		f.loop.lastPushAt = time.Time{}
+		f.loop.finalizeWindow(windows[1], windowFinalizeReasonIdleTimeout)
+		f.loop.endWake(0)
+		f.loop.pushPending()
+		return gitIn(t, f.repoDir, "rev-parse", "main")
+	}
+	checked := commit("alice", "x2", false)
+	commit("bob", "x3", true)
+	unchecked := commit("carol", "x2", true)
+	require.Equal(t, gitIn(t, f.repoDir, "rev-parse", checked+"^{tree}"),
+		gitIn(t, f.repoDir, "rev-parse", unchecked+"^{tree}"), "precondition: carol returns to alice's tree")
+	require.Len(t, logs.matching(decisionFootprintChecked), 1, "precondition: only alice's commit was checked")
+
+	r := &windowModelRun{t: t, f: f, logs: logs}
+	require.True(t, r.footprintChecked(checked))
+	require.False(t, r.footprintChecked(unchecked), "alice's check is not evidence for carol's commit")
+}
+
 // checkFootprintChecked fails unless the worker checked the commit against its window's footprint
-// itself: one that skipped it would let a footprint bug through unrefused. It is matched by tree: a
-// rebuild of the prefix onto the same parent (a resync's fetch) makes the checked commit again, under
-// another hash.
+// itself: one that skipped it would let a footprint bug through unrefused.
 func (r *windowModelRun) checkFootprintChecked(what, hash, author string, f *modelFootprint) {
 	r.t.Helper()
-	tree := gitIn(r.t, r.f.repoDir, "rev-parse", hash+"^{tree}")
-	if len(r.logs.matching(`"tree"="`+tree+`" "footprint"=`)) == 0 {
+	if !r.footprintChecked(hash) {
 		r.failf("%s: commit %s by %s had a footprint %s, and the worker did not check it (%s)", what,
 			hash[:8], author, f, decisionFootprintChecked)
 	}
+}
+
+// footprintChecked reports whether the worker logged a footprint check of the commit's change. It is
+// matched by the commit's tree and its parent's: a rebuild of the prefix onto the same parent (a
+// resync's fetch) makes the checked commit again, under another hash, while a later commit that
+// returns to a checked tree from another parent is another change.
+func (r *windowModelRun) footprintChecked(hash string) bool {
+	r.t.Helper()
+	tree := gitIn(r.t, r.f.repoDir, "rev-parse", hash+"^{tree}")
+	parentTree := plumbing.ZeroHash.String()
+	if gitIn(r.t, r.f.repoDir, "rev-list", "--parents", "-n", "1", hash) != hash {
+		parentTree = gitIn(r.t, r.f.repoDir, "rev-parse", hash+"^^{tree}")
+	}
+	return len(r.logs.matching(`"tree"="`+tree+`" "parentTree"="`+parentTree+`" "footprint"=`)) > 0
 }
 
 // checkFile compares the file at path in rev, parsed, with what the model says it holds: the

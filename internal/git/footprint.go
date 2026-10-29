@@ -496,22 +496,27 @@ func (w *BranchWorker) checkFootprint(
 	return true, nil
 }
 
-// logFootprintChecked logs the commit checkFootprint checked, once it is made. The tree names what
-// was checked across a rebuild of the commit onto the same parent, which makes a new commit of it and
-// checks it no more: its actions were decided already.
+// logFootprintChecked logs the commit checkFootprint checked, once it is made. The tree and its
+// parent's tree name the change that was checked across a rebuild of the commit onto the same
+// parent, which makes a new commit of it and checks it no more: its actions were decided already.
+// The tree alone is not enough: a later commit can return to the same tree from another parent, by
+// a change nobody checked.
 func (w *BranchWorker) logFootprintChecked(
 	repo *gogit.Repository, hash plumbing.Hash, pendingWrite *PendingWrite, checked bool,
 ) {
 	if !checked {
 		return
 	}
-	var tree plumbing.Hash
+	var tree, parentTree plumbing.Hash
 	if commit, err := repo.CommitObject(hash); err == nil {
 		tree = commit.TreeHash
+		if parent, err := commit.Parent(0); err == nil {
+			parentTree = parent.TreeHash
+		}
 	}
 	w.Log.Info("Checked a commit against its window's footprint", "branch", w.Branch,
-		"commit", hash.String(), "tree", tree.String(), "footprint", pendingWrite.footprint.String(),
-		"decision", decisionFootprintChecked)
+		"commit", hash.String(), "tree", tree.String(), "parentTree", parentTree.String(),
+		"footprint", pendingWrite.footprint.String(), "decision", decisionFootprintChecked)
 }
 
 // provenOnCheckout reports whether rev is the revision the checkout is at now.
