@@ -33,12 +33,16 @@ func TestRedisFactStream_StreamKeyLayout(t *testing.T) {
 
 // TestRedisFactStream_TrimIsRateLimited pins the amortized trim: the first publish on a stream
 // trims it, and a publish inside the same interval does not.
+//
+// Nothing is asserted about the opening publish's own entry. Its trim runs after its XADD, so with
+// a 1 ms TTL a slow moment between the two ages that entry out.
 func TestRedisFactStream_TrimIsRateLimited(t *testing.T) {
 	store, mr := newTestRedisStoreWithRedis(t)
 	stream := store.FactStream(RedisFactStreamConfig{TTL: time.Millisecond, TrimInterval: time.Hour})
 	key := factStreamTestKey("", "configmaps")
 	ctx := t.Context()
 
+	require.NoError(t, stream.PublishFacts(ctx, key, authorFacts("opening")))
 	require.NoError(t, stream.PublishFacts(ctx, key, authorFacts("first")))
 	time.Sleep(10 * time.Millisecond)
 	require.NoError(t, stream.PublishFacts(ctx, key, authorFacts("second")))
@@ -47,7 +51,10 @@ func TestRedisFactStream_TrimIsRateLimited(t *testing.T) {
 	// the TTL horizon is enforced only when the next trim comes due.
 	entries, err := mr.Stream(stream.streamKey(key))
 	require.NoError(t, err)
-	require.Len(t, entries, 2)
+	require.GreaterOrEqual(t, len(entries), 2)
+	recent := entries[len(entries)-2:]
+	require.Contains(t, recent[0].Values[1], `"author":"first"`)
+	require.Contains(t, recent[1].Values[1], `"author":"second"`)
 }
 
 // TestRedisFactStream_StreamExpiresWhenNobodyWritesToItAnyMore pins the counterpart to the
