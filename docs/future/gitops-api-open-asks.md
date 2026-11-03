@@ -1,37 +1,38 @@
 # gitops-reverser in production: how we use it, and what we'd still like
 
-_From the [gitops-api](https://github.com/ConfigButler/gitops-api) team. **Revision 17, 2026-10-26**
+_From the [gitops-api](https://github.com/ConfigButler/gitops-api) team. **Revision 19, 2026-10-28**
 (first sent 2026-07-09). Written to be readable from the gitops-reverser repo — no gitops-api
 knowledge assumed. Every ask is traced to something we measured on a running system. **We run
-`v0.54.0`.**_
+`v0.55.0`.**_
 
 ## Where this stands
 
-**`0.54.0` closed every ask we had open but three, and we adopted it the day it was tagged.** It
-reshaped every connection object with no in-place migration, so we rebuilt our cluster rather than
-migrate it; loop conformance 21/21 and our editor click-through pass on it. #30 shipped as
-`GitReceiver` and deleted more of our code than any release since #1: one receiver for the whole
-platform, so our relay now forwards GitHub's delivery verbatim, with no per-repository token, Role
-or receiver. Adoption write-up: [reverser-0.54-adoption.md](https://github.com/ConfigButler/gitops-api/blob/main/docs/design/reverser-0.54-adoption.md).
+**`0.55.0` closed both our open asks and the `kube-root-ca.crt` vote, and we adopted it the day it
+was tagged.** The source-cluster `CommitRequest` deleted more of our code than #30 did: our editor now
+saves inside the customer's own kcp workspace, with their own token, so our save endpoint, our
+per-repository commit lock, the one grant a customer held on our management cluster, and your
+admission webhook with its certificate are all gone. On a rebuilt cluster: loop conformance 21/21,
+our editor click-through 77/77, a save's `ConfigPublication` published 33 ms after its `Applied`, and
+the first snapshot after the rebuild made no commit at all. Adoption write-up:
+[reverser-0.55-adoption.md](https://github.com/ConfigButler/gitops-api/blob/main/docs/design/reverser-0.55-adoption.md).
 
-**One new ask, #35, and unlike the last few it costs us something today.** `0.54.0` stopped
-applying the forward leg after the reverser's own pushes, which is right for the cluster and leaves
-the applier's own state — its applied revision, its source artifact — behind the branch until
-somebody else pushes. We read that state to publish. Details and a proposal below.
-
-**We accept your reasoning for deferring #28**: a namespace split leaves the CRDs and the
-ClusterRole shared, and the cost that reaches users (a restart dropping an open window) is better
-fixed inside one instance — which is the second vote below.
+**Six asks are new since then.** Three are small and came from the adoption. The other three came
+from tuning the editor's save the day after. **#39 is the one that matters**: with your defaults, a
+save's message can land on somebody else's change.
 
 | Open | What it is |
 |---|---|
-| **35** 🟡 new | Converge the applier on the reverser's own pushes, at a bounded rate |
-| **34** 🟡 | An e2e for an in-cluster applier with a remote source cluster — our production topology |
+| **39** 🟠 new | `CurrentOrNext` gives a save's message to an earlier, unclaimed write of the same author, and your defaults do it too |
+| **40** 🟡 new | A request's progress is reported on a fixed 2 s poll, so a save's latency moves in 2 s steps |
+| **41** 🟡 new | A push that resolves a `CommitRequest` waits out the 5 s `PushCooldown` |
+| **38** 🟡 new | A source-cluster request naming a `GitTarget` that does not mirror that cluster gets no status at all |
+| **37** ⚪ new | Default `gitTargetRef.namespace` on a source cluster to the serving `KubeProvider`'s namespace |
+| **36** ⚪ new | `AuthorUnresolved` as a failure (`Ready=False`), not a success |
 | **10** ⚪ | Sibling inference can place an object in another namespace's directory — cosmetic |
 | **28** ⏸ | Two instances on one config-plane cluster — deferred, by agreement |
 
-Plus two **votes for items already on your TODO**, with our evidence: filtering `kube-root-ca.crt`,
-and the durable worker queue.
+Plus two **votes for items already on your list**: the durable worker queue, and
+`concurrent-author-windows.md`.
 
 ## Who we are
 
@@ -76,58 +77,97 @@ when they part.
 
 ## Open asks
 
-### 35. Converge the applier on the reverser's own pushes, at a bounded rate
+### 39. `CurrentOrNext` gives a save's message to somebody else's writes
 
-**Ask.** A periodic converge: when an applier's last applied commit is behind the branch tip, and
-nothing else is pending for it, apply the tip — **at most once per interval**. For example
-`FluxClaim.spec.convergeInterval` / `ArgoCDClaim.spec.convergeInterval`, defaulting to something like
-`1m`, with `0` keeping `0.54.0`'s behaviour. The decision stays in the branch worker, like every
-other one; the claim's own periodic reconcile may be the natural clock. Batched by construction: a
-burst of saves inside one interval costs one apply, not one per push.
+**Ask.** If a request attaches to a window that was already open when it registered, keep that
+window's own timers until a write arrives after the registration. Alternatively make `Next` the
+default. At the least, say in the CRD docs that `CurrentOrNext` can label writes the request never
+saw.
 
-It is a timer on a reason you already have. A `Converge` already applies the tip "because nothing
-says the applier runs it", and already asks nothing when the applier's last succeeded operation
-applied that commit. Today it fires once at worker start and once per new `GitTarget`; this asks for
-it on a clock as well.
+**Why.** An attached request replaces the window's timers with its own, and they are measured from
+the window's past. Suppose a write of the same author was claimed by no request (kubectl, or the
+tail of an earlier save). It leaves a window open on the `GitTarget`'s 5 s idle timer. A save that
+registers inside that window attaches to it, and the window then closes on the save's timers
+(`maxDuration: 2s`, or an `idleTimeout` already past), before the save's own writes reach the worker.
+The result, measured with a write made just before the request was filed:
 
-**Why.** `applier-echoes.md` S2 is right about the cluster: after the flush, an apply following the
-worker's own push changes no object, so it protects nothing there. But the applier's **own state**
-is read by other things, and on `0.54.0` that state stops moving:
+- the request's message is committed on the earlier write;
+- the save's own writes commit under the generated message;
+- the request reports `Committed`.
 
-- the `Kustomization`'s `status.lastAppliedRevision`;
-- the `GitRepository`'s artifact. It fetches only when the claim asks it to apply, so it stays at
-  the last foreign commit as well;
-- everything downstream of those two: Flux's commit-status notifications, `flux get kustomizations`,
-  any promotion or packaging step that consumes "what was applied".
+**Your defaults do it too**, not just our tuning. Our click-through caught it as a shift by one:
+three saves in a row, each message on the previous save's change. We now file `attach: Next`, which
+fixes it. The cost is one extra push and then #41's cooldown, so the fix costs us about 4 s whenever
+it is needed.
 
-Measured on `0.54.0`, after one conformance run and one editor click-through: branch tip
-`be3b08d2`, artifact **and** applied revision `c81500d0`, the last commit somebody else pushed —
-**15 commits behind, and it moves only when somebody pushes in GitHub.** On `0.53.0` the quiet-branch
-`CatchUp` kept them level.
+**Answer (gitops-reverser, PR #465): fixed by #40, and the window rule stays.** The request's timers
+do not reach into the window's past: its `maxDuration` and its first idle interval start at the
+attach. The shift by one came from #40's poll. Your client waits for `WaitingForWindow` before it
+writes, and that status took up to 2 s to appear, as long as the default `maxDuration`. So the
+window had closed under the save's message before the save's writes arrived, and those writes
+opened the window the next save attached to. With #40 the registration reaches the client in about
+56 ms. `TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange` pins three saves in a row,
+each message on its own change, and fails with a 2.1 s client delay.
 
-It costs us one feature. We publish each repository's folder as an OCI image from what the forward
-leg **applied** (applied revision == artifact revision), downloaded from source-controller. On
-`0.54.0` an edit made in our editor is mirrored, committed and attributed perfectly, and then never
-published until an unrelated push happens. We cannot work around it from our side: the only lever
-we have is to fetch or reconcile the Flux objects ourselves, and reconcile ownership tells us — rightly
-— that a fetch of ours between your check and your resume applies a commit nobody checked.
+We tried your first option, holding a save's timers until its first write after the attach, and
+took it out again. It made the `GitTarget`'s timers decide when an attached save commits: a
+`GitTarget` with a short `idleTimeout` brought the bug back, and a folder applied together with its
+`CommitRequest` waited 5 s instead of 2 s. `CurrentOrNext` stays the default, and you can drop
+`attach: Next`, so you no longer pay that extra push either. What remains: a save's writes must reach
+GitOps Reverser within `maxDuration` of the attach. On a slow audit pipeline, raise `maxDuration`.
 
-**Why not after every push.** That was `0.53.0`'s `CatchUp` minus the quiet period, and it would make
-every save cost an apply. A bounded interval keeps the applier eventually level for whoever reads its
-state, and the cluster pays at most one no-op apply per interval per applier.
+### 40. Report a request's progress without the 2 s poll
 
-### 34. An e2e for an in-cluster applier with a remote source cluster
+**Ask.** Wake the serving goroutine when the worker registers, resolves or applies a request,
+instead of polling `commitRequestPollInterval = 2s` (`commitrequest_controller.go:63`,
+`recordPhase` in `commitrequest_core.go`). Failing that, poll at ~100 ms while the phase is still
+`""`.
 
-**Ask.** One e2e where the `GitTarget`'s `KubeProvider` names a remote cluster (`secretRef`) and the
-`FluxClaim`'s names the operator's own (`inCluster`), with an API edit landing during an apply.
+**Why.** A save's visible latency moves in 2 s steps. Measured create → registered: ~200 ms to the
+claim (author found), then ~2 s until the next poll reports `WaitingForWindow`. The same 2 s comes
+again between push and `Ready`, and on the `Applied` follow. Waiting for registration before writing
+is what makes `SaveInProgress` safe, so a client has no way around this poll. About 3 s of our ~6.8 s
+save is this poll.
 
-**Why.** It is our production topology: Flux runs in the management cluster and applies into a remote
-workspace through `spec.kubeConfig`; the reverser reads that workspace remotely and holds the
-`Kustomization` locally. We have proven the hold, the apply cycle, the receiver and `ForeignCommit`
-in it (21/21 in our conformance probe, on `0.53.0` and on `0.54.0`). We have **not** seen the apply
-window withhold anything in it — `apply_window_collisions_total` stayed at zero across every run —
-so the part of #29 that reads `managedFields` on the remote object is untested in this topology by
-anyone. An e2e that provokes one collision would settle it.
+### 41. Skip `PushCooldown` for a push a `CommitRequest` waits on
+
+**Ask.** Push at once when the commit resolves an attached request, as an apply flush already does
+(`branch_worker.go`, `PushCooldown = 5s`).
+
+**Why.** A person is watching that push. With `attach: Next` (#39), every save that finds an open
+window pushes twice, and the second push waits out the cooldown: ~10.8 s instead of ~6.8 s. Two
+saves in a row hit it the same way.
+
+### 38. Refuse a source-cluster request whose `GitTarget` does not mirror that cluster
+
+**Ask.** A `CommitRequest` on a source cluster that names a `GitTarget` mirroring some _other_
+cluster should end `NotAllowed`, the way `0.55.0` already refuses the opposite direction (a request
+on the control cluster for a `GitTarget` that mirrors another cluster).
+
+**Why.** Measured: a request in one tenant's workspace naming a `GitTarget` that mirrors our
+management cluster stayed with **no status at all**, and nothing was logged, until we deleted it by
+hand. The serving path is not its owner, so it rechecks every 5 minutes
+(`commitRequestUnownedRecheck`). The boundary holds, which is the important half: it is never served
+and attaches to nothing. But its creator waits for ever, and because the request is never finished
+it is also never collected; our tenants hold no `delete` on the type, so it outlives every TTL.
+
+### 37. Default `gitTargetRef.namespace` on a source cluster
+
+**Ask.** On a source cluster, let an omitted `spec.gitTargetRef.namespace` mean the namespace of the
+`KubeProvider` the request is served through.
+
+**Why.** Every one of our `GitTarget`s lives beside its `KubeProvider`, and that namespace is an
+infrastructure compartment our customers are not meant to know about. Today it must appear in an
+object they can read. It is a name, not a credential, so this is polish.
+
+### 36. `AuthorUnresolved` as a failure
+
+**Ask.** End a request no audit event names with `Ready=False` / `Stalled=True`, not `Ready=True`.
+
+**Why.** It is the one outcome that means an audit event was dropped (kcp drops the event of a
+YAML-bodied write, and we have been bitten), and the save's typed message is lost with it. Ready=True
+reads as success to every client that waits for `Ready`. Your new
+`commit_requests_total{outcome="author_unresolved"}` counter covers our alarm in the meantime.
 
 ### 10. Sibling inference can place an object in another namespace's directory — ⚪ cosmetic
 
@@ -151,22 +191,18 @@ everyone. Our analysis: [reverser-instance-topology.md](https://github.com/Confi
 
 ## Votes for your own TODO
 
-Both are already on your list. These are the measurements behind our vote, not new asks.
+These are the measurements behind our vote, not new asks.
 
-**Filter `kube-root-ca.crt`** (`docs/TODO.md`, "Filter more cluster-generated noise"). Our tenants
-mirror ConfigMaps, so every tenant repository carries the workspace's cluster CA certificate — a
-file nobody wrote, that means nothing outside that one cluster. Every rebuild of the cluster gives
-it a new CA, and the first snapshot commits the change as a `message_source="reconcile"` commit by
-the committer. That is the only commit-without-a-human our alarm
-(`git_commits_total{author_kind="committer"}`) sees, and it fires once per rebuild on every
-tenant. A default filter, with an opt-back-in for whoever really wants it, would remove both.
+**The durable worker queue** (`docs/TODO.md`, "Make the worker queue durable"). The one cost of
+sharing an instance that our users can see. `RenderMatchesLive` starts `Unknown` after a restart, an
+open commit window is dropped, and a save made in that window loses the message its author typed.
+It is the last item standing between us and "a deploy of the reverser is invisible to the people
+editing".
 
-**The durable worker queue** (`docs/TODO.md`, "Make the worker queue durable"). This is the one cost
-of sharing an instance that our users can see. `RenderMatchesLive` starts `Unknown` after a restart,
-an open commit window is dropped, and a save made in that window loses the message its author typed
-and its attribution. `0.54.0`'s #443 now holds live edits while fidelity is pending, which fixes the
-edit; as far as we can tell the window's message is still dropped. It is the last item standing
-between us and "a deploy of the reverser is invisible to the people editing".
+**`concurrent-author-windows.md`**, for when our tenants get several editors. Today each has one
+human, so `SaveInProgress` covers us. Our answer to its open question 4: report a window that a
+`path_conflict` closed early, because a save that commits less than its author meant to save,
+silently, is the bug we built our own lock for.
 
 ## Process notes
 
@@ -176,6 +212,12 @@ between us and "a deploy of the reverser is invisible to the people editing".
   behaviour. When a field is simply removed, the API server prunes it and the object stays
   `Ready=True`, so we write tests asserting the _absence_ of old spellings. Making
   rejection-before-removal the default would make those tests unnecessary.
+- **`SaveInProgress` is decided at registration, seconds after `Saving`.** `UPGRADING.md` tells a
+  client to wait for `Ready=Unknown` before its edit. That is right for `idleTimeout: "0s"`, but a
+  client relying on `SaveInProgress` to serialise saves must wait for `WaitingForWindow`: measured, a
+  second save sat at `Saving` with its author set for ~3 s and was then refused. Our first build
+  applied at `Saving` and wrote into the other save's window. One sentence in the guide would save
+  the next adopter that run.
 - **`0.54.0`'s "recreate the connection objects" was the right call** for a reshape this size, and
   `UPGRADING.md`'s eight steps were complete. We rebuilt rather than followed them, which a
   disposable cluster allows, and found nothing missing from the guide.
@@ -191,7 +233,7 @@ One line each: what happened, and whether we are happy.
 | 1 | Separate the config plane from the watched cluster | `v0.38.0` (#249/#251), #259 | **Happy** — one reverser now serves our whole platform; it deleted a tier of our architecture |
 | 3 | A Redis key prefix | #221 | **Happy** — defaulted to the historic root, no migration |
 | 4 | Export `pkg/manifestanalyzer` | #221 | **Happy** — the foundation of our wizard's folder step |
-| 5 | A `CommitRequest` that can assert an author | the admission webhook records the submitter (#220 itself closed unmerged) | **Happy** — a save's author comes from who filed it |
+| 5 | A `CommitRequest` that can assert an author | the admission webhook (#220 closed unmerged), then `0.55.0`: the author comes from the request's own audit event | **Very happy** — no webhook, and it works on a source cluster |
 | 6 | Movable `GitTarget` destination, or fail loudly | immutability that fails at admission with "delete and recreate" | **Happy** — we delete and recreate, now for a `GitBranch` too |
 | 7 | Degrade without `apiregistration.k8s.io` | #223, `v0.34.0` | **Happier than asked** — un-started rather than blacklisted |
 | 8 | Never sweep the mirror to empty | `v0.39.0` (#260), `prune.mode: OnEvent` | **Very happy** — an API default, not a guard we maintain |
@@ -210,6 +252,9 @@ One line each: what happened, and whether we are happy.
 | 31 | Count "resumed elsewhere" in a metric | `0.54.0`, `apply_claimed_resource_reconciled_total` | **Happy** — we alert on it |
 | 32 | A troubleshooting row for a full-spec writer | `0.54.0`, the Flux guide | **Happy** |
 | 33 | Say why `prefetch` is false | `0.54.0` (#425), prefetch removed | **Happy** |
+| 34 | An e2e for an in-cluster applier with a remote source cluster | `0.55.0` (#456), scenario 10 | **Very happy** — it found a real apply-window bug in our topology |
+| 35 | Converge the applier on the reverser's own pushes | `0.55.0` (#456), `FluxClaim.spec.catchUpAfter` + `CommitRequest.spec.catchUp: AfterPush` | **Happier than asked** — a save is published 33 ms after its apply |
+| — | Filter `kube-root-ca.crt` (a vote) | `0.55.0` | **Happy** — a rebuild makes no commit at all |
 | — | `WatchRule` readiness lag (never filed) | `0.44.0` (#343) | **Happy** — rule readiness is usable as an alert |
 
 **#2 — ignore writes by an identity or field manager. ⚫ WITHDRAWN 2026-07-14, our mistake.** The
@@ -217,8 +262,8 @@ forward leg's echo is self-terminating: the applier applies the commit the rever
 content matches, the echo commits nothing. We built the filter ourselves and **it caused a
 two-and-a-half-minute flip-flop**, every commit unattributed. **Please never add
 `excludeUsers`/`excludeFieldManagers` on our account** —
-[why](https://github.com/ConfigButler/gitops-api/blob/main/docs/design/forward-leg-loop.md). The right
-shape was the one you already had: sanitize the content, do not filter the writer.
+[why](https://github.com/ConfigButler/gitops-api/blob/main/docs/design/forward-leg-loop.md). The right shape
+was the one you already had: sanitize the content, do not filter the writer.
 
 ## What is _not_ upstream's problem
 
@@ -233,8 +278,8 @@ So a wishlist does not become a blame list:
 
 ## Suggested order
 
-1. **#35** — the only open ask with a cost to us today, and a timer on a reason you already have.
-2. **#34** whenever the e2e budget allows — our production topology, and the one part of #29 nobody
-   has seen work in it.
-3. The two TODO items above, in whichever order your plan already has them.
-4. **#10** — cosmetic, whenever.
+1. **#39** — the one that commits a person's sentence on the wrong change, with defaults.
+2. **#38** — small, and the only one where a client can wait for ever.
+3. **#40** and **#41** — together they are about half of a save's latency.
+4. The two votes, in whichever order your plan already has them.
+5. **#36**, **#37** and **#10** — polish, whenever.
