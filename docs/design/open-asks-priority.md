@@ -26,7 +26,7 @@
 > on its own, and **the GitTarget work is deliberately not in it**. The standing caveat has since
 > narrowed, because [`../layout/model.md`](../layout/model.md) reversed and the placement work is no
 > longer breaking: **a Tier 2 entry belongs to the postponed wave only if it changes a `GitTarget`
-> field in a breaking way**, and [`gittarget-api-wave.md`](gittarget-api-wave.md) is the one place
+> field in a breaking way**, and `gittarget-api-wave.md` (removed) is the one place
 > that lists which those are. Everything else here — the placement fields, `suspend`,
 > `status.placement`, and every Tier 1 entry — is additive and independently schedulable, and should
 > not wait for a bump.
@@ -41,7 +41,7 @@
 > Three backlogs are open at once and they overlap: the downstream consumer asks (revision 11,
 > 2026-07-28, which is the revision that filed #23), the API-surface block left unbuilt by the
 > status and configuration-model review — now sequenced in
-> [`gittarget-api-wave.md`](gittarget-api-wave.md) — and the config-surface proposal in
+> `gittarget-api-wave.md` (removed) — and the config-surface proposal in
 > [`config-surface-for-a-structured-repository.md`](../future/config-surface-for-a-structured-repository.md)
 > (B1–B6). This page merges them into one queue and says where we deliberately do **not** do
 > what was asked.
@@ -253,18 +253,18 @@ and is not independently schedulable.
 |---|---|---|---|---|
 | ~~15~~ | ~~A declared `auditRoute` with zero facts must say so~~ **SHIPPED** as the latched `AuditFactsReceived` condition and `FACTS` column on `ClusterProvider` | consumer | — | — |
 | n/a | Stop paying a full grace for a delete fact that will never arrive (F, then C) | [`attribution-removal-wait-options.md`](attribution-removal-wait-options.md) | **1** | — |
-| F9 | The `scope: Namespaced` status-write envtest | maintainer review | **1** | outside the wave, and **gates its planning**: the answer decides whether the narrowed enum can be kept ([`gittarget-api-wave.md`](gittarget-api-wave.md)) |
-| ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
+| F9 | The `scope: Namespaced` status-write envtest | maintainer review | **1** | outside the wave, and **gates its planning**: the answer decides whether the narrowed enum can be kept (`gittarget-api-wave.md` (removed)) |
+| ~~n/a~~ | ~~A declared path in a kustomize subdirectory is never rendered; the identity gate rejects the versionless canonical path~~ **SHIPPED** in 0.42.1 | `placement-visibility-and-declared-defaults.md` (removed) | — | [#295](https://github.com/ConfigButler/gitops-reverser/issues/295), [#319](https://github.com/ConfigButler/gitops-reverser/pull/319) |
 | n/a | `useKustomize` and `serializeNamespace`: the two things a path template cannot say (`spec.layout` was reversed) | [`../layout/model.md`](../layout/model.md) | **2** | [#322](https://github.com/ConfigButler/gitops-reverser/issues/322), **not** breaking, so not the wave |
-| F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see [`gittarget-api-wave.md`](gittarget-api-wave.md)) | maintainer review | **2** | wave |
+| F6 | `spec.suspend`, `GitProvider.spec.interval`, `requestedAt` (no `interval` on `GitTarget`, see `gittarget-api-wave.md` (removed)) | maintainer review | **2** | wave |
 | ~~5~~ | ~~`CommitRequest.spec.author`, SAR-guarded~~ **declined**: authorship is established, never asserted | consumer (#220) | — | [`attribution.md`](../spec/attribution.md#authorship-is-established-never-asserted) |
 | B4 | `commitWindow` / `commit.message` move to GitTarget | config surface | **2** | wave |
-| ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` already stops the writes, and `mode` buys only a declared posture over a pause | config surface | — | [`gittarget-api-wave.md`](gittarget-api-wave.md) |
+| ~~B1~~ | ~~`GitTarget.spec.mode: Observe\|Write`~~ **dropped**: `suspend` already stops the writes, and `mode` buys only a declared posture over a pause | config surface | — | `gittarget-api-wave.md` (removed) |
 | 6 | Movable destination via `status.observedDestination` | consumer (#220) | **refused** | the destination stays immutable; a folder moves by delete-and-recreate |
 | F10 | CommitRequest TTL / ownerRef + the `delete` verb | maintainer review | **2** | wave |
 | n/a | The blocking resolve is head-of-line on the shard goroutine | [`../spec/attribution.md`](../spec/attribution.md#the-wait) | **2** | — |
 | B2 | `GitTarget.status.placement` (was `status.layout`) | config surface | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
-| n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
+| n/a | The ambiguous render root, the `declared` metric split, `{kindLower}`, canonical-as-template | `placement-visibility-and-declared-defaults.md` (removed) | **3** | [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) |
 | B6 | The `default` ClusterProvider not-found message | config surface | **3** | — |
 | n/a | An aggregated create carries no name and no body: accept it, or stop waiting for it | [`../spec/attribution.md`](../spec/attribution.md#what-the-shape-driven-rules-reach-and-what-they-do-not) | **3** | — |
 | n/a | Entry-size ceiling and per-type stream count under a few hundred watched types | [`attribution-fact-stream.md`](../finished/attribution-fact-stream.md) | **3** | — |
@@ -463,7 +463,7 @@ the page whose *answer is unknown* rather than whose work is unscheduled, and be
 downstream assumes an answer. If the apiserver validates the whole object on a status-subresource
 write, the narrowed `ClusterWatchRule` enum leaves the one object that most needs to explain itself
 unable to write its own `Stalled` condition. The test, the version it has to name and the fallback
-are in [`gittarget-api-wave.md`](gittarget-api-wave.md). Run it before planning anything that
+are in `gittarget-api-wave.md` (removed). Run it before planning anything that
 depends on it.
 
 ### Tier 2: the breaking wave, all at once, while `v1alpha3`
@@ -652,5 +652,5 @@ defects.
 9. Not letting a decided-but-unbuilt list read as imminent. The placement work is filed as
    [#295](https://github.com/ConfigButler/gitops-reverser/issues/295) (correctness) and
    [#296](https://github.com/ConfigButler/gitops-reverser/issues/296) (visibility);
-   [`placement-visibility-and-declared-defaults.md`](placement-visibility-and-declared-defaults.md)
+   `placement-visibility-and-declared-defaults.md` (removed)
    now says which of its eight items shipped, which is **none of them**.

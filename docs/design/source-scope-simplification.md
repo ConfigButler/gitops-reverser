@@ -184,7 +184,7 @@ hundred list calls at warm-up today, one per namespace, each with its own cursor
 schedule and its own share of apiserver watch cache. Cluster-wide makes it one of each, and the
 saving grows with the cluster, which is exactly the direction the enumeration got worse in. A
 stream-count cap had been queued to bound that fan-out; with the fan-out deleted, the cap was dropped
-rather than resized ([`gittarget-api-wave.md`](gittarget-api-wave.md)).
+rather than resized (`gittarget-api-wave.md` (removed)).
 
 ## Consequences, including two breaking semantic changes
 

@@ -4,9 +4,7 @@
 > "What shipped" at the end records where the implementation departed from this page and why.
 > Index: [`../INDEX.md`](../INDEX.md)
 > Date: 2026-08-27.
-> Related: [`target-watch-plan.md`](target-watch-plan.md),
-> [`data-plane-triggering.md`](data-plane-triggering.md),
-> [`watch-and-catalog-architecture.md`](watch-and-catalog-architecture.md)
+> Related: [`target-watch-plan.md`](target-watch-plan.md)
 
 **The short version.** A rule edit is applied by the controller worker that observed
 it, synchronously, and it re-plans every GitTarget in the process rather than the one
@@ -395,7 +393,7 @@ no reason to walk every resident table because one rule changed.
 Its filter goes with it, and that is worth naming separately: it re-plans only targets
 already present in `m.targetWatches`, which means **a target whose first declare never
 completed is never picked up again**. That property is a trap. It is the reason a stuck
-GitTarget in [`e2e-declare-investigation.md`](../finished/e2e-declare-investigation.md) could
+GitTarget in `e2e-declare-investigation.md` (removed) could
 never recover on its own. A dirty set marked on intent rather than on success does not
 have it.
 

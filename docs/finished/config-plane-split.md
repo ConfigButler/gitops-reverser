@@ -663,7 +663,7 @@ No `observedDestination` / `retargetingTo` — those belong to #6.
 - `spec.kubeConfig` is a new optional field. Existing installs are unaffected:
   absent → local cluster → today's behavior, byte for byte.
 - This design intentionally closed the older `SourceCluster` CRD proposal. The later
-  [`ClusterProvider` attribution design record](multi-cluster-author-attribution.md) explains why
+  `ClusterProvider` attribution design record explains why
   the source connection was subsequently given a cluster-scoped home.
 
 ## Future shape (designed-in, not built)
@@ -932,7 +932,7 @@ YAML applied to the cluster. The source-cluster corner is its own gated leg
 4. **Least-privilege ClusterRole shape on the remote.** Ship a documented broad
    read ClusterRole, or require the operator to grant per-type read and degrade
    unobservable cells gracefully (ties into
-   [`watch-and-catalog-architecture.md`](../design/watch-and-catalog-architecture.md) §1.7)?
+   `watch-and-catalog-architecture.md` (removed) §1.7)?
 5. **`GitProviderReady` projection trigger and `Ready` gating.** Wire a
    `Watches(&GitProvider{})` so a provider going un-ready promptly re-reconciles its
    GitTargets (best, but adds an edge to the set that

@@ -385,6 +385,5 @@ writer takes sensitivity from the operator's sensitive-resource policy.
 ## References
 
 - [scale-subresource-audit-rehydration.md](scale-subresource-audit-rehydration.md)
-- [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md)
 - [resource-types.yaml](../facts/resource-types.yaml)
 - [subresources.md](../facts/subresources.md)

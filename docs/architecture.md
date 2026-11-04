@@ -1326,8 +1326,7 @@ peer of any named-namespace collection on the same type, never a replacement for
 
 Desired state comes from one **raw watch per `(GitTarget, GVR, scope)`**. Each event is sanitized, diffed
 against current Git content, and applied. There is no separate per-type object store to reconstruct,
-because Git already holds current state. This section is the authoritative contract; the
-[watch-first design record](finished/watch-first-ingestion-architecture.md) is historical context.
+because Git already holds current state. This section is the authoritative contract.
 
 - **Manager**: [internal/watch/manager.go](../internal/watch/manager.go)
 - **Watch / replay / sweep**: [internal/watch/target_watch.go](../internal/watch/target_watch.go)
@@ -2035,8 +2034,6 @@ Deeper dives live under [docs/design/](design/):
 
 **Ingestion, attribution, and reconcile:**
 
-- [Watch-first ingestion design record](finished/watch-first-ingestion-architecture.md): historical context
-  for the current watch-only object-state model and optional audit attribution.
 - [Attribution: how a commit gets its author](spec/attribution.md):
   the two halves, the tier ladder, and the wait.
 - [Attribution facts as a stream, not a keyspace](finished/attribution-fact-stream.md): the shipped
@@ -2054,7 +2051,6 @@ Deeper dives live under [docs/design/](design/):
 - [The support contract: what we edit, what we refuse, and why](design/support-boundary/support-contract.md)
 - [The applier claim](design/apply-trigger.md)
 - [Git credentials interop](finished/git-credentials-interop.md)
-- [SOPS/age key management](finished/sops-repo-bootstrap-and-key-management-architecture.md)
 - [Commit signing](commit-signing.md)
 - [Interpreting metrics](interpreting-metrics.md)
 

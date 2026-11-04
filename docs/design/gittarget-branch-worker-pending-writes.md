@@ -4,7 +4,7 @@
 > below is built, 5a2 included; step 3 was split into 3a, 3b, and 3c after review. The page stays
 > here rather than in `finished/` because its recovery contract is still the reference for how a
 > branch behaves through an outage. The
-> [source review](gittarget-state-of-affairs.md#review-findings-and-remaining-gaps) records how each
+> source review records how each
 > finding was closed. This is the write-path part of the "transition boundary" in
 > [`branch-worker-event-model.md`](branch-worker-event-model.md#prepare-the-transition-boundary-for-later-durability),
 > limited to the write path. Persistence stays with the

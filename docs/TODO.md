@@ -102,8 +102,7 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   watch it took over. Redis becomes required in this mode.
   [ha-gittarget-distribution-plan.md](future/ha-gittarget-distribution-plan.md).
 - [ ] Re-assess unifying the pending-write kinds
-  ([idea-unify-pending-write-kinds.md](future/idea-unify-pending-write-kinds.md), now four kinds,
-  not two). Deferred.
+  (grouped window, resync and request record, since #450 removed the atomic kind). Deferred.
 - [ ] Improve queue and worker observability, with more high-load tests.
 
 ## Watch plane
@@ -177,12 +176,10 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 ## Docs and vocabulary
 
 - [ ] **Stale design-doc headers**, one docs PR: [open-asks-priority.md](design/open-asks-priority.md)
-  (#339 closed, #23 fixed), [gittarget-api-wave.md](design/gittarget-api-wave.md) (riders shipped),
+  (#339 closed, #23 fixed),
   [git-write-preflight.md](design/git-write-preflight.md) (superseded by the red-status plan),
-  [commitrequest-save-wait-options.md](design/commitrequest-save-wait-options.md) (written against
-  `closeDelay`), [gittarget-red-status-plan.md](design/gittarget-red-status-plan.md) (steps 5 and 6
-  built), [watch-and-catalog-architecture.md](design/watch-and-catalog-architecture.md)
-  (superseded), [target-watch-plan.md](design/target-watch-plan.md) (queue depth is 1000, not 100),
+  [gittarget-red-status-plan.md](design/gittarget-red-status-plan.md) (steps 5 and 6
+  built), [target-watch-plan.md](design/target-watch-plan.md) (queue depth is 1000, not 100),
   and the go-git version in [azure-devops-multi-ack.md](design/azure-devops-multi-ack.md) and
   [gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md).
 - [ ] **Wrong claims in design bodies**: [support-contract.md](design/support-boundary/support-contract.md)

@@ -17,7 +17,7 @@
 > Related:
 > `implementation-plan.md`,
 > [reconcile-via-watchlist-mark-and-sweep.md](reconcile-via-watchlist-mark-and-sweep.md),
-> [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md),
+> gvk-gvr-mapping-layer.md (removed),
 > [current-manifest-support-review-feedback.md](current-manifest-support-review.md),
 > [manifest-inventory-file-agnostic-placement.md](manifest-system.md),
 > [manifestedit-abstraction-plan.md](manifest-system.md),
@@ -357,7 +357,7 @@ Two constraints to respect from the start, not retrofit:
 - **The GVK↔GVR resolver must be built**, as an injectable source (live
   informers, kubeconfig, static snapshot, or nil for structure-only). Everything
   downstream depends on it; see
-  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md).
+  gvk-gvr-mapping-layer.md (removed).
 - **Materialization must be bounded — spatially and temporally.** *Spatially:*
   identity indexing needs only a cheap header parse; build the full `manifestedit`
   node tree only for documents a plan action touches (`DocumentModel.Snapshot` as a
@@ -926,7 +926,7 @@ model rather than a second write path.
   usually carry GVR/name, while manifests are keyed by GVK/name; the writer should
   receive a resolved `ResourceIdentifier`/manifest identity pair from the planning
   layer and delete by `RecordRef`. See
-  [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md).
+  gvk-gvr-mapping-layer.md (removed).
 - Add a resource-identity index beside the existing manifest-identity index. The
   writer should locate watched resources by `ResourceIdentifier`, while retaining
   GVK for YAML fidelity and diagnostics.
@@ -1001,7 +1001,7 @@ The **starter requirement** (structure-only, no cluster needed) is to define
 *recognized = parses as KRM* and to fail the GitTarget when any YAML file falls in
 bucket 2 (non-KRM YAML), alongside the duplicate-identity gate. Once the watched
 API surface is available through the
-[GVK/GVR mapping layer](gvk-gvr-mapping-layer.md), bucket 4 (unwatched API-backed
+GVK/GVR mapping layer, bucket 4 (unwatched API-backed
 KRM) joins the same refusal. Bucket 5 is the explicit exception: allowlisted
 non-API KRM is accepted but not materialized. Non-YAML files (bucket 1) are always
 ignored and never cause failure.
@@ -1141,7 +1141,7 @@ core logic.
 >
 > Deliberately deferred: comparing those GVKs against a live API to decide what
 > is *watched / unwatched / orphaned*. The next model needs the
-> [GVK/GVR mapping layer](gvk-gvr-mapping-layer.md), the
+> GVK/GVR mapping layer, the
 > watched/unwatched/orphan comparison, the plan computation, and wiring the same
 > library into the live writer.
 >
@@ -1198,7 +1198,7 @@ the live writer.
    diagnostic message text with structured reasons from `manifestedit`.
 2. **Add the API/source-of-truth input.** Define an injectable source for the
    watched API surface and current desired resources by implementing
-   [gvk-gvr-mapping-layer.md](gvk-gvr-mapping-layer.md). It should work with live
+   gvk-gvr-mapping-layer.md (removed). It should work with live
    controller state, a CLI kubeconfig-backed source, and test snapshots. Resolve
    every API-backed KRM document's GVK to a `ResourceIdentifier` where possible,
    record unresolved GVKs as diagnostics, and add indexes by both manifest

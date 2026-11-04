@@ -41,7 +41,6 @@ three lifecycle classes and was unreadable spread across them. The rows below st
 | [`manifestedit-field-ownership-spike.md`](manifestedit-field-ownership-spike.md) | "the API wins" — full-object ownership, and the do-not-build list |
 | [`type-followability.md`](type-followability.md) | is a type followable, and if not, the single reason |
 | [`type-lifecycle-events-and-wobble-settling.md`](type-lifecycle-events-and-wobble-settling.md) | removal grace and flap coalescing |
-| [`gvk-gvr-mapping-layer.md`](gvk-gvr-mapping-layer.md) | the GVK↔GVR bijection contract |
 | [`where-validation-lives.md`](where-validation-lives.md) | schema → CEL → **the reconciler**; a webhook only for what exists solely at admission |
 | [`sops-single-file-no-multidoc.md`](sops-single-file-no-multidoc.md) | one encrypted file is one document |
 | [`scale-subresource-audit-rehydration.md`](scale-subresource-audit-rehydration.md) | history: the `/scale` field-patch design; a scale is now mirrored from the watch, and the field-patch writer is what remains |

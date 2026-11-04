@@ -270,9 +270,5 @@ Three gates can stop a type before it reaches a stream:
 
 - [`architecture.md`](architecture.md) for how the pieces work together, starting at Ground Rules
   and Mental Model.
-- [`design/watch-and-catalog-architecture.md`](design/watch-and-catalog-architecture.md) for the
-  target three-layer watch model: collections, the confidence model, and the managed projection.
 - [`design/target-watch-plan.md`](design/target-watch-plan.md) for the implementable plan that
   replaces wholesale stream replacement with an incremental diff.
-- [`design/data-plane-triggering.md`](design/data-plane-triggering.md) for why that refactor is
-  needed, starting from the production failure that prompted it.
