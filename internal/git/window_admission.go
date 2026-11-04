@@ -22,15 +22,19 @@ import (
 // (FootprintReproved); windows whose new proofs overlap close first, with path_conflict.
 //
 // The decisions have names in the log lines, and the reference model reads them: WindowOpened,
-// WriteJoinedWindow, FootprintReproved, WindowClosed (with its reason), and SingleWindowFallback,
-// which is about the worker rather than a window. They name diagnostics, not a journal.
+// WriteJoinedWindow, FootprintReproved, WindowClosed (with its reason), FootprintChecked and
+// FootprintCheckSkipped (a commit checked against its window's footprint, with its hash, or not, its
+// proof being of another tree), and SingleWindowFallback, which is about the worker rather than a
+// window. They name diagnostics, not a journal.
 
 const (
-	decisionWindowOpened         = "WindowOpened"
-	decisionWriteJoinedWindow    = "WriteJoinedWindow"
-	decisionFootprintReproved    = "FootprintReproved"
-	decisionWindowClosed         = "WindowClosed"
-	decisionSingleWindowFallback = "SingleWindowFallback"
+	decisionWindowOpened          = "WindowOpened"
+	decisionWriteJoinedWindow     = "WriteJoinedWindow"
+	decisionFootprintReproved     = "FootprintReproved"
+	decisionWindowClosed          = "WindowClosed"
+	decisionFootprintChecked      = "FootprintChecked"
+	decisionFootprintCheckSkipped = "FootprintCheckSkipped"
+	decisionSingleWindowFallback  = "SingleWindowFallback"
 )
 
 // admitWrite closes every open window the write cannot be admitted beside, and returns the footprint
@@ -179,7 +183,8 @@ func (l *branchWorkerEventLoop) closeBeforeWrite(
 // fallBackToSingleWindow is the answer to a commit refused for changing a file outside its window's
 // footprint: the footprint rules are wrong somewhere, so the worker stops trusting them and holds one
 // window at a time for the rest of its life, and a resync of the GitTarget brings Git back to the
-// cluster whatever order the windows closed in.
+// cluster whatever order the windows closed in. The windows those rules admitted side by side close
+// now, oldest first, all but the newest, as the next write of another author would close them.
 func (l *branchWorkerEventLoop) fallBackToSingleWindow(pendingWrite PendingWrite, violation *footprintViolationError) {
 	name, namespace := pendingWrite.windowTarget()
 	l.singleWindow = true
@@ -190,6 +195,10 @@ func (l *branchWorkerEventLoop) fallBackToSingleWindow(pendingWrite PendingWrite
 		"outside", violation.outside,
 		"footprint", violation.footprint.String(),
 		"decision", decisionSingleWindowFallback)
+	open := l.windows.all()
+	for _, window := range open[:max(len(open)-1, 0)] {
+		l.finalizeWindow(window, windowFinalizeReasonFootprintFallback)
+	}
 	if l.w.resyncRecheck != nil {
 		l.w.resyncRecheck(itypes.NewResourceReference(name, namespace))
 	}

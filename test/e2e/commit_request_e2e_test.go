@@ -387,12 +387,12 @@ var _ = Describe("Save Request Bundle (UC2)", Label("commit-request", "audit-con
 		_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", commitRequestName, "--ignore-not-found=true")
 	})
 
-	// The other order, with the schema's defaults and nothing tuned: a folder whose files kubectl
-	// applies in name order, two ConfigMaps and then the CommitRequest that saves them. The objects'
-	// window is open when the request registers, so only attach: CurrentOrNext saves it. A second
-	// apply of the same folder saves nothing new: an unchanged object is not written again, the
-	// finished request does not attach again, and an edited message is refused because the spec is
-	// immutable. The request itself is never mirrored.
+	// The other order: a folder whose files kubectl applies in name order, two ConfigMaps and then
+	// the CommitRequest that saves them, with the request's own window left at its defaults. This
+	// Describe's GitTarget window is 300s, so the objects' window is certainly open when the request
+	// registers, and the commit can come only from the request's finalize (A1): attach: CurrentOrNext
+	// joins the window the objects opened. On the schema's defaults that is not certain; see
+	// "Save Request Folder (defaults)" below. The request itself is never mirrored.
 	It("saves a folder applied with kubectl apply -f (objects first) in one commit with the request's message",
 		func() {
 			const (
@@ -463,29 +463,6 @@ spec:
 				Expect(strings.TrimSpace(commitAuthor)).To(Equal(author), "the person who applied the folder")
 			}
 
-			By("applying the same folder again: nothing is written, so nothing is saved")
-			out, err := kubectlRunInNamespace(testNs, "apply", "-f", folder)
-			Expect(err).NotTo(HaveOccurred(), "an unchanged folder applies cleanly")
-			Expect(out).To(ContainSubstring("configmap/app-config unchanged"))
-			Expect(out).To(ContainSubstring("commitrequest.configbutler.ai/" + requestName + " unchanged"))
-
-			By("applying it with an edited message: the request's spec is immutable")
-			saveFile := filepath.Join(folder, "30-save.yaml")
-			content, err := os.ReadFile(saveFile)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(os.WriteFile(saveFile,
-				[]byte(strings.Replace(string(content), message, message+", again", 1)), 0o600)).To(Succeed())
-			out, err = kubectlRunInNamespace(testNs, "apply", "-f", folder)
-			Expect(err).To(HaveOccurred(), "an edited request is refused")
-			Expect(out).To(ContainSubstring("CommitRequest spec is immutable after creation"))
-
-			Consistently(func(g Gomega) {
-				g.Expect(remoteBranchHead(g, repo.CheckoutDir)).To(Equal(reportedSHA),
-					"neither apply adds a commit")
-				g.Expect(commitRequestField(g, testNs, requestName, "{.status.commit}")).To(Equal(reportedSHA),
-					"the finished request keeps its outcome")
-			}, 10*time.Second, 2*time.Second).Should(Succeed())
-
 			By("cleaning up the folder's objects")
 			for _, name := range []string{"app-config", "app-flags"} {
 				_, _ = kubectlRunInNamespace(testNs, "delete", "configmap", name, "--ignore-not-found=true")
@@ -493,6 +470,175 @@ spec:
 			_, _ = kubectlRunInNamespace(testNs, "delete", "commitrequest", requestName, "--ignore-not-found=true")
 		})
 })
+
+// The folder save as a user who tunes nothing gets it: a GitTarget with no spec.commit.window (the
+// schema's 5s idleTimeout and 1m maxDuration) and a request with no spec.window (CurrentOrNext, a
+// 5s attachTimeout, a 2s maxDuration from the attach). kubectl applies the two ConfigMaps first,
+// then the request.
+//
+// A folder save is not atomic (docs/configuration.md, "Saving a folder with kubectl apply"): the
+// window closes 2s after the attach, a write that reaches the worker later commits on its own under
+// the generated message, and a request that registers after the objects' window closed waits for a
+// next window that never comes and ends NoWindow. So this spec asserts what the defaults guarantee,
+// which is weaker than the Describe above: both ConfigMaps reach Git, every commit that holds them
+// is the applier's and changes only them (the request is never mirrored), and the request ends
+// Committed with its message on the commit it reports, or NoWindow with its message on no commit.
+// Which of the two it was, and how many commits, is logged.
+var _ = Describe(
+	"Save Request Folder (defaults)",
+	Label("commit-request", "folder-defaults", "audit-consumer"),
+	Ordered,
+	func() {
+		var p windowedDeploymentPipeline
+
+		BeforeAll(func() {
+			p = setupWindowedDeploymentPipeline("commit-request-folder", "e2e/commit-request-folder",
+				e2eSchemaDefaultWindow)
+		})
+
+		AfterAll(func() {
+			cleanupPipeline(p.ns, p.gitProvider, p.gitTarget, p.watchRule)
+			cleanupNamespace(p.ns)
+		})
+
+		It(
+			"saves a folder applied with kubectl apply -f with no timing tuned, and a second apply saves nothing",
+			func() {
+				const (
+					fixtureRoot = "test/e2e/fixtures/commit-request-folder"
+					requestName = "save-app-config"
+					message     = "feat: add the app config from a folder"
+					ruleName    = "commit-request-folder-defaults-configmaps"
+				)
+				basePath := "e2e/commit-request-folder"
+				configMapPaths := []string{
+					fmt.Sprintf("%s/%s/configmaps/app-config.yaml", basePath, p.ns),
+					fmt.Sprintf("%s/%s/configmaps/app-flags.yaml", basePath, p.ns),
+				}
+
+				By("watching ConfigMaps, which the folder holds")
+				_, err := kubectlRunWithStdin(p.ns, fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: WatchRule
+metadata:
+  name: %s
+spec:
+  gitTargetRef:
+    name: %s
+  rules:
+    - resources: ["configmaps"]
+`, ruleName, p.gitTarget), "apply", "-f", "-")
+				Expect(err).NotTo(HaveOccurred(), "failed to apply the ConfigMap WatchRule")
+				DeferCleanup(func() { cleanupWatchRule(ruleName, p.ns) })
+				verifyResourceStatus("watchrule", ruleName, p.ns, "True", "Succeeded", "")
+				waitForStreamsRunning(p.gitTarget, p.ns)
+
+				folder := renderFixtureFolder(fixtureRoot, map[string]string{"__E2E_GITTARGET__": p.gitTarget})
+				DeferCleanup(func() { _ = os.RemoveAll(folder) })
+
+				By("applying the folder: the ConfigMaps first, then the CommitRequest")
+				_, err = kubectlRunInNamespace(p.ns, "apply", "-f", folder)
+				Expect(err).NotTo(HaveOccurred(), "failed to apply the folder")
+
+				By("waiting for the request to end, Committed or NoWindow")
+				var outcome commitRequestOutcome
+				Eventually(func(g Gomega) {
+					outcome = readCommitRequestOutcome(g, p.ns, requestName)
+					g.Expect(outcome.isTerminal()).To(BeTrue(), "the request has not ended yet\n%s", outcome)
+				}, 2*time.Minute, 2*time.Second).Should(Succeed())
+				Expect(outcome.Stalled).NotTo(Equal("True"), "the save failed\n%s", outcome)
+				Expect(outcome.Reason).To(BeElementOf(commitRequestReasonCommitted, "NoWindow"), "%s", outcome)
+
+				By("waiting for both ConfigMaps to reach Git")
+				var saved []string
+				Eventually(func(g Gomega) {
+					pullLatestRepoState(g, p.repo.CheckoutDir)
+					for _, path := range configMapPaths {
+						_, statErr := os.Stat(filepath.Join(p.repo.CheckoutDir, path))
+						g.Expect(statErr).NotTo(HaveOccurred(), "%s is not in Git yet", path)
+					}
+					saved = commitsTouching(g, p.repo.CheckoutDir, configMapPaths)
+				}, 2*time.Minute, 2*time.Second).Should(Succeed())
+				GinkgoWriter.Printf("folder save on the defaults: request %s, the folder in %d commit(s)\n",
+					outcome.Reason, len(saved))
+
+				By("checking every commit that holds the folder")
+				author := ""
+				if !configuredAuthorModeEnabled() {
+					author = commitRequestField(Default, p.ns, requestName, "{.status.author}")
+				}
+				for _, sha := range saved {
+					paths, err := gitRun(
+						p.repo.CheckoutDir,
+						"diff-tree",
+						"--root",
+						"-r",
+						"--name-only",
+						"--no-commit-id",
+						sha,
+					)
+					Expect(err).NotTo(HaveOccurred())
+					// The folder's first commit also adds the GitTarget's bootstrap files, beside the namespace.
+					var objects []string
+					for _, path := range strings.Fields(paths) {
+						if strings.HasPrefix(path, basePath+"/"+p.ns+"/") {
+							objects = append(objects, path)
+						}
+					}
+					Expect(objects).To(HaveEach(BeElementOf(configMapPaths)),
+						"a commit of the folder changes its ConfigMaps and no other object: the request is never mirrored")
+					subject, err := gitRun(p.repo.CheckoutDir, "log", "-1", "--pretty=%B", sha)
+					Expect(err).NotTo(HaveOccurred())
+					if outcome.Reason == commitRequestReasonCommitted && sha == outcome.Commit {
+						Expect(strings.TrimSpace(subject)).To(Equal(message), "the commit the request reports")
+					} else {
+						Expect(strings.TrimSpace(subject)).NotTo(Equal(message), "only the request's commit carries it")
+					}
+					if author != "" {
+						commitAuthor, err := gitRun(p.repo.CheckoutDir, "log", "-1", "--pretty=%an", sha)
+						Expect(err).NotTo(HaveOccurred())
+						Expect(strings.TrimSpace(commitAuthor)).To(Equal(author), "the person who applied the folder")
+					}
+				}
+				if outcome.Reason == commitRequestReasonCommitted {
+					Expect(saved).To(ContainElement(outcome.Commit), "the request reports a commit of the folder")
+				}
+
+				head := ""
+				Eventually(func(g Gomega) { head = remoteBranchHead(g, p.repo.CheckoutDir) }).Should(Succeed())
+
+				By("applying the same folder again: nothing is written, so nothing is saved")
+				out, err := kubectlRunInNamespace(p.ns, "apply", "-f", folder)
+				Expect(err).NotTo(HaveOccurred(), "an unchanged folder applies cleanly")
+				Expect(out).To(ContainSubstring("configmap/app-config unchanged"))
+				Expect(out).To(ContainSubstring("commitrequest.configbutler.ai/" + requestName + " unchanged"))
+
+				By("applying it with an edited message: the request's spec is immutable")
+				saveFile := filepath.Join(folder, "30-save.yaml")
+				content, err := os.ReadFile(saveFile)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(os.WriteFile(saveFile,
+					[]byte(strings.Replace(string(content), message, message+", again", 1)), 0o600)).To(Succeed())
+				out, err = kubectlRunInNamespace(p.ns, "apply", "-f", folder)
+				Expect(err).To(HaveOccurred(), "an edited request is refused")
+				Expect(out).To(ContainSubstring("CommitRequest spec is immutable after creation"))
+
+				Consistently(func(g Gomega) {
+					g.Expect(remoteBranchHead(g, p.repo.CheckoutDir)).To(Equal(head), "neither apply adds a commit")
+					g.Expect(readCommitRequestOutcome(g, p.ns, requestName)).To(Equal(outcome),
+						"the finished request keeps its outcome")
+				}, 10*time.Second, 2*time.Second).Should(Succeed())
+			},
+		)
+	},
+)
+
+// commitsTouching lists the commits on the checkout's HEAD, oldest first, that change any of paths.
+func commitsTouching(g Gomega, checkoutDir string, paths []string) []string {
+	args := append([]string{"log", "--reverse", "--format=%H", "--"}, paths...)
+	out, err := gitRun(checkoutDir, args...)
+	g.Expect(err).NotTo(HaveOccurred())
+	return strings.Fields(out)
+}
 
 // commitRequestManifest renders a single CommitRequest document with an explicit message and a
 // window that waits and then collects for the given Go duration each. It is used to build
@@ -697,8 +843,8 @@ func expectCommitRequestCommitted(g Gomega, namespace, name, diagnostics string)
 }
 
 // windowedDeploymentPipeline is the pipeline a CommitRequest suite saves through: a namespace and
-// Gitea repo of its own, a GitProvider, a GitTarget with a long spec.commit.window, and a WatchRule
-// on Deployments.
+// Gitea repo of its own, a GitProvider, a GitTarget with the given spec.commit.window (none at all for
+// e2eSchemaDefaultWindow), and a WatchRule on Deployments.
 type windowedDeploymentPipeline struct {
 	ns          string
 	repo        *RepoArtifacts

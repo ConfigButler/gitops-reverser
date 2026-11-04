@@ -102,6 +102,28 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 	requireOneObservationPerWindow(t, reader, 4)
 }
 
+// TestCommitWindowMetrics_EveryCloseReasonHasItsLabel pins the close_reason value of every reason, as
+// docs/interpreting-metrics.md lists them.
+func TestCommitWindowMetrics_EveryCloseReasonHasItsLabel(t *testing.T) {
+	for reason, label := range map[windowFinalizeReason]string{
+		windowFinalizeReasonIdleTimeout:       "idle_timeout",
+		windowFinalizeReasonMaxDuration:       "max_duration",
+		windowFinalizeReasonAttachNext:        "attach_next",
+		windowFinalizeReasonIdentityChange:    "identity_change",
+		windowFinalizeReasonBufferLimit:       "buffer_limit",
+		windowFinalizeReasonResyncBeforeApply: "resync_before_apply",
+		windowFinalizeReasonShutdown:          "shutdown",
+		windowFinalizeReasonForeignCommit:     "foreign_commit",
+		windowFinalizeReasonApplyDue:          "apply_due",
+		windowFinalizeReasonPathConflict:      "path_conflict",
+		windowFinalizeReasonFootprintFallback: "footprint_fallback",
+		windowFinalizeReasonUnspecified:       "unspecified",
+		windowFinalizeReason("made-up"):       "unspecified",
+	} {
+		assert.Equal(t, label, reason.metricLabel(), string(reason))
+	}
+}
+
 // TestCommitWindowMetrics_AnAttachKeepsTheOpeningTimeAndCountsTheRequestsTimers pins the two
 // things an attach must not do: move the moment the window opened, which the attach DOES reset for
 // the idle interval, and leave the window counted under the target's timers after it replaced them.
