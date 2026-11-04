@@ -173,7 +173,7 @@ func (r *ResyncRequest) charge() int64 { return r.payloadSize() + pendingWriteOv
 // attached save is in the charge of the window it is attached to, and then of the write that window
 // became.
 func (l *branchWorkerEventLoop) heldBytes() int64 {
-	held := l.windowBytes + l.pendingWritesBytes + l.heldEventBytes
+	held := l.commitWindows.windowBytes + l.pendingWritesBytes + l.heldEventBytes
 	for _, pcr := range l.pendingCRs {
 		if !pcr.attached {
 			held += attachCharge(pcr.message)

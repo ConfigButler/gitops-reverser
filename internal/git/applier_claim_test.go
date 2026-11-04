@@ -379,6 +379,29 @@ func TestCloseWindowForPushHint_PublishesTheOpenWindowNow(t *testing.T) {
 	assert.Len(t, loop.pendingWrites, 1, "the window's write is decided, to be published")
 }
 
+// TestCloseWindowForPushHint_LeavesASavesWindowToTheSave: a window a CommitRequest holds closes
+// when its save says, not on a push hint.
+func TestCloseWindowForPushHint_LeavesASavesWindowToTheSave(t *testing.T) {
+	worker, _, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	worker.applyRequester = &recordingRequester{}
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	t.Cleanup(loop.stopTimers)
+
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events: []Event{configMapTargetEvent("edited", "alice", "team-a")},
+	}})
+	require.NotNil(t, loop.openWindow, "an hour-long window is still open")
+	id := commitRequestID{Namespace: "team-a", Name: "save", UID: "uid-save"}
+	loop.openWindow.pendingCR = &id
+
+	loop.handleRefreshRequest(&RefreshRequest{PushNotice: true})
+	loop.closeWindowForPushHint()
+
+	assert.NotNil(t, loop.openWindow, "the save's window is still open")
+	assert.Empty(t, loop.pendingWrites)
+}
+
 // applierLedgerFixture is a real Git server, a GitTarget naming an applier, and an event loop whose
 // requests are recorded.
 func applierLedgerFixture(t *testing.T, slug string) (*ledgerFixture, *branchWorkerEventLoop, *recordingRequester) {

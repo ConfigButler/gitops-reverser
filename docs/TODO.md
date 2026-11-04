@@ -11,6 +11,13 @@ Nothing open. The 0.54.0 release PR's changelog was checked against what ships o
 
 ## Applier claims and bi-directional editing
 
+- [ ] **A withheld apply rides the next edit.** S1 withholds an apply that lands over an edit decided
+  after the flush mark, and a `Repair` puts the edit back. But the apply did land on the cluster, so
+  the next edit of that object carries the apply's value for every field it did not change, and the
+  window commits the whole object under that author's name: the overwritten edit is lost, and the
+  `Repair` then applies the loss. The failing test is
+  `TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit`
+  (`internal/git/apply_window_carry_test.go`, skipped; `GITOPS_REVERSER_KNOWN_BUGS=1` runs it).
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on
   `RenderMatchesLive=False` clears only on an explicit recheck (the
   `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope; the render
