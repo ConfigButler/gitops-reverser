@@ -310,8 +310,10 @@ sequenceDiagram
 A local no-diff result still consults the remote before reporting `AlreadyPresent`. A competing
 Git edit can make that same captured API object require a real commit after replay.
 
-A worker that stops while still holding the write fails the request with an error rather than
-leaving it to time out, so a shutdown mid-publication is reported as a failure and not as silence.
+A worker that stops while still holding the write pushes it first. If that last push fails, it fails
+the request with an error rather than leaving it to time out, so a shutdown mid-publication is
+reported as a failure and not as silence. Either outcome is written to the request's status before
+the process exits.
 
 Use `Pushed=True` plus `status.commit` when a particular commit must exist in Git. `Ready=True` also
 covers successful outcomes with no commit. Status visibility follows the controller's polling

@@ -331,6 +331,11 @@ func main() {
 	// A worker's change to a CommitRequest takes the request's next step at once, on either path.
 	commitRequestWakes := controller.NewCommitRequestWakes(workerManager.CommitRequestChanges())
 	fatalIfErr(mgr.Add(commitRequestWakes), "unable to add the CommitRequest wakes")
+	// At shutdown the workers settle every save they hold as they stop, and the CommitRequest
+	// controllers stop with them: the requests either path attached have their outcomes written once
+	// the workers have stopped, before the process exits.
+	commitRequestsInFlight := &controller.CommitRequestsInFlight{Log: ctrl.Log.WithName("commitrequests")}
+	workerManager.SetAfterWorkersStopped(commitRequestsInFlight.Settle)
 	commitRequestServer := &controller.CommitRequestServer{
 		Client:      mgr.GetClient(),
 		APIReader:   mgr.GetAPIReader(),
@@ -340,6 +345,7 @@ func main() {
 		FactStreams: watchMgr.FactStreams,
 		TTL:         cfg.commitRequestTTL,
 		Wakes:       commitRequestWakes,
+		InFlight:    commitRequestsInFlight,
 		Log:         ctrl.Log.WithName("commitrequests"),
 	}
 	fatalIfErr(mgr.Add(commitRequestServer), "unable to add the CommitRequest server")
@@ -429,6 +435,7 @@ func main() {
 		FactStreams: watchMgr.FactStreams,
 		TTL:         cfg.commitRequestTTL,
 		Wakes:       commitRequestWakes,
+		InFlight:    commitRequestsInFlight,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CommitRequest")
 		os.Exit(1)

@@ -320,10 +320,17 @@ created successfully nor a later source snapshot proves that the worker accepted
 Resource watches and save commands arrive independently: a save is not a barrier covering every
 Kubernetes mutation before its creation.
 
-Pausing the live worker preserves accepted work in memory. Restarting the process does not preserve
-its attachments or outcome receipts. Startup replays current watched state, subject to pruning,
-but cannot recreate the same save history. A push accepted immediately before a crash can therefore be
-followed by another empty commit when the request is resent. A lost push response also needs remote
+Pausing the live worker preserves accepted work in memory. A graceful stop settles what it holds
+before the process exits: every worker closes its windows, pushes, and settles the saves it carries,
+and once every worker has stopped the controller writes each settled outcome to its request's status
+through the path that attached it, as one more conditional step (`CommitRequestsInFlight.Settle`).
+Both are bounded (10s for the workers, 5s for the statuses) to fit the chart's 20s grace period; what
+runs over is left as a crash leaves it. A request still waiting for a window, or whose attach was
+still queued, is not committed; the next process attaches it again from its status. Restarting the
+process does not otherwise preserve its attachments or outcome receipts: nothing is persisted.
+Startup replays current watched state, subject to pruning, but cannot recreate the same save history.
+A push accepted immediately before a crash can therefore be followed by another empty commit when
+the request is resent. A lost push response also needs remote
 evidence; equal tree content alone cannot prove that an empty save's message was published. Durable
 save recovery belongs to the [future HA plan](../future/ha-gittarget-distribution-plan.md).
 

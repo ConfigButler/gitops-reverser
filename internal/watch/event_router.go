@@ -161,6 +161,21 @@ func (r *EventRouter) WithdrawCommitRequest(
 	return git.FinalizeResult{Branch: branch, Phase: phase}, false, nil
 }
 
+// LookupCommitRequestOutcome reports the outcome the worker that holds a CommitRequest decided, and
+// false while it decided none or no worker holds the request. It sends nothing: it is how the
+// controller reads what a stopped worker settled, at shutdown, without attaching anything anew.
+func (r *EventRouter) LookupCommitRequestOutcome(
+	_ context.Context,
+	attach git.AttachCommitRequest,
+) (git.FinalizeResult, bool, error) {
+	owner, ok := r.WorkerManager.CommitRequestOwner(attach.Namespace, attach.Name, attach.UID)
+	if !ok {
+		return git.FinalizeResult{}, false, nil
+	}
+	result, resolved := owner.LookupCommitRequestOutcome(attach.Namespace, attach.Name, attach.UID)
+	return result, resolved, nil
+}
+
 // LookupCommitRequestApply reports where the apply a CommitRequest asked for stands, from the
 // branch worker of its GitTarget, and false while that worker knows nothing of it or none runs.
 func (r *EventRouter) LookupCommitRequestApply(

@@ -69,7 +69,7 @@ func TestEnsureWorker_KeepsTheWorkerWhenTheRepositoryIsUnchanged(t *testing.T) {
 	second, ok := manager.WorkerForGitBranch(testGitBranch("repo1", "gitops-system", "main"))
 	require.True(t, ok)
 	assert.Same(t, first, second, "a steady tick must leave the worker exactly where it was")
-	assert.NoError(t, first.ctx.Err(), "and must not have stopped it")
+	assert.NoError(t, first.stop.Err(), "and must not have stopped it")
 }
 
 // TestEnsureWorker_ReplacesTheWorkerWhenTheProviderIsRecreated is the ordinary repoint: the
@@ -90,7 +90,7 @@ func TestEnsureWorker_ReplacesTheWorkerWhenTheProviderIsRecreated(t *testing.T) 
 	require.True(t, ok)
 	assert.NotSame(t, old, replacement, "the slot holds the worker for the repository named NOW")
 	assert.Equal(t, after, replacement.repo)
-	assert.Error(t, old.ctx.Err(), "the worker for the old repository must have been stopped")
+	assert.Error(t, old.stop.Err(), "the worker for the old repository must have been stopped")
 }
 
 // TestEnsureWorker_ReplacesOnARecreateThatKeepsTheURL. The UID is the identity, and it changes on
