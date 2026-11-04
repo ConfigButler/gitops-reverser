@@ -3,10 +3,14 @@
 package git
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -15,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -22,18 +27,28 @@ import (
 )
 
 // The reference model of docs/design/concurrent-author-windows.md ("How to test it"): a small,
-// independent implementation of today's single-window rules, fed the same random inputs as a branch
-// worker on a real Git server, with the worker checked against it.
+// independent implementation of the window rules, fed the same random inputs as a branch worker on a
+// real Git server, with the worker checked against it.
 //
-//   - After every step: the open window (author, objects, attached save, deadline, charge), the timers
-//     armed for it and for the waiting saves, the registered saves (attached or waiting, and until
-//     when), the retained-byte charge, the close reasons so far, and every save's outcome are the
-//     model's.
+//   - After every step: the open windows, oldest first (each with its number, author, objects,
+//     attached save, deadline, charge and footprint), the timers armed for them and for the waiting
+//     saves, the registered saves (attached or waiting, and until when), the retained-byte charge,
+//     the close reasons so far, and every save's outcome are the model's.
 //   - Every commit the worker publishes is the one the model's closing window makes: its author, its
-//     message, every path it changes, and each document whole. Per document, the writes that land do
-//     so in the order they were accepted, so an older write never lands after a newer one.
+//     message, every path it changes, and each file whole, its documents parsed. Per document, the
+//     writes that land do so in the order they were accepted, so an older write never lands after a
+//     newer one. A commit of a window that was open beside another changes no path outside the
+//     window's footprint.
 //   - Every save settles exactly once, or is given back at shutdown.
 //   - Drained, Git holds the model's tree, path for path, and nothing is charged.
+//
+// The folder holds objects in three shapes: x, w and z each alone in its own file at the built-in
+// path; k in a kustomize root (kust/, which also takes every object created anew, since it is the
+// folder's one render root); and s1 and s2 in one shared file. The model proves footprints by its
+// own rules: an object alone in a file no kustomization governs has that file; anything else, a
+// create included, is unknown, and never opens beside another window. There is no object y: kustomize
+// reads a bare y as a boolean, so the render of the root refuses a ConfigMap named y once it lands
+// there.
 //
 // The model shares no window code with the worker: only the event fixtures, the per-event charge
 // (eventRetainedCharge, attachCharge) and the close-reason names. The worker's timers are real; the
@@ -41,7 +56,7 @@ import (
 // so a deadline the worker armed no timer for is never delivered.
 //
 // WINDOW_MODEL_SEEDS and WINDOW_MODEL_STEPS raise the search; a failure names its seed, and
-// WINDOW_MODEL_SEED replays one.
+// WINDOW_MODEL_SEED replays one. WINDOW_MODEL_LOGS prints the worker's log with a failure.
 
 const (
 	// modelIdle and modelMax are the commit window the GitTarget declares none of, so the loop's default.
@@ -50,12 +65,158 @@ const (
 )
 
 var (
-	modelObjects = []string{"x", "y", "z"}
+	modelObjects = []string{"x", "w", "z", "k", "s1", "s2"}
 	modelAuthors = []string{"alice", "bob", "carol"}
 	// modelBootstrap is what the worker adds to the folder, from its template, with the first commit
 	// it makes there. The GitTarget encrypts nothing, so there is no .sops.yaml.
 	modelBootstrap = []string{gitTargetIgnoreFileName, "README.md"}
+	// modelKustDir is the folder's one kustomize root, and modelKustFile its kustomization.
+	modelKustDir  = echoTarget + "/kust"
+	modelKustFile = modelKustDir + "/kustomization.yaml"
+	// modelSharedFile holds s1 and s2.
+	modelSharedFile = echoTarget + "/default/configmaps/shared.yaml"
 )
+
+// modelTree is a Git tree of the folder: each object's value, the files and the objects each holds in
+// document order, and the kustomize root's resources: entries.
+type modelTree struct {
+	values map[string]string
+	files  map[string][]string
+	kust   []string
+}
+
+func (t *modelTree) clone() modelTree {
+	files := make(map[string][]string, len(t.files))
+	for p, objs := range t.files {
+		files[p] = slices.Clone(objs)
+	}
+	return modelTree{values: maps.Clone(t.values), files: files, kust: slices.Clone(t.kust)}
+}
+
+// loc is the file holding obj's document, or "".
+func (t *modelTree) loc(obj string) string {
+	for p, objs := range t.files {
+		if slices.Contains(objs, obj) {
+			return p
+		}
+	}
+	return ""
+}
+
+// set is what a write of obj with value (a delete when "") does to the tree, as the worker places it:
+// an existing document is edited where it lives; a document removed from the kustomize root leaves its
+// resources: entry with it; a new object goes into the root and is registered there. It returns the
+// paths it changes.
+func (t *modelTree) set(obj, value string) []string {
+	at := t.loc(obj)
+	switch {
+	case value == "" && at == "":
+		return nil
+	case value == "":
+		delete(t.values, obj)
+		t.files[at] = slices.DeleteFunc(t.files[at], func(o string) bool { return o == obj })
+		if len(t.files[at]) > 0 {
+			return []string{at}
+		}
+		delete(t.files, at)
+		if entry := strings.TrimPrefix(at, modelKustDir+"/"); entry != at {
+			t.kust = slices.DeleteFunc(t.kust, func(e string) bool { return e == entry })
+			return []string{at, modelKustFile}
+		}
+		return []string{at}
+	case at != "":
+		if t.values[obj] == value {
+			return nil
+		}
+		t.values[obj] = value
+		return []string{at}
+	default:
+		at = modelKustDir + "/" + obj + ".yaml"
+		t.values[obj] = value
+		t.files[at] = []string{obj}
+		t.kust = append(t.kust, obj+".yaml")
+		return []string{at, modelKustFile}
+	}
+}
+
+// setOutside is a write from another clone: it edits a document where it lives, or adds the object at
+// its built-in path, unregistered.
+func (t *modelTree) setOutside(obj, value string) string {
+	at := t.loc(obj)
+	if at == "" {
+		at = echoFile(obj)
+		t.files[at] = []string{obj}
+	}
+	t.values[obj] = value
+	return at
+}
+
+// render is the bytes of the file at path.
+func (t *modelTree) render(path string) string {
+	if path == modelKustFile {
+		var b strings.Builder
+		b.WriteString("apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n")
+		for _, entry := range t.kust {
+			b.WriteString("- " + entry + "\n")
+		}
+		return b.String()
+	}
+	var docs []string
+	for _, obj := range t.files[path] {
+		docs = append(docs, echoDocument(obj, t.values[obj]))
+	}
+	return strings.Join(docs, "---\n")
+}
+
+// file is what the tree holds at path.
+func (t *modelTree) file(path string) modelFile {
+	if path == modelKustFile {
+		return modelFile{kustomization: true, entries: slices.Clone(t.kust)}
+	}
+	var f modelFile
+	for _, obj := range t.files[path] {
+		f.docs = append(f.docs, [2]string{obj, t.values[obj]})
+	}
+	return f
+}
+
+// modelFootprint is a window's footprint by the model's rules: nil is a window never proven.
+type modelFootprint struct {
+	paths   []string
+	unknown bool
+}
+
+func (f *modelFootprint) String() string {
+	switch {
+	case f == nil:
+		return "unproven"
+	case f.unknown:
+		return "unknown"
+	default:
+		return "[" + strings.Join(f.paths, " ") + "]"
+	}
+}
+
+func (f *modelFootprint) overlaps(other modelFootprint) bool {
+	if f.unknown || other.unknown {
+		return true
+	}
+	for _, p := range f.paths {
+		if slices.Contains(other.paths, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *modelFootprint) union(other modelFootprint) modelFootprint {
+	if f.unknown || other.unknown {
+		return modelFootprint{unknown: true}
+	}
+	paths := slices.Concat(f.paths, other.paths)
+	slices.Sort(paths)
+	return modelFootprint{paths: slices.Compact(paths)}
+}
 
 // modelEdit is one accepted write: seq is the order the worker accepted it in, and value is the
 // document's key, empty for a delete.
@@ -79,6 +240,7 @@ type modelSave struct {
 }
 
 type modelWindow struct {
+	seq         int
 	author      string
 	objs        []string
 	latest      map[string]modelEdit
@@ -88,6 +250,7 @@ type modelWindow struct {
 	maxAt       time.Time
 	lastWriteAt time.Time
 	charge      int64
+	footprint   *modelFootprint
 }
 
 func (w *modelWindow) closeAt() (time.Time, windowFinalizeReason) {
@@ -97,35 +260,50 @@ func (w *modelWindow) closeAt() (time.Time, windowFinalizeReason) {
 	return w.maxAt, windowFinalizeReasonMaxDuration
 }
 
-// modelPending is a decided write the next push publishes.
+// modelPending is a decided write the next push publishes. footprint is the proven footprint of the
+// window it closed, when that window had company.
 type modelPending struct {
-	save    *modelSave
-	author  string
-	message string
-	resync  bool
-	changes []modelEdit
+	save      *modelSave
+	author    string
+	message   string
+	resync    bool
+	changes   []modelEdit
+	footprint *modelFootprint
+}
+
+// modelFile is what a commit leaves at one path: the kustomization's entries, the documents, or
+// nothing.
+type modelFile struct {
+	kustomization bool
+	entries       []string
+	docs          [][2]string
 }
 
 // modelCommit is a commit the worker must publish. A resync's message is not the model's to say.
-// bootstrap is the folder's first commit, which also adds modelBootstrap.
+// bootstrap is the folder's first commit, which also adds modelBootstrap. footprint, when set, holds
+// every path the commit changes.
 type modelCommit struct {
 	author    string
 	message   string
 	resync    bool
 	bootstrap bool
-	files     map[string]string
+	paths     []string
+	files     map[string]modelFile
 	seqs      map[string]int
+	footprint *modelFootprint
 }
 
 type windowModel struct {
 	now     time.Time
-	window  *modelWindow
+	windows []*modelWindow
+	seq     int
 	saves   map[string]*modelSave
 	saveSeq int
 	editSeq int
 
 	// remote is Git, known what the worker's checkout holds of it, cluster the live objects.
-	remote, known, cluster map[string]string
+	remote, known modelTree
+	cluster       map[string]string
 	// history is the values each object held on the cluster, for undos.
 	history map[string][]string
 
@@ -142,47 +320,139 @@ type windowModel struct {
 	landed map[string]int
 }
 
-func newWindowModel(now time.Time, docs map[string]string) *windowModel {
+func newWindowModel(now time.Time, tree modelTree) *windowModel {
 	m := &windowModel{
 		now: now, saves: map[string]*modelSave{},
-		remote: map[string]string{}, known: map[string]string{}, cluster: map[string]string{},
+		remote: tree.clone(), known: tree.clone(), cluster: maps.Clone(tree.values),
 		history: map[string][]string{}, outcomes: map[string]FinalizeOutcome{}, given: map[string]bool{},
 		landed: map[string]int{},
 	}
-	for obj, value := range docs {
-		m.remote[obj], m.known[obj], m.cluster[obj] = value, value, value
+	for obj, value := range tree.values {
 		m.history[obj] = []string{value}
 	}
 	return m
 }
 
 func (m *windowModel) windowCharge() int64 {
-	if m.window == nil {
-		return 0
+	var charge int64
+	for _, w := range m.windows {
+		charge += w.charge
 	}
-	return m.window.charge
+	return charge
 }
 
-// describeWindow is the open window: its author, how many objects it holds, the save it carries, when
-// and why it closes, and what it is charged.
-func (m *windowModel) describeWindow() string {
-	w := m.window
-	if w == nil {
+// describeWindows is the open windows, oldest first: each one's number, author, how many objects it
+// holds, the save it carries, when and why it closes, what it is charged, and its footprint.
+func (m *windowModel) describeWindows() string {
+	var out []string
+	for _, w := range m.windows {
+		saved := ""
+		if w.save != nil {
+			saved = w.save.name
+		}
+		at, reason := w.closeAt()
+		out = append(out, fmt.Sprintf("#%d %s objs=%d save=%q closes in %s (%s) charge %d footprint %s", w.seq,
+			w.author, len(w.objs), saved, at.Sub(m.now), reason, w.charge, w.footprint))
+	}
+	if len(out) == 0 {
 		return "none"
 	}
-	saved := ""
-	if w.save != nil {
-		saved = w.save.name
+	return strings.Join(out, "; ")
+}
+
+func (m *windowModel) windowOf(author string) *modelWindow {
+	for _, w := range m.windows {
+		if w.author == author {
+			return w
+		}
 	}
-	at, reason := w.closeAt()
-	return fmt.Sprintf("%s objs=%d save=%q closes in %s (%s) charge %d", w.author, len(w.objs), saved,
-		at.Sub(m.now), reason, w.charge)
+	return nil
+}
+
+func (m *windowModel) isOpen(w *modelWindow) bool { return slices.Contains(m.windows, w) }
+
+func (m *windowModel) others(own *modelWindow) []*modelWindow {
+	var out []*modelWindow
+	for _, w := range m.windows {
+		if w != own {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 func (m *windowModel) waiting(s *modelSave) bool { return !s.attached && s.deadline.After(m.now) }
 
-func (m *windowModel) matches(s *modelSave) bool {
-	return m.window != nil && m.window.author == s.author
+// prove is the footprint of a write of obj on the tree the worker's checkout holds. Before the folder
+// is bootstrapped every write adds its bootstrap files.
+func (m *windowModel) prove(obj string) modelFootprint {
+	at := m.known.loc(obj)
+	switch {
+	case !m.bootstrapped, at == "", strings.HasPrefix(at, modelKustDir+"/"), len(m.known.files[at]) > 1:
+		return modelFootprint{unknown: true}
+	default:
+		return modelFootprint{paths: []string{at}}
+	}
+}
+
+func (m *windowModel) proveWindow(w *modelWindow) modelFootprint {
+	f := modelFootprint{}
+	for _, obj := range w.objs {
+		f = f.union(m.prove(obj))
+	}
+	return f
+}
+
+// admit closes the windows a write of obj by author cannot sit beside, and returns the footprint its
+// window takes.
+func (m *windowModel) admit(author, obj string) *modelFootprint {
+	own := m.windowOf(author)
+	if len(m.others(own)) == 0 {
+		if own == nil || own.footprint == nil {
+			return nil
+		}
+		f := m.proveWindow(own)
+		f = f.union(m.prove(obj))
+		return &f
+	}
+	write := m.prove(obj)
+	m.reprove()
+	own = m.windowOf(author)
+	for _, other := range m.others(own) {
+		switch {
+		case write.unknown || other.footprint.unknown:
+			m.close(other, windowFinalizeReasonIdentityChange)
+		case write.overlaps(*other.footprint):
+			m.close(other, windowFinalizeReasonPathConflict)
+		}
+	}
+	if own == nil {
+		return &write
+	}
+	f := own.footprint.union(write)
+	return &f
+}
+
+// reprove proves every open window again, and closes, oldest first, the windows whose footprints
+// overlap.
+func (m *windowModel) reprove() {
+	for _, w := range m.windows {
+		f := m.proveWindow(w)
+		w.footprint = &f
+	}
+	involved := map[*modelWindow]bool{}
+	for i, a := range m.windows {
+		for _, b := range m.windows[i+1:] {
+			if a.footprint.overlaps(*b.footprint) {
+				involved[a], involved[b] = true, true
+			}
+		}
+	}
+	for _, w := range slices.Clone(m.windows) {
+		if involved[w] {
+			m.close(w, windowFinalizeReasonPathConflict)
+		}
+	}
 }
 
 // write is appendLiveEvent's rules for one accepted write.
@@ -193,17 +463,18 @@ func (m *windowModel) write(author string, edit modelEdit, pressure bool) {
 	if edit.value != "" {
 		m.history[edit.obj] = append(m.history[edit.obj], edit.value)
 	}
-	if m.window != nil && m.window.author != author {
-		m.close(windowFinalizeReasonIdentityChange)
-	}
-	opened := m.window == nil
+	footprint := m.admit(author, edit.obj)
+	w := m.windowOf(author)
+	opened := w == nil
 	if opened {
-		m.window = &modelWindow{
-			author: author, latest: map[string]modelEdit{},
+		m.seq++
+		w = &modelWindow{
+			seq: m.seq, author: author, latest: map[string]modelEdit{},
 			idle: modelIdle, maxAt: m.now.Add(modelMax),
 		}
+		m.windows = append(m.windows, w)
 	}
-	w := m.window
+	w.footprint = footprint
 	if old, ok := w.latest[edit.obj]; ok {
 		w.charge -= old.charge
 	} else {
@@ -215,12 +486,12 @@ func (m *windowModel) write(author string, edit modelEdit, pressure bool) {
 	if opened {
 		m.noteForeign()
 		m.attachWaiting()
-		if m.window != w {
+		if !m.isOpen(w) {
 			return
 		}
 	}
 	if pressure {
-		m.close(windowFinalizeReasonBufferLimit)
+		m.closeAll(windowFinalizeReasonBufferLimit)
 		return
 	}
 	m.closeOrArm()
@@ -232,7 +503,10 @@ func (m *windowModel) register(s *modelSave, attachTimeout time.Duration) {
 		if earlier.author != s.author {
 			continue
 		}
-		collecting := earlier.attached && m.window != nil && m.window.save == earlier
+		collecting := false
+		for _, w := range m.windows {
+			collecting = collecting || (earlier.attached && w.save == earlier)
+		}
 		if m.waiting(earlier) || (collecting && !s.next) {
 			m.outcomes[s.name] = FinalizeSaveInProgress
 			return
@@ -242,24 +516,24 @@ func (m *windowModel) register(s *modelSave, attachTimeout time.Duration) {
 	s.seq = m.saveSeq
 	s.deadline = m.now.Add(attachTimeout)
 	m.saves[s.name] = s
-	if m.window == nil {
+	if len(m.windows) == 0 {
 		return
 	}
-	if !m.matches(s) {
+	own := m.windowOf(s.author)
+	if own == nil {
 		s.sawForeign = true
 		return
 	}
 	if s.next {
-		m.close(windowFinalizeReasonAttachNext)
+		m.close(own, windowFinalizeReasonAttachNext)
 		return
 	}
-	if m.window.save == nil {
-		m.attach(s)
+	if own.save == nil {
+		m.attach(own, s)
 	}
 }
 
-func (m *windowModel) attach(s *modelSave) {
-	w := m.window
+func (m *windowModel) attach(w *modelWindow, s *modelSave) {
 	w.save, s.attached = s, true
 	w.charge += attachCharge(s.message)
 	w.noIdle = s.idle == nil
@@ -272,34 +546,41 @@ func (m *windowModel) attach(s *modelSave) {
 }
 
 func (m *windowModel) closeOrArm() {
-	if m.window == nil {
-		return
+	for _, w := range slices.Clone(m.windows) {
+		if at, reason := w.closeAt(); !at.After(m.now) {
+			m.close(w, reason)
+		}
 	}
-	if at, reason := m.window.closeAt(); !at.After(m.now) {
-		m.close(reason)
+}
+
+func (m *windowModel) closeAll(reason windowFinalizeReason) {
+	for _, w := range slices.Clone(m.windows) {
+		m.close(w, reason)
 	}
 }
 
 func (m *windowModel) noteForeign() {
 	for _, s := range m.saves {
-		if m.waiting(s) && m.window != nil && !m.matches(s) {
+		if m.waiting(s) && len(m.windows) > 0 && m.windowOf(s.author) == nil {
 			s.sawForeign = true
 		}
 	}
 }
 
 func (m *windowModel) attachWaiting() {
-	if m.window == nil || m.window.save != nil {
-		return
-	}
-	var first *modelSave
-	for _, s := range m.saves {
-		if m.waiting(s) && m.matches(s) && (first == nil || s.seq < first.seq) {
-			first = s
+	for _, w := range slices.Clone(m.windows) {
+		if w.save != nil || !m.isOpen(w) {
+			continue
 		}
-	}
-	if first != nil {
-		m.attach(first)
+		var first *modelSave
+		for _, s := range m.saves {
+			if m.waiting(s) && s.author == w.author && (first == nil || s.seq < first.seq) {
+				first = s
+			}
+		}
+		if first != nil {
+			m.attach(w, first)
+		}
 	}
 }
 
@@ -321,25 +602,31 @@ func (m *windowModel) resolve(s *modelSave, outcome FinalizeOutcome) {
 	m.outcomes[s.name] = outcome
 }
 
-// close decides the open window: the documents whose latest write differs from the checkout, in the
-// order the window first saw them. A window that changes nothing and carries no save leaves no trace.
-// A save is never trimmed: it decides every document it captured, so a replay onto a push the worker
-// had not seen re-asserts them (API wins for a save).
-func (m *windowModel) close(reason windowFinalizeReason) {
-	w := m.window
-	m.window = nil
-	m.closes = append(m.closes, string(reason)+" "+w.author)
+// close decides a window: the documents whose latest write differs from the checkout, in the order the
+// window first saw them. A window that changes nothing and carries no save leaves no trace. A save is
+// never trimmed: it decides every document it captured, so a replay onto a push the worker had not
+// seen re-asserts them (API wins for a save). A window once proven carries its footprint, proven again
+// on the checkout it commits on.
+func (m *windowModel) close(w *modelWindow, reason windowFinalizeReason) {
+	m.windows = slices.DeleteFunc(m.windows, func(o *modelWindow) bool { return o == w })
+	m.closes = append(m.closes, fmt.Sprintf("%s %s #%d", reason, w.author, w.seq))
+	var footprint *modelFootprint
+	if w.footprint != nil {
+		if f := m.proveWindow(w); !f.unknown {
+			footprint = &f
+		}
+	}
 	var changes []modelEdit
 	for _, obj := range w.objs {
-		if edit := w.latest[obj]; edit.value != m.known[obj] || w.save != nil {
+		if edit := w.latest[obj]; edit.value != m.known.values[obj] || w.save != nil {
 			changes = append(changes, edit)
-			m.known[obj] = edit.value
+			m.known.set(obj, edit.value)
 		}
 	}
 	if len(changes) == 0 && w.save == nil {
 		return
 	}
-	p := modelPending{save: w.save, author: w.author, changes: changes}
+	p := modelPending{save: w.save, author: w.author, changes: changes, footprint: footprint}
 	if w.save != nil {
 		p.message = w.save.message
 	} else {
@@ -363,26 +650,36 @@ func generatedMessage(changes []modelEdit) string {
 
 // push publishes the pending writes. A remote that moved behind the worker's back is found by the
 // push, which replays the decided changes onto it, and every applier is due for the foreign commit.
+// The footprint of a replayed write was proven on another tree, so it holds nothing about the commit.
 func (m *windowModel) push() {
 	if len(m.pending) == 0 {
 		return
 	}
 	for _, p := range m.pending {
 		commit := modelCommit{author: p.author, message: p.message, resync: p.resync,
-			files: map[string]string{}, seqs: map[string]int{}}
+			files: map[string]modelFile{}, seqs: map[string]int{}}
+		if !m.foreignUnseen {
+			commit.footprint = p.footprint
+		}
+		var paths []string
 		for _, edit := range p.changes {
-			if edit.value == m.remote[edit.obj] {
+			changed := m.remote.set(edit.obj, edit.value)
+			if len(changed) == 0 {
 				continue
 			}
-			m.remote[edit.obj] = edit.value
-			commit.files[edit.obj] = edit.value
+			paths = append(paths, changed...)
 			commit.seqs[edit.obj] = edit.seq
 		}
-		if len(commit.files) == 0 {
+		if len(paths) == 0 {
 			if p.save != nil {
 				m.resolve(p.save, FinalizeAlreadyPresent)
 			}
 			continue
+		}
+		slices.Sort(paths)
+		commit.paths = slices.Compact(paths)
+		for _, path := range commit.paths {
+			commit.files[path] = m.remote.file(path)
 		}
 		commit.bootstrap = !m.bootstrapped
 		m.bootstrapped = true
@@ -395,7 +692,7 @@ func (m *windowModel) push() {
 	if m.foreignUnseen {
 		m.foreignUnseen, m.applyDue = false, true
 	}
-	m.known = maps.Clone(m.remote)
+	m.known = m.remote.clone()
 }
 
 // endWake is the loop's end of every wake. It reports whether an apply was sent: the driver's applier
@@ -408,40 +705,38 @@ func (m *windowModel) endWake() bool {
 	}
 	if m.hinted {
 		m.hinted = false
-		if m.window != nil && m.window.save == nil {
-			m.close(windowFinalizeReasonForeignCommit)
+		for _, w := range slices.Clone(m.windows) {
+			if w.save == nil {
+				m.close(w, windowFinalizeReasonForeignCommit)
+			}
 		}
 	}
 	m.push()
 	if !m.applyDue || len(m.saves) > 0 {
 		return false
 	}
-	if m.window != nil {
-		m.close(windowFinalizeReasonApplyDue)
-	}
+	m.closeAll(windowFinalizeReasonApplyDue)
 	m.push()
 	m.applyDue = false
 	// The apply is of the tip the worker knows: a push it has not found yet is not in it.
-	m.cluster = maps.Clone(m.known)
+	m.cluster = maps.Clone(m.known.values)
 	return true
 }
 
-// resync closes the window, then commits, as the operator, every live object Git does not hold as
-// it is. prune.mode is onEvent, so nothing is swept. An object it adds is adopted: an apply is due.
+// resync closes the windows, then commits, as the operator, every live object Git does not hold as it
+// is. prune.mode is onEvent, so nothing is swept. An object it adds is adopted: an apply is due.
 func (m *windowModel) resync() {
-	if m.window != nil {
-		m.close(windowFinalizeReasonResyncBeforeApply)
-	}
+	m.closeAll(windowFinalizeReasonResyncBeforeApply)
 	var changes []modelEdit
 	for _, obj := range modelObjects {
 		value := m.cluster[obj]
-		if value == "" || value == m.known[obj] {
+		if value == "" || value == m.known.values[obj] {
 			continue
 		}
-		if m.known[obj] == "" {
+		if m.known.values[obj] == "" {
 			m.applyDue = true
 		}
-		m.known[obj] = value
+		m.known.set(obj, value)
 		changes = append(changes, modelEdit{obj: obj, value: value})
 	}
 	if len(changes) > 0 {
@@ -449,11 +744,9 @@ func (m *windowModel) resync() {
 	}
 }
 
-// shutdown closes the window and publishes; a save still waiting for a window is given back.
+// shutdown closes the windows and publishes; a save still waiting for a window is given back.
 func (m *windowModel) shutdown() {
-	if m.window != nil {
-		m.close(windowFinalizeReasonShutdown)
-	}
+	m.closeAll(windowFinalizeReasonShutdown)
 	m.push()
 	for name := range m.saves {
 		m.given[name] = true
@@ -479,12 +772,26 @@ type windowModelRun struct {
 	exited    bool
 	values    int
 	saves     int
+	// concurrent is how many steps ended with more than one window open.
+	concurrent int
 }
 
 func newWindowModelRun(t *testing.T, seed int64) *windowModelRun {
 	t.Helper()
-	docs := map[string]string{"x": "x0", "y": "y0", "z": "z0"}
-	f := newEchoFixture(t, "window-model-"+strconv.FormatInt(seed, 10), configv1alpha3.PruneOnEvent, docs)
+	tree := modelTree{
+		values: map[string]string{"x": "x0", "w": "w0", "z": "z0", "k": "k0", "s1": "s10", "s2": "s20"},
+		files: map[string][]string{
+			echoFile("x"): {"x"}, echoFile("w"): {"w"}, echoFile("z"): {"z"},
+			modelKustDir + "/k.yaml": {"k"}, modelSharedFile: {"s1", "s2"},
+		},
+		kust: []string{"k.yaml"},
+	}
+	layout := map[string]string{}
+	for _, path := range []string{modelKustFile, modelKustDir + "/k.yaml", modelSharedFile} {
+		layout[path] = tree.render(path)
+	}
+	f := newEchoFixtureWith(t, "window-model-"+strconv.FormatInt(seed, 10), configv1alpha3.PruneOnEvent,
+		map[string]string{"x": "x0", "w": "w0", "z": "z0"}, layout)
 	requester := f.withClaim()
 	r := &windowModelRun{t: t, seed: seed, f: f, requester: requester, rng: rand.New(rand.NewSource(seed))}
 	r.clock = useTestClock(f.worker)
@@ -493,13 +800,34 @@ func newWindowModelRun(t *testing.T, seed int64) *windowModelRun {
 	r.base = gitIn(t, f.repoDir, "rev-parse", "main")
 	r.knownTip = r.base
 	r.start = r.clock.Now()
-	r.m = newWindowModel(r.start, docs)
+	r.m = newWindowModel(r.start, tree)
 	r.m.bootstrapped = gitIn(t, f.repoDir, "ls-tree", "--name-only", r.base, echoTarget+"/README.md") != ""
 	return r
 }
 
+// pushFromOutside commits the files at paths, as tree holds them, from the outside clone.
+func (r *windowModelRun) pushFromOutside(tree modelTree, paths []string, message string) {
+	r.t.Helper()
+	clone := r.f.clone
+	gitIn(r.t, clone, "pull", "--quiet", "--ff-only", "origin", "main")
+	for _, path := range paths {
+		full := filepath.Join(clone, path)
+		require.NoError(r.t, os.MkdirAll(filepath.Dir(full), 0o750))
+		require.NoError(r.t, os.WriteFile(full, []byte(tree.render(path)), 0o600))
+		gitIn(r.t, clone, "add", path)
+	}
+	gitIn(r.t, clone, "commit", "--quiet", "-m", message)
+	gitIn(r.t, clone, "push", "--quiet", "origin", "HEAD:main")
+}
+
 func (r *windowModelRun) failf(format string, args ...any) {
 	r.t.Helper()
+	if os.Getenv("WINDOW_MODEL_LOGS") != "" {
+		r.t.Log("the worker's log:\n" + strings.Join(r.logs.matching(""), "\n"))
+		for _, p := range splitLines(gitIn(r.t, r.f.repoDir, "ls-tree", "-r", "--name-only", "main")) {
+			r.t.Log("DEBUGFILE " + p + ":\n" + gitIn(r.t, r.f.repoDir, "show", "main:"+p))
+		}
+	}
 	tail := r.trace
 	if len(tail) > 40 {
 		tail = tail[len(tail)-40:]
@@ -612,7 +940,7 @@ func (r *windowModelRun) advance(d time.Duration) {
 
 func (r *windowModelRun) freshValue(obj string) string {
 	r.values++
-	return obj + strconv.Itoa(r.values)
+	return obj + "v" + strconv.Itoa(r.values)
 }
 
 func (r *windowModelRun) event(author, obj, value string) Event {
@@ -628,10 +956,15 @@ func (r *windowModelRun) event(author, obj, value string) Event {
 }
 
 // write is one accepted live write: a new value, an undo to an earlier one, the value the object
-// already holds, or a delete.
+// already holds, or a delete. Each author mostly edits an object of its own, so their windows can stay
+// open side by side, and sometimes any other.
 func (r *windowModelRun) write(pressure bool) {
-	author := modelAuthors[r.rng.Intn(len(modelAuthors))]
+	who := r.rng.Intn(len(modelAuthors))
+	author := modelAuthors[who]
 	obj := modelObjects[r.rng.Intn(len(modelObjects))]
+	if r.rng.Intn(3) > 0 {
+		obj = modelObjects[who]
+	}
 	current := r.m.cluster[obj]
 	value, kind := r.freshValue(obj), "write"
 	switch roll := r.rng.Intn(20); {
@@ -639,7 +972,7 @@ func (r *windowModelRun) write(pressure bool) {
 		value, kind = r.m.history[obj][r.rng.Intn(len(r.m.history[obj])-1)], "undo"
 	case roll < 7 && current != "":
 		value, kind = current, "no-op"
-	case roll < 10 && current != "":
+	case roll < 9 && current != "":
 		value, kind = "", "delete"
 	}
 	event := r.event(author, obj, value)
@@ -691,8 +1024,8 @@ func (r *windowModelRun) foreign() {
 	r.values++
 	value := "outside" + strconv.Itoa(r.values)
 	r.notef("outside push %s=%q, hinted", obj, value)
-	r.f.pushFromOutside(obj, value)
-	r.m.remote[obj] = value
+	path := r.m.remote.setOutside(obj, value)
+	r.pushFromOutside(r.m.remote, []string{path}, "outside: "+obj+"="+value)
 	r.m.foreignUnseen = true
 	r.f.loop.pushHinted = true
 	r.wake(nil, func() { r.m.hinted = true })
@@ -756,6 +1089,9 @@ func (r *windowModelRun) run(steps int) {
 	for range steps {
 		r.step()
 		r.check("step")
+		if len(r.m.windows) > 1 {
+			r.concurrent++
+		}
 	}
 	if r.rng.Intn(2) == 0 {
 		r.shutdown()
@@ -766,28 +1102,32 @@ func (r *windowModelRun) run(steps int) {
 	r.drained()
 }
 
-var closeLine = regexp.MustCompile(`"msg"="Finalizing open commit window" "reason"="([^"]+)" "windowAuthor"="([^"]*)"`)
+var closeLine = regexp.MustCompile(`"msg"="Finalizing open commit window" "reason"="([^"]+)" ` +
+	`"windowAuthor"="([^"]*)" "windowTarget"="[^"]*" "window"=(\d+)`)
 
 // check compares the worker with the model after a step.
 func (r *windowModelRun) check(what string) {
 	r.t.Helper()
-	r.checkWindow(what)
+	r.checkWindows(what)
 	r.checkTimers(what)
 	r.checkSaves(what)
 	r.checkCloses(what)
 	r.checkCommits(what)
+	if lines := r.logs.matching(decisionSingleWindowFallback); len(lines) > 0 {
+		r.failf("%s: the worker refused a commit outside its footprint: %s", what, lines[0])
+	}
 }
 
-// checkWindow compares the open window and what is retained.
-func (r *windowModelRun) checkWindow(what string) {
+// checkWindows compares the open windows and what is retained.
+func (r *windowModelRun) checkWindows(what string) {
 	r.t.Helper()
 	loop, m := r.f.loop, r.m
-	if got, want := r.workerWindow(), m.describeWindow(); got != want {
-		r.failf("%s: the open window differs:\n  worker %s\n  model  %s", what, got, want)
+	if got, want := r.workerWindows(), m.describeWindows(); got != want {
+		r.failf("%s: the open windows differ:\n  worker %s\n  model  %s", what, got, want)
 	}
-	if got, want := loop.totalRetainedBytes(), m.windowCharge(); got != want || loop.commitWindows.windowBytes != want {
-		r.failf("%s: retained %d (window %d), the model's window charge is %d", what, got,
-			loop.commitWindows.windowBytes, want)
+	if got, want := loop.totalRetainedBytes(), m.windowCharge(); got != want || loop.windows.bytes() != want {
+		r.failf("%s: retained %d (windows %d), the model's window charge is %d", what, got,
+			loop.windows.bytes(), want)
 	}
 	if len(loop.pendingWrites) != 0 {
 		r.failf("%s: %d writes still pending after a wake that pushed at once", what, len(loop.pendingWrites))
@@ -795,7 +1135,8 @@ func (r *windowModelRun) checkWindow(what string) {
 }
 
 // checkTimers compares the timers the worker has armed with the model's deadlines: the commit timer
-// for the open window's close, the attach timer for the earliest deadline of a save still waiting.
+// for the earliest close of an open window, the attach timer for the earliest deadline of a save still
+// waiting.
 func (r *windowModelRun) checkTimers(what string) {
 	r.t.Helper()
 	if r.exited {
@@ -803,8 +1144,10 @@ func (r *windowModelRun) checkTimers(what string) {
 	}
 	loop, m := r.f.loop, r.m
 	var commitAt, attachAt time.Time
-	if m.window != nil {
-		commitAt, _ = m.window.closeAt()
+	for _, w := range m.windows {
+		if at, _ := w.closeAt(); commitAt.IsZero() || at.Before(commitAt) {
+			commitAt = at
+		}
 	}
 	for _, s := range m.saves {
 		if !s.attached && (attachAt.IsZero() || s.deadline.Before(attachAt)) {
@@ -826,19 +1169,27 @@ func (r *windowModelRun) describeTimer(armed bool, at time.Time) string {
 	return "in " + at.Sub(r.m.now).String()
 }
 
-// workerWindow describes the worker's open window as describeWindow does the model's.
-func (r *windowModelRun) workerWindow() string {
-	w := r.f.loop.openWindow
-	if w == nil {
+// workerWindows describes the worker's open windows as describeWindows does the model's. An unknown
+// footprint's reason is the worker's to word.
+func (r *windowModelRun) workerWindows() string {
+	var out []string
+	for _, w := range r.f.loop.windows.all() {
+		saved := ""
+		if w.pendingCR != nil {
+			saved = w.pendingCR.Name
+		}
+		footprint := footprintString(w.footprint)
+		if w.footprint != nil && !w.footprint.known() {
+			footprint = "unknown"
+		}
+		at, reason := w.closeAt()
+		out = append(out, fmt.Sprintf("#%d %s objs=%d save=%q closes in %s (%s) charge %d footprint %s", w.seq,
+			w.Author, len(w.pathOrder), saved, at.Sub(r.m.now), reason, w.bytes, footprint))
+	}
+	if len(out) == 0 {
 		return "none"
 	}
-	saved := ""
-	if w.pendingCR != nil {
-		saved = w.pendingCR.Name
-	}
-	at, reason := w.closeAt()
-	return fmt.Sprintf("%s objs=%d save=%q closes in %s (%s) charge %d", w.Author, len(w.pathOrder), saved,
-		at.Sub(r.m.now), reason, w.bytes)
+	return strings.Join(out, "; ")
 }
 
 // checkSaves compares the registered saves, and every save's outcome and how often it settled.
@@ -874,7 +1225,7 @@ func (r *windowModelRun) checkSaves(what string) {
 	}
 }
 
-// checkCloses compares the windows closed so far, by reason and author, in order.
+// checkCloses compares the windows closed so far, by reason, author and number, in order.
 func (r *windowModelRun) checkCloses(what string) {
 	r.t.Helper()
 	var closes []string
@@ -883,7 +1234,7 @@ func (r *windowModelRun) checkCloses(what string) {
 		if match == nil {
 			r.failf("unparsed close line %s", line)
 		}
-		closes = append(closes, match[1]+" "+match[2])
+		closes = append(closes, match[1]+" "+match[2]+" #"+match[3])
 	}
 	if !slices.Equal(closes, r.m.closes) {
 		r.failf("%s: close reasons differ:\n  worker %v\n  model  %v", what, closes, r.m.closes)
@@ -931,10 +1282,7 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 			want.message)
 	}
 	paths := splitLines(gitIn(r.t, r.f.repoDir, "diff-tree", "-r", "--name-only", "--no-commit-id", hash))
-	var wantPaths []string
-	for obj := range want.files {
-		wantPaths = append(wantPaths, echoFile(obj))
-	}
+	wantPaths := slices.Clone(want.paths)
 	if want.bootstrap {
 		for _, name := range modelBootstrap {
 			wantPaths = append(wantPaths, echoTarget+"/"+name)
@@ -946,8 +1294,16 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 	if !slices.Equal(paths, wantPaths) {
 		r.failf("%s: commit %s by %s changes %v; the model's changes %v", what, hash[:8], author, paths, wantPaths)
 	}
-	for obj, value := range want.files {
-		r.checkDocument(what, hash, obj, value)
+	if f := want.footprint; f != nil {
+		for _, path := range paths {
+			if !slices.Contains(f.paths, path) {
+				r.failf("%s: commit %s by %s changes %s, outside its window's footprint %s", what, hash[:8],
+					author, path, f)
+			}
+		}
+	}
+	for path, file := range want.files {
+		r.checkFile(what, hash, path, file)
 	}
 	for obj, seq := range want.seqs {
 		if seq <= r.m.landed[obj] {
@@ -957,26 +1313,65 @@ func (r *windowModelRun) checkCommit(what, hash string, want modelCommit) {
 	}
 }
 
-// checkDocument compares the document obj at rev, parsed, with the ConfigMap obj holding value; value
-// "" is no document. YAML 1.2, so a bare y is the name y.
-func (r *windowModelRun) checkDocument(what, rev, obj, value string) {
+// checkFile compares the file at path in rev, parsed, with what the model says it holds: the
+// kustomization's resources: entries, or each document whole, in order. YAML 1.2, so a bare y is the
+// name y.
+func (r *windowModelRun) checkFile(what, rev, path string, want modelFile) {
 	r.t.Helper()
-	var got, want map[string]any
-	listed := gitIn(r.t, r.f.repoDir, "ls-tree", "--name-only", rev, echoFile(obj))
-	if listed != "" {
-		if err := yaml.Unmarshal([]byte(gitIn(r.t, r.f.repoDir, "show", rev+":"+echoFile(obj))), &got); err != nil {
-			r.failf("%s: %s at %s: %v", what, obj, rev, err)
-		}
+	var content []byte
+	if gitIn(r.t, r.f.repoDir, "ls-tree", "--name-only", rev, path) != "" {
+		content = []byte(gitIn(r.t, r.f.repoDir, "show", rev+":"+path))
 	}
-	if value != "" {
-		want = map[string]any{
+	docs, err := parseDocuments(content)
+	if err != nil {
+		r.failf("%s: %s at %s: %v", what, path, rev, err)
+	}
+	if want.kustomization {
+		var entries []string
+		if len(docs) == 1 {
+			for _, entry := range asSlice(docs[0]["resources"]) {
+				entries = append(entries, fmt.Sprint(entry))
+			}
+		}
+		if len(docs) != 1 || !slices.Equal(entries, want.entries) {
+			r.failf("%s: %s at %s lists %v; the model's %v", what, path, rev, entries, want.entries)
+		}
+		return
+	}
+	var wantDocs []map[string]any
+	for _, doc := range want.docs {
+		wantDocs = append(wantDocs, map[string]any{
 			"apiVersion": "v1", "kind": "ConfigMap",
-			"metadata": map[string]any{"name": obj, "namespace": "default"},
-			"data":     map[string]any{"key": value},
-		}
+			"metadata": map[string]any{"name": doc[0], "namespace": "default"},
+			"data":     map[string]any{"key": doc[1]},
+		})
 	}
-	if !reflect.DeepEqual(got, want) {
-		r.failf("%s: %s at %s is %v; the model's is %v", what, obj, rev, got, want)
+	if !reflect.DeepEqual(docs, wantDocs) {
+		r.failf("%s: %s at %s is %v; the model's is %v", what, path, rev, docs, wantDocs)
+	}
+}
+
+func asSlice(v any) []any {
+	s, _ := v.([]any)
+	return s
+}
+
+// parseDocuments parses every document of a YAML stream with yaml.v3.
+func parseDocuments(content []byte) ([]map[string]any, error) {
+	var docs []map[string]any
+	decoder := yaml.NewDecoder(bytes.NewReader(content))
+	for {
+		var doc map[string]any
+		err := decoder.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if doc != nil {
+			docs = append(docs, doc)
+		}
 	}
 }
 
@@ -996,7 +1391,7 @@ func (r *windowModelRun) checkBootstrap(what, rev, name string) {
 func (r *windowModelRun) drained() {
 	r.t.Helper()
 	r.check("drained")
-	if r.m.window != nil || len(r.m.saves) != 0 || len(r.m.pending) != 0 {
+	if len(r.m.windows) != 0 || len(r.m.saves) != 0 || len(r.m.pending) != 0 {
 		r.failf("the model is not drained")
 	}
 	// An exited loop is dropped with the saves it gave back still counted in heldBytes; what it retains
@@ -1019,37 +1414,33 @@ func (r *windowModelRun) drained() {
 	}
 }
 
-// checkTree checks that Git is the base tree with the model's documents and, once the folder is
-// bootstrapped, the template's files: nothing else was added, changed or removed.
+// checkTree checks that Git is the base tree outside the folder, and in it the model's files and,
+// once the folder is bootstrapped, the template's: nothing else was added, changed or removed.
 func (r *windowModelRun) checkTree() {
 	r.t.Helper()
-	present := map[string]bool{}
+	var want []string
 	for _, path := range splitLines(gitIn(r.t, r.f.repoDir, "ls-tree", "-r", "--name-only", r.base)) {
-		present[path] = true
-	}
-	for _, obj := range modelObjects {
-		present[echoFile(obj)] = r.m.remote[obj] != ""
-		r.checkDocument("drained", "main", obj, r.m.remote[obj])
-	}
-	others := []string{"diff", "--name-only", r.base, "main", "--", ".",
-		":(exclude)" + echoTarget + "/default/configmaps"}
-	for _, name := range modelBootstrap {
-		others = append(others, ":(exclude)"+echoTarget+"/"+name)
-		if r.m.bootstrapped {
-			present[echoTarget+"/"+name] = true
-			r.checkBootstrap("drained", "main", name)
+		if !strings.HasPrefix(path, echoTarget+"/") {
+			want = append(want, path)
 		}
 	}
-	var want []string
-	for path, ok := range present {
-		if ok {
-			want = append(want, path)
+	want = append(want, modelKustFile)
+	r.checkFile("drained", "main", modelKustFile, r.m.remote.file(modelKustFile))
+	for path := range r.m.remote.files {
+		want = append(want, path)
+		r.checkFile("drained", "main", path, r.m.remote.file(path))
+	}
+	if r.m.bootstrapped {
+		for _, name := range modelBootstrap {
+			want = append(want, echoTarget+"/"+name)
+			r.checkBootstrap("drained", "main", name)
 		}
 	}
 	slices.Sort(want)
 	if tree := splitLines(gitIn(r.t, r.f.repoDir, "ls-tree", "-r", "--name-only", "main")); !slices.Equal(tree, want) {
 		r.failf("drained, Git holds %v; the model %v", tree, want)
 	}
+	others := []string{"diff", "--name-only", r.base, "main", "--", ".", ":(exclude)" + echoTarget}
 	if changed := gitIn(r.t, r.f.repoDir, others...); changed != "" {
 		r.failf("drained, Git changed the base's %s", changed)
 	}
@@ -1063,7 +1454,8 @@ func envInt(name string, fallback int) int {
 }
 
 // TestWindowModel_TheWorkerFollowsTheReferenceModel runs random input sequences through a worker and
-// the model, and checks every step.
+// the model, and checks every step. Across the seeds, some steps must end with several windows open,
+// or the search says nothing about them.
 func TestWindowModel_TheWorkerFollowsTheReferenceModel(t *testing.T) {
 	seeds, steps := envInt("WINDOW_MODEL_SEEDS", 6), envInt("WINDOW_MODEL_STEPS", 40)
 	if testing.Short() {
@@ -1073,9 +1465,16 @@ func TestWindowModel_TheWorkerFollowsTheReferenceModel(t *testing.T) {
 	if seed := envInt("WINDOW_MODEL_SEED", 0); seed > 0 {
 		first, seeds = int64(seed), 1
 	}
+	concurrent := 0
 	for seed := first; seed < first+int64(seeds); seed++ {
 		t.Run("seed-"+strconv.FormatInt(seed, 10), func(t *testing.T) {
-			newWindowModelRun(t, seed).run(steps)
+			run := newWindowModelRun(t, seed)
+			run.run(steps)
+			concurrent += run.concurrent
 		})
+	}
+	t.Logf("%d steps ended with several windows open", concurrent)
+	if seeds > 1 && !t.Failed() {
+		require.Positive(t, concurrent, "no step ended with several windows open")
 	}
 }

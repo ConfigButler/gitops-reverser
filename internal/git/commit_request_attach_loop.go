@@ -236,14 +236,14 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		"attach", string(req.Attach),
 		"attachTimeout", req.AttachTimeout.String())
 
-	if l.commitWindows.foreignTo(pcr) != nil {
+	if l.windows.foreignTo(pcr) != nil {
 		// Noted here and not left to noteForeignWindow, which skips a request whose deadline has
 		// passed: with attachTimeout: 0s that is every request, so a foreign window open at
 		// registration would go unseen and the request would resolve NoWindow — and, with
 		// CommitEmpty, record an empty commit while another author's work is in flight.
 		pcr.sawForeignWindow = true
 	}
-	window := l.commitWindows.forRequest(pcr)
+	window := l.windows.forRequest(pcr)
 	if window == nil {
 		return
 	}
@@ -277,7 +277,7 @@ func (l *branchWorkerEventLoop) saveInProgress(
 		if earlier.waiting(now) {
 			return earlier
 		}
-		collecting := earlier.attached && l.commitWindows.carrying(earlier.id) != nil
+		collecting := earlier.attached && l.windows.carrying(earlier.id) != nil
 		if collecting && attach != v1alpha3.AttachNext {
 			return earlier
 		}
@@ -328,7 +328,7 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 		if !pcr.waiting(now) || pcr.sawForeignWindow {
 			continue
 		}
-		foreign := l.commitWindows.foreignTo(pcr)
+		foreign := l.windows.foreignTo(pcr)
 		if foreign == nil {
 			continue
 		}
@@ -347,8 +347,9 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 // a second waits for the next window, and a request whose deadline has passed takes none.
 func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
 	now := l.w.now()
-	for _, window := range l.commitWindows.all() {
-		if window.pendingCR != nil {
+	for _, window := range l.windows.all() {
+		// An attach closes the windows that are due (closeOrArmWindow), so a later one may be gone.
+		if window.pendingCR != nil || !l.windows.isOpen(window) {
 			continue
 		}
 		var first *pendingCommitRequest
@@ -376,7 +377,7 @@ func (l *branchWorkerEventLoop) attachToWindow(window *openWindow, pcr *pendingC
 	id := pcr.id
 	window.pendingCR = &id
 	pcr.attached = true
-	l.commitWindows.charge(window, attachCharge(pcr.message))
+	l.windows.charge(window, attachCharge(pcr.message))
 	timers := windowTimers{noIdle: pcr.idleTimeout == nil, maxAt: now.Add(pcr.maxDuration)}
 	if pcr.idleTimeout != nil {
 		timers.idle = *pcr.idleTimeout

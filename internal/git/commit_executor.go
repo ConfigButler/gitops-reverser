@@ -110,6 +110,10 @@ func (w *BranchWorker) runPendingWrites(
 		// requestTemplate render failed back here at commit time.
 		pendingWrites[i].committedMessageSource = source
 		commitsCreated += created
+		// A new revision: every footprint proven on the tree before it is proven again (footprint.go).
+		if created > 0 {
+			w.checkoutCommits.Add(1)
+		}
 	}
 
 	return commitsCreated, refusals, nil
@@ -397,7 +401,8 @@ func (w *BranchWorker) executeEventWrite(
 	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
 	}
-	if !pendingWrite.actionsDecided {
+	first := !pendingWrite.actionsDecided
+	if first {
 		pendingWrite.actionsDecided = true
 		if !pendingWrite.keepsEveryObject() {
 			pendingWrite.Events = eventsThatChanged(pendingWrite.Events, changedBy)
@@ -406,6 +411,12 @@ func (w *BranchWorker) executeEventWrite(
 	recordEmpty := !anyChanges && pendingWrite.AllowEmpty && !target.Suspend
 	if !anyChanges && !recordEmpty {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, nil
+	}
+	// Before the commit, not after it: a window that changes a file outside its footprint may have
+	// been open beside one that changes that file too, and committing it could put an older value
+	// over a newer one. The caller undoes the worktree.
+	if err := w.checkFootprint(worktree, pendingWrite, first); err != nil {
+		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
 	}
 
 	commitMessage, commitOptions, source, err := pendingWrite.commitMetadata()

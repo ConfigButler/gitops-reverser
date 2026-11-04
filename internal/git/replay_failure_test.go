@@ -128,7 +128,7 @@ func TestReplayFailure_DoesNotResolveACommitRequestThatNeverLanded(t *testing.T)
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("saved-by-hand", "alice", ledgerTargetName)},
 	}})
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	req := attachReq("alice", 0)
 	req.GitTargetName = ledgerTargetName
 	req.Message = "save: this must not be reported as committed"

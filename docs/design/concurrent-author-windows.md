@@ -1,6 +1,9 @@
 # Design: one commit window per author, open at the same time
 
-Status: **proposal, not built.** Raised by gitops-api's review of the source-side save (PR #456):
+Status: **stages 1 and 2 built** (`internal/git/window_set.go`, `footprint.go`,
+`window_admission.go`; see [what stage 2 built](#what-stage-2-built)). Stage 2 ships without the
+startup flag of stage 4, so stage 3 lands before the next release (`docs/TODO.md`). Raised by
+gitops-api's review of the source-side save (PR #456):
 with saves created straight from a browser, a second person's edit splits the first person's change
 into two commits. This page sets out the change that fixes that, the rules it must keep, how to test
 it, and the stages to ship it in.
@@ -299,6 +302,28 @@ window, so they are proven against today's behavior before they are used to judg
    [window-field-ownership-and-apply-hold.md](window-field-ownership-and-apply-hold.md), using those
    measurements. Field ownership and the apply hold are separate changes, each with its own
    state-machine review.
+
+### What stage 2 built
+
+The rules above, with these choices where the page left room:
+
+- **A window is proven once it has company.** A window that never sat beside another has no
+  footprint ("unproven") and its commit is not checked; proving costs a scan of the folder per
+  revision, and a lone window needs no proof. From the first write admitted beside it, a window's
+  footprint covers every write it collects.
+- **The proof also needs the folder's bootstrap files committed**, the checkout to hold every decided
+  write, a whole object (not a field patch) and a type that is not encrypted. Anything else is
+  unknown. The revision is the count of the worker's resets and own commits, with the generation.
+- **The check before the commit uses a proof of the commit's own tree.** The windows a write's
+  admission closes commit before it and can move what it changes (a delete committed first turns
+  its update into a create), so the decided write is proven again once the checkout holds every
+  write before it. After a reset or a `GitTarget` change the proof is of another tree, and the
+  commit is not checked. A refusal fails the write as terminal: the worktree is undone, its save
+  fails with the paths, the worker logs `SingleWindowFallback` and holds one window at a time until
+  it restarts, and a resync of the `GitTarget` is asked for.
+- **A request's own author's window stands in no one's way.** A save waiting while another author's
+  window is open records a mismatch only when no window of its own author is open.
+- **The window ID** (`window`) is in the open, close and finalized log lines, with the branch.
 
 ## What it costs
 

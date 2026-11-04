@@ -91,7 +91,7 @@ func carryKey() string { return objectKey(carryEdit("alice", "", "").Identifier)
 func TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit(t *testing.T) {
 	t.Run("in the window that holds the edit", func(t *testing.T) {
 		f := carryFlushOverAnEdit(t, "carry-same-window")
-		require.NotNil(t, f.loop.openWindow, "E1 is collecting in alice's window")
+		require.NotNil(t, f.loop.windows.only(), "E1 is collecting in alice's window")
 
 		f.writeWindow(carryApply("a1", "b1"))
 		require.True(t, f.echoApplier().repair, "the apply over E1 is withheld, and a Repair is pending")

@@ -144,7 +144,7 @@ func TestCatchUpAfter_YieldsToAnEditBeforeItsResume(t *testing.T) {
 	assert.False(t, sent[0].Current(), "an edit arrived during the fetch")
 
 	report(sent[0], ApplyStale)
-	loop.openWindow = nil
+	loop.windows.setOnly(nil)
 	loop.serviceAppliers()
 	assert.Empty(t, requester.taken(), "not again at once: a fresh interval")
 	state := loop.appliers[applierRef("alpha")]

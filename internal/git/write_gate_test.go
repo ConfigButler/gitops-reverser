@@ -140,7 +140,7 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 			closeGate func(), req *AttachCommitRequest) {
 			serviceAttach(loop, req)
 			writeTo(loop, "new")
-			require.NotNil(t, loop.openWindow, "the request is attached to an open window")
+			require.NotNil(t, loop.windows.only(), "the request is attached to an open window")
 			closeGate()
 			forceDueNamed(loop, req)
 			loop.pushPending()
@@ -149,7 +149,7 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 			closeGate func(), req *AttachCommitRequest) {
 			writeTo(loop, "existing")
 			serviceAttach(loop, req)
-			require.NotNil(t, loop.openWindow)
+			require.NotNil(t, loop.windows.only())
 			closeGate()
 			forceDueNamed(loop, req)
 			loop.pushPending()
@@ -185,8 +185,8 @@ func TestWriteGate_ARequestOnARefusingTargetFails(t *testing.T) {
 // forceDueNamed closes req's attached window at its maxDuration, as forceDue does for crName.
 func forceDueNamed(loop *branchWorkerEventLoop, req *AttachCommitRequest) {
 	id := req.id()
-	if loop.openWindow != nil && loop.openWindow.pendingCR != nil && *loop.openWindow.pendingCR == id {
-		loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
+	if loop.windows.only() != nil && loop.windows.only().pendingCR != nil && *loop.windows.only().pendingCR == id {
+		loop.windows.only().timers.maxAt = time.Now().Add(-time.Millisecond)
 		loop.closeOrArmWindow()
 		loop.endWake(0)
 	}
@@ -203,7 +203,7 @@ func TestWriteGate_ASaveWhoseWritesTheRenderGateDroppedSaysSo(t *testing.T) {
 
 	serviceAttach(loop, req)
 	writeTo(loop, "dropped")
-	require.Nil(t, loop.openWindow, "the gate dropped the write, so no window opened")
+	require.Nil(t, loop.windows.only(), "the gate dropped the write, so no window opened")
 	expire(loop)
 	loop.pushPending()
 
@@ -349,7 +349,7 @@ func TestWriteGate_ARenderGateClosingDuringFinalizeStopsTheWholeWindow(t *testin
 				serviceAttach(loop, req)
 			}
 			writeTo(loop, "new")
-			require.NotNil(t, loop.openWindow)
+			require.NotNil(t, loop.windows.only())
 			require.True(t, worker.normalWritesAllowed(crTarget, "default"), "the first look finds the gate open")
 
 			// Close the gate from inside the finalize, at the GitTarget read that resolves its metadata.
@@ -372,7 +372,7 @@ func TestWriteGate_ARenderGateClosingDuringFinalizeStopsTheWholeWindow(t *testin
 			}
 			loop.pushPending()
 
-			assert.Nil(t, loop.openWindow)
+			assert.Nil(t, loop.windows.only())
 			assert.Empty(t, loop.pendingWrites, "nothing is retained")
 			assert.Equal(t, before, remoteHead(t, serverRepo), "nothing reached the remote")
 			if withRequest {

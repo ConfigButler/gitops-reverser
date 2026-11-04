@@ -36,6 +36,15 @@ type echoFixture struct {
 
 func newEchoFixture(t *testing.T, slug string, prune configv1alpha3.PruneMode, docs map[string]string) *echoFixture {
 	t.Helper()
+	return newEchoFixtureWith(t, slug, prune, docs, nil)
+}
+
+// newEchoFixtureWith is newEchoFixture with files, by path, committed from outside after the documents
+// and before the worker clones, so the worker starts on them as on anything it has applied.
+func newEchoFixtureWith(
+	t *testing.T, slug string, prune configv1alpha3.PruneMode, docs, files map[string]string,
+) *echoFixture {
+	t.Helper()
 	f := newLedgerFixture(t, slug, true)
 	f.worker.mapper = configMapMapper()
 	createGitTargetWithPruneMode(t, f.worker, echoTarget, echoTarget, prune)
@@ -46,6 +55,16 @@ func newEchoFixture(t *testing.T, slug string, prune configv1alpha3.PruneMode, d
 	e := &echoFixture{ledgerFixture: f, clone: clone}
 	for name, value := range docs {
 		e.pushFromOutside(name, value)
+	}
+	if len(files) > 0 {
+		for path, content := range files {
+			full := filepath.Join(clone, path)
+			require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o750))
+			require.NoError(t, os.WriteFile(full, []byte(content), 0o600))
+			gitIn(t, clone, "add", path)
+		}
+		gitIn(t, clone, "commit", "--quiet", "-m", "outside: files")
+		gitIn(t, clone, "push", "--quiet", "origin", "HEAD:main")
 	}
 	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 	e.loop = newBranchWorkerEventLoop(f.worker, 0)
@@ -317,17 +336,17 @@ func TestApplierEchoes_FlushThenApply(t *testing.T) {
 	holdPushes(f.loop) // the push cooldown runs: a flush does not wait for it
 
 	f.writeWindow(echoEvent("x", "x2")) // E0, in the open window when the apply comes due
-	require.NotNil(t, f.loop.openWindow)
+	require.NotNil(t, f.loop.windows.only())
 	restore := failPushes(t, f.worker)
 	f.echoApplier().repair = true
 	f.loop.endWake(0)
 
-	assert.Nil(t, f.loop.openWindow, "the apply closed the open window")
+	assert.Nil(t, f.loop.windows.only(), "the apply closed the open window")
 	assert.Empty(t, requester.taken(), "the writes up to the mark are not published yet")
 	require.NotNil(t, f.loop.flushEdits, "edits are recorded from the mark")
 
 	f.writeWindow(echoEvent("y", "y2")) // E1, decided after the mark
-	require.NotNil(t, f.loop.openWindow, "it opens a window of its own")
+	require.NotNil(t, f.loop.windows.only(), "it opens a window of its own")
 
 	restore()
 	f.loop.retry.due = time.Now().Add(-time.Second)

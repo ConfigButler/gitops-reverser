@@ -45,7 +45,7 @@ func (l *branchWorkerEventLoop) applyResync(req *ResyncRequest) {
 		"resourceVersion", req.ResourceVersion,
 		"scope", req.Scope.String(),
 		"gitTarget", req.GitTargetNamespace+"/"+req.GitTargetName,
-		"openWindow", l.commitWindows.anyOpen(),
+		"openWindow", l.windows.anyOpen(),
 		"pendingWrites", len(l.pendingWrites))
 	// A resync force-finalizes every open window to preserve arrival order before its mark-and-sweep.
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonResyncBeforeApply)
