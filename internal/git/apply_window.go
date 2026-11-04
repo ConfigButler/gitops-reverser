@@ -276,13 +276,15 @@ func (state *applierState) covers(event Event) bool {
 // and must not be mirrored: the apply itself landing on an object nobody edited (F1), or the apply
 // arriving late over a newer API edit (withheld, with a Repair pending). Every other event is
 // recorded as an API-side edit in the windows of the appliers that cover it, and in the edits the
-// attempts of a flush in progress will hold once they are sent (recordFlushEdit). It is called for
-// each live event before it reaches the commit window.
+// attempts of a flush in progress will hold once they are sent (recordFlushEdit). An event recorded
+// either way is kept as its object's last accepted version, what a withheld apply is compared with
+// (withheld_fields.go). It is called for each live event before it reaches the commit window.
 func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 	if len(l.appliers) == 0 {
 		return false
 	}
 	now := time.Now()
+	recorded := false
 	for _, ref := range l.sortedAppliers() {
 		applier := l.appliers[ref]
 		if !applier.covers(event) {
@@ -293,6 +295,7 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 			if l.judgeInWindow(applier, event, now) {
 				return true
 			}
+			recorded = true
 		case event.Operation != string(itypes.OperationDelete):
 			if _, alone := ref.writtenBy(event.LastFieldManagers); alone {
 				// No apply this worker asked for is landing: an echo after the grace, or an apply
@@ -304,6 +307,9 @@ func (l *branchWorkerEventLoop) withholdLateApply(event Event) bool {
 	// Decided after the flush mark, so not in the commit the flush's attempts apply: their windows
 	// hold it from the start (S1).
 	l.recordFlushEdit(event)
+	if recorded || l.flushing {
+		l.keepAccepted(event)
+	}
 	return false
 }
 
@@ -351,8 +357,10 @@ func (l *branchWorkerEventLoop) judgeInWindow(applier *applierState, event Event
 		// apply over the edit: events arrive in resourceVersion order, so the edit, recorded
 		// already, was written first, and mirroring this would revert it in Git and on the
 		// cluster. Only an undo in that same second is lost (C4 in docs/design/applier-echoes.md).
-		// An edit still held for render fidelity is repaired once it reaches Git.
+		// An edit still held for render fidelity is repaired once it reaches Git. The fields it
+		// reverted are recorded, so the next event of the object does not carry them into Git.
 		l.recordApplyWindowCollision(applier, window, event, collisionWithheld)
+		l.recordWithheld(event)
 		if !l.repairOnRelease(applier.ref, event) {
 			applier.repair = true
 		}

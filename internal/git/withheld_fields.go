@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package git
+
+import (
+	"maps"
+	"reflect"
+	"slices"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
+	itypes "github.com/ConfigButler/gitops-reverser/internal/types"
+)
+
+// A withheld apply (apply_window.go) is not mirrored, but it did land: the cluster runs the values it
+// reverted until a Repair puts the edit back. A window holds whole objects, so the next event of the
+// object, by anyone, carries each reverted value its author did not change. Committed as it came, it
+// wrote the apply's value under that author's name, the edit the apply overwrote was lost, and the
+// Repair then applied the loss.
+//
+// So the worker records, per object, the fields a withheld apply reverted: what the object's last
+// accepted version held there, and what the apply wrote. The last accepted version is the object of
+// the last event an apply window or a flush recorded as an edit (keepAccepted). This is the desired
+// view of docs/design/window-field-ownership-and-apply-hold.md, limited to the fields a withheld apply
+// reverted; commits stay whole objects, and no window owns fields.
+//
+// Every later event of the object, mirrored or not (the Repair's own landing included), and every
+// snapshot of it a resync decides, is restored against the record: a field still holding the apply's
+// value was carried over, and is set back to the accepted value; a field holding any other value was
+// changed by someone since, and leaves the record. A delete clears the object's record.
+//
+// Decided limits: a list is one field, so an edit to another item of a list the apply reverted still
+// carries the reverted item; an author setting a field to the apply's value cannot be told from
+// carrying it, and is set back; and the record lives in memory, so a restart loses it.
+
+// withheldFields is, by objectKey, the fields withheld applies reverted that no event has changed
+// since. It is plain data.
+type withheldFields map[string][]withheldField
+
+// withheldField is one field a withheld apply reverted.
+type withheldField struct {
+	// Path is the field's map keys from the object's root. A list is one field: a path never goes
+	// into one.
+	Path []string
+	// Accepted is what the object's last accepted version held at Path, Applier what the withheld
+	// apply wrote there.
+	Accepted fieldValue
+	Applier  fieldValue
+}
+
+// fieldValue is a field's value, or its absence.
+type fieldValue struct {
+	Value  any
+	Absent bool
+}
+
+// equal reports whether two field values are the same value, or both absent.
+func (v fieldValue) equal(other fieldValue) bool {
+	return v.Absent == other.Absent && (v.Absent || reflect.DeepEqual(v.Value, other.Value))
+}
+
+// keepAccepted keeps a live event's object as its object's last accepted version, after an apply
+// window or a flush recorded the event as an edit. A delete, and a field patch, which carries no
+// whole object, forget it: with no version to compare with, a withhold records nothing.
+func (l *branchWorkerEventLoop) keepAccepted(event Event) {
+	key := objectKey(event.Identifier)
+	if event.Object == nil || event.Operation == string(itypes.OperationDelete) {
+		delete(l.accepted, key)
+		return
+	}
+	if l.accepted == nil {
+		l.accepted = map[string]*unstructured.Unstructured{}
+	}
+	l.accepted[key] = event.Object.DeepCopy()
+}
+
+// forgetAccepted drops the last accepted versions of the objects no open apply window and no flush
+// records an edit of: a write to one of those is never withheld (judgeInWindow).
+func (l *branchWorkerEventLoop) forgetAccepted(now time.Time) {
+	for key := range l.accepted {
+		if !l.editRecorded(key, now) {
+			delete(l.accepted, key)
+		}
+	}
+}
+
+// editRecorded reports whether an open apply window, or the flush in progress, records an edit of
+// the object.
+func (l *branchWorkerEventLoop) editRecorded(key string, now time.Time) bool {
+	for _, state := range l.appliers {
+		window := state.window
+		if !window.open(now) {
+			continue
+		}
+		if _, edited := window.edited[key]; edited {
+			return true
+		}
+		if _, carried := window.carried[key]; carried && window.carrying(now) {
+			return true
+		}
+	}
+	for _, edits := range l.flushEdits {
+		if _, edited := edits[key]; edited {
+			return true
+		}
+	}
+	return false
+}
+
+// recordWithheld records the fields a withheld apply reverted: where its object differs from the
+// object's last accepted version. A field recorded already is replaced, with any recorded inside it
+// or around it. With no accepted version kept there is nothing to compare with, and nothing is
+// recorded.
+//
+// The event was restored first (restoreWithheld), so a field it still carried from an earlier
+// withheld apply holds the accepted value, differs in nothing, and keeps its record.
+func (l *branchWorkerEventLoop) recordWithheld(event Event) {
+	key := objectKey(event.Identifier)
+	accepted := l.accepted[key]
+	if accepted == nil || event.Object == nil {
+		return
+	}
+	reverted := diffFields(nil, accepted.Object, event.Object.Object)
+	if len(reverted) == 0 {
+		return
+	}
+	fields := slices.DeleteFunc(slices.Clone(l.withheld[key]), func(field withheldField) bool {
+		return slices.ContainsFunc(reverted, func(other withheldField) bool { return overlaps(field.Path, other.Path) })
+	})
+	if l.withheld == nil {
+		l.withheld = withheldFields{}
+	}
+	l.withheld[key] = append(fields, reverted...)
+	l.w.Log.V(1).Info("Recorded the fields a withheld apply reverted, so the next event of the object does "+
+		"not carry them into Git", "branch", l.w.Branch, "object", event.Identifier.String(), "fields", len(reverted))
+}
+
+// restoreWithheldEvent restores a live event against the record of its object, before it is
+// judged: a delete clears the record, and any other event with a whole object has each field it
+// carried from a withheld apply set back (restoreWithheld).
+func (l *branchWorkerEventLoop) restoreWithheldEvent(event *Event) {
+	key := objectKey(event.Identifier)
+	if event.Operation == string(itypes.OperationDelete) {
+		delete(l.withheld, key)
+		return
+	}
+	if restored := l.restoreWithheld(key, event.Object); restored != event.Object {
+		l.w.Log.Info("Set back the fields a withheld apply reverted, which the event carried: the cluster "+
+			"still runs the apply's values, and the event's author did not change them",
+			"branch", l.w.Branch, "object", event.Identifier.String(), "author", event.UserInfo.Username)
+		event.Object = restored
+	}
+}
+
+// restoreWithheldSnapshot restores each object of a resync's snapshot against its record, as a live
+// event is. The snapshot itself is left as it was: an object set back is a copy, in a copy of it.
+func (l *branchWorkerEventLoop) restoreWithheldSnapshot(
+	desired []manifestanalyzer.DesiredResource,
+) []manifestanalyzer.DesiredResource {
+	if len(l.withheld) == 0 {
+		return desired
+	}
+	var restored []manifestanalyzer.DesiredResource
+	for i, dr := range desired {
+		object := l.restoreWithheld(objectKey(dr.Resource), dr.Object)
+		if object == dr.Object {
+			continue
+		}
+		if restored == nil {
+			restored = slices.Clone(desired)
+		}
+		restored[i].Object = object
+	}
+	if restored == nil {
+		return desired
+	}
+	return restored
+}
+
+// restoreWithheld applies the record of an object to one of its later versions, and updates the
+// record: a field still holding the withheld apply's value is set back to the accepted value, and
+// stays recorded; a field holding any other value leaves the record. It returns the object to
+// mirror, a copy when a field was set back.
+func (l *branchWorkerEventLoop) restoreWithheld(
+	key string, object *unstructured.Unstructured,
+) *unstructured.Unstructured {
+	fields := l.withheld[key]
+	if len(fields) == 0 || object == nil {
+		return object
+	}
+	restored := object
+	var kept []withheldField
+	for _, field := range fields {
+		value, ok := lookupField(object.Object, field.Path)
+		if !ok || !value.equal(field.Applier) {
+			continue
+		}
+		kept = append(kept, field)
+		if restored == object {
+			restored = object.DeepCopy()
+		}
+		setField(restored.Object, field.Path, field.Accepted)
+	}
+	if len(kept) == 0 {
+		delete(l.withheld, key)
+	} else {
+		l.withheld[key] = kept
+	}
+	return restored
+}
+
+// diffFields lists the fields where applier differs from accepted, under path. Two maps are compared
+// key by key; anything else, a list included, is one field.
+func diffFields(path []string, accepted, applier map[string]any) []withheldField {
+	var fields []withheldField
+	keys := slices.Collect(maps.Keys(accepted))
+	for key := range applier {
+		if _, both := accepted[key]; !both {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		at := append(slices.Clone(path), key)
+		was, inAccepted := accepted[key]
+		now, inApplier := applier[key]
+		wasMap, wasIsMap := was.(map[string]any)
+		nowMap, nowIsMap := now.(map[string]any)
+		switch {
+		case inAccepted && inApplier && wasIsMap && nowIsMap:
+			fields = append(fields, diffFields(at, wasMap, nowMap)...)
+		case inAccepted && inApplier && reflect.DeepEqual(was, now):
+		default:
+			fields = append(fields, withheldField{
+				Path:     at,
+				Accepted: fieldValue{Value: copyValue(was), Absent: !inAccepted},
+				Applier:  fieldValue{Value: copyValue(now), Absent: !inApplier},
+			})
+		}
+	}
+	return fields
+}
+
+// lookupField is the value at path in object, or its absence. It is not ok when the path runs
+// through something that is not a map: whatever is there, it is not what the record compares.
+func lookupField(object map[string]any, path []string) (fieldValue, bool) {
+	current := object
+	for i, key := range path {
+		value, found := current[key]
+		if !found {
+			return fieldValue{Absent: true}, true
+		}
+		if i == len(path)-1 {
+			return fieldValue{Value: value}, true
+		}
+		next, isMap := value.(map[string]any)
+		if !isMap {
+			return fieldValue{}, false
+		}
+		current = next
+	}
+	return fieldValue{}, false
+}
+
+// setField sets the field at path in object to value, or removes it when value is absent. A map on
+// the way that is missing is created.
+func setField(object map[string]any, path []string, value fieldValue) {
+	current := object
+	for _, key := range path[:len(path)-1] {
+		next, isMap := current[key].(map[string]any)
+		if !isMap {
+			if value.Absent {
+				return
+			}
+			next = map[string]any{}
+			current[key] = next
+		}
+		current = next
+	}
+	last := path[len(path)-1]
+	if value.Absent {
+		delete(current, last)
+		return
+	}
+	current[last] = copyValue(value.Value)
+}
+
+// overlaps reports whether one path is the other or lies inside it.
+func overlaps(a, b []string) bool {
+	n := min(len(a), len(b))
+	return slices.Equal(a[:n], b[:n])
+}
+
+// copyValue deep-copies a value of an unstructured object.
+func copyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		copied := make(map[string]any, len(typed))
+		for key, item := range typed {
+			copied[key] = copyValue(item)
+		}
+		return copied
+	case []any:
+		copied := make([]any, len(typed))
+		for i, item := range typed {
+			copied[i] = copyValue(item)
+		}
+		return copied
+	default:
+		return value
+	}
+}
