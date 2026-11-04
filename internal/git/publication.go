@@ -157,6 +157,15 @@ func (m *WorkerManager) setPublicationGaugeSources() {
 	telemetry.SetGaugeSource(telemetry.GaugeAppliersHeld, source(func(w *BranchWorker) (int64, bool) {
 		return always(w.heldAppliers.Load())
 	}))
+	telemetry.SetGaugeSource(telemetry.GaugeGitCommitWindowsOpen, source(func(w *BranchWorker) (int64, bool) {
+		return always(w.openWindows.Load())
+	}))
+	telemetry.SetGaugeSource(telemetry.GaugeGitCommitWindowsSingle, source(func(w *BranchWorker) (int64, bool) {
+		if w.singleWindow.Load() {
+			return 1, true
+		}
+		return 0, true
+	}))
 }
 
 // publicationGauges are the gauges setPublicationGaugeSources installs.
@@ -170,6 +179,8 @@ var publicationGauges = []string{
 	telemetry.GaugeGitNextRetry,
 	telemetry.GaugeApplyOperationsUnresolved,
 	telemetry.GaugeAppliersHeld,
+	telemetry.GaugeGitCommitWindowsOpen,
+	telemetry.GaugeGitCommitWindowsSingle,
 }
 
 // publicationEventBuffer bounds the GitTarget events a burst of report changes can queue. A full

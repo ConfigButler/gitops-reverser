@@ -159,6 +159,11 @@ type BranchWorker struct {
 	// heldAppliers is how many of this branch's appliers the barrier holds a reason back for, as the
 	// loop last published it, for the apply_appliers_held gauge (barrier.go).
 	heldAppliers atomic.Int64
+	// openWindows is how many commit windows the loop holds open, and singleWindow whether it holds
+	// one at a time since a footprint fallback, as the loop last published them, for the
+	// git_commit_windows_open and git_commit_windows_single gauges.
+	openWindows  atomic.Int64
+	singleWindow atomic.Bool
 	// applyEpoch, appliersAhead and hasAppliers are the loop's ApplyState for the watch side, which
 	// reads it when a snapshot's collection starts (apply_epoch.go).
 	applyEpoch    atomic.Uint64
@@ -199,17 +204,18 @@ type BranchWorker struct {
 
 	// stoppingState closes the queue to new work from the moment Stop is called.
 	//
-	// Shutdown drains whatever is still on the FIFO without processing it, so an item accepted
-	// after that point is silently thrown away, while Enqueue's "true" has already told a watch
-	// loop it may advance its durable cursor past the event. That cost nothing while Stop was
+	// Shutdown decides the live writes still on the FIFO and drains every other item without
+	// processing it (decideQueuedWrites), so an item accepted after that point is silently thrown
+	// away, while Enqueue's "true" has already told a watch loop it may advance its durable cursor
+	// past the event. That cost nothing while Stop was
 	// only ever called at process exit. A worker REPLACED because its GitProvider names a
 	// different repository is stopped with the process still running, and the sibling GitTargets
 	// on its branch go on holding streams that point at it until their own next reconcile, which
 	// is minutes of accepted-and-discarded events.
 	//
 	// Refusing them turns a silent loss into the drop path every producer already handles: the
-	// watch leaves its cursor where it is and redelivers to the replacement. Items already ON the
-	// queue when Stop is called are still drained, which is the behaviour shutdown always had.
+	// watch leaves its cursor where it is and redelivers to the replacement. Writes already ON the
+	// queue when Stop is called are still decided and pushed, and other items drained.
 	//
 	// It is written and read under pendingResyncsMu, the lock every enqueue already holds across
 	// its send. Checking it outside that lock is not enough: an enqueue could pass the check,
@@ -1152,10 +1158,10 @@ type branchWorkerEventLoop struct {
 	flushing   bool
 	flushMark  uint64
 	flushEdits map[itypes.ResourceReference]map[string]time.Time
-	// accepted is, by objectKey, the object of the last event an open apply window or the flush
+	// accepted is, by withheldKey, the object of the last event an open apply window or the flush
 	// recorded as an edit, and withheld the fields withheld applies reverted that no event has
 	// changed since: the next event of the object is restored against them (withheld_fields.go).
-	accepted map[string]*unstructured.Unstructured
+	accepted map[withheldKey]*unstructured.Unstructured
 	withheld withheldFields
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
@@ -1289,6 +1295,8 @@ func (l *branchWorkerEventLoop) endWake(released int64) {
 // there would report a drained queue for a worker that has work.
 func (l *branchWorkerEventLoop) publishLoopState(released int64) {
 	l.w.hasUnpushedWork.Store(l.windows.anyOpen() || len(l.pendingWrites) > 0 || len(l.held) > 0)
+	l.w.openWindows.Store(int64(l.windows.count()))
+	l.w.singleWindow.Store(l.singleWindow)
 	l.syncAdmission(released)
 }
 
@@ -1506,6 +1514,7 @@ func (l *branchWorkerEventLoop) armCommitTimer() {
 
 func (l *branchWorkerEventLoop) handleShutdown() {
 	l.w.Log.Info("Handling shutdown, finalizing open window and pushing pending commits")
+	l.decideQueuedWrites()
 	l.finalizeOpenWindowWithReason(windowFinalizeReasonShutdown)
 	l.dropHeldAtShutdown()
 	if len(l.pendingWrites) > 0 {
@@ -1515,6 +1524,30 @@ func (l *branchWorkerEventLoop) handleShutdown() {
 	}
 	l.failUnpushedCommitRequests()
 	l.drainUnhandledQueueItems()
+}
+
+// decideQueuedWrites decides the live writes already on the FIFO when the shutdown began, before the
+// windows close, so the last push carries them. Enqueue answered "accepted" for each, and a watch may
+// have moved its cursor past it: dropped, the edit would come back only through a later resync, with
+// no author and no window of its own. It takes only what the FIFO held when the shutdown began, so a
+// producer still sending (the manager's cancel stops the worker before Stop closes admission) cannot
+// keep it going. Writes are decided locally; every other item, which may read the remote or bind a
+// save, is left to the drain, as before.
+func (l *branchWorkerEventLoop) decideQueuedWrites() {
+	for range len(l.w.eventQueue) {
+		var item WorkItem
+		select {
+		case item = <-l.w.eventQueue:
+		default:
+			return
+		}
+		if item.Request == nil {
+			l.w.dropQueueItem(item)
+			continue
+		}
+		l.publishLoopState(l.dispatch(item))
+		l.w.releaseInflightItem()
+	}
 }
 
 // failUnpushedCommitRequests settles every CommitRequest still riding a write the exiting loop
@@ -1548,19 +1581,24 @@ func (w *BranchWorker) drainQueue() {
 	for {
 		select {
 		case item := <-w.eventQueue:
-			if item.Attach != nil {
-				w.uncountQueuedAttach(item.Attach.id())
-			}
-			charge := item.charge
-			if item.Resync != nil {
-				_, charge = w.takePendingResync(item.Resync)
-			}
-			w.intake.release(charge)
-			w.releaseInflightItem()
+			w.dropQueueItem(item)
 		default:
 			return
 		}
 	}
+}
+
+// dropQueueItem clears one item no loop will handle: see drainQueue.
+func (w *BranchWorker) dropQueueItem(item WorkItem) {
+	if item.Attach != nil {
+		w.uncountQueuedAttach(item.Attach.id())
+	}
+	charge := item.charge
+	if item.Resync != nil {
+		_, charge = w.takePendingResync(item.Resync)
+	}
+	w.intake.release(charge)
+	w.releaseInflightItem()
 }
 
 func (l *branchWorkerEventLoop) resetCommitTimer(delay time.Duration) {

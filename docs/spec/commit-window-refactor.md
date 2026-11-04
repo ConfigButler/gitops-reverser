@@ -65,9 +65,9 @@ than planning the cluster's picture again onto the new tip.
 ```mermaid
 flowchart TD
     A[Live watch event or resync] --> B{Kind}
-    B -->|live event| C[Open window: same author and target]
+    B -->|live event| C[The author's window, or a new one beside proven-disjoint others]
     C --> E{Finalize trigger}
-    E -->|author or target change| F[PendingWriteCommit]
+    E -->|target change, or a write it cannot sit beside| F[PendingWriteCommit]
     E -->|idleTimeout silence| F
     E -->|maxDuration| F
     E -->|byte cap| F
@@ -75,7 +75,7 @@ flowchart TD
     E -->|apply due: flush| F
     E -->|Git host push notice| F
     E -->|shutdown| F
-    B -->|resync| Q[Finalize open window if present]
+    B -->|resync| Q[Finalize the open windows, oldest first]
     Q -.-> F
     Q -->|then| D[PendingWriteResync]
     F --> G[pendingWrites]
@@ -90,18 +90,23 @@ flowchart TD
     J -->|transient failure| N[keep local commits and pendingWrites for retry]
 ```
 
-`BranchWorker` owns the live open window, timers, repository preparation, push
+`BranchWorker` owns the live open windows, timers, repository preparation, push
 cooldowns, and retry scheduling. It retains `[]PendingWrite` until a push
 succeeds. Local commit creation does not clear pending work. A write whose first
 commit changes nothing in Git is the exception: it settles at once and is neither
 retained nor pushed. A save (a write carrying a `CommitRequest`) is always
 retained, and the push decides its outcome.
 
-Per-event writes are processed as a stream. The branch worker keeps one open
-window at a time, and that window contains only one author and one target. The
-window finalizes on its idle timeout or its maximum duration, and immediately on
-author change, target change, the byte cap, an `attach: Next` request, a resync,
-shutdown, an apply coming due, or a Git host's push notice. An apply coming due
+Per-event writes are processed as a stream. Each open window contains only one
+author and one target. The branch worker keeps several open side by side, one per
+author of a target, while it can prove their footprints (the files their commits
+will change) do not overlap; anything it cannot prove stays serial
+([concurrent-author-windows.md](../design/concurrent-author-windows.md)). A
+window finalizes on its idle timeout or its maximum duration, and immediately when
+a write cannot sit beside it (another target, an unproven write, a write to a file
+it holds), on the byte cap, an `attach: Next` request, a resync, shutdown, an
+apply coming due, or a Git host's push notice. Windows that one trigger closes
+close oldest first. An apply coming due
 closes the window so its edits are published before the apply request is sent
 ([the flush](../design/apply-trigger.md#flush-then-apply), `close_reason="apply_due"`).
 A push notice closes it so its writes are
@@ -159,9 +164,13 @@ It appends to or finalizes the open window on event arrival.
 
 Rules:
 
-- A new window starts when there is no open window.
-- The current window finalizes when the author changes.
-- The current window finalizes when the `GitTarget` changes.
+- A write joins the open window of its author and `GitTarget`.
+- Otherwise it opens a window of its own. It may open beside the windows already
+  open only when each footprint, its own included, is proven and none overlaps.
+  Every window it cannot sit beside finalizes first, oldest first.
+- A write of another `GitTarget` finalizes every open window.
+- A worker that refused a commit outside its window's footprint holds one window
+  at a time until it restarts.
 - Same-author, same-target edits of the same path stay in the same window.
 - Within a window, the latest event for a path wins.
 - First-seen path order is preserved for commit message resource ordering.
