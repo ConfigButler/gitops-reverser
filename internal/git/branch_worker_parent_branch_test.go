@@ -248,7 +248,7 @@ func TestBranchWorker_AParentChangeRebuildsRetainedWrites(t *testing.T) {
 			loop := newBranchWorkerEventLoop(f.worker, 0)
 			defer loop.stopTimers()
 
-			loop.lastPushAt = time.Now()
+			holdPushes(loop)
 			noOpSave(loop)
 			require.Len(t, loop.pendingWrites, 1)
 			require.True(t, loop.pendingWrites[0].CommitSHA.IsZero(), "a no-op save is retained during the cooldown")
@@ -283,7 +283,7 @@ func TestBranchWorker_AParentChangeSurvivesAFailedRebuild(t *testing.T) {
 			loop := newBranchWorkerEventLoop(f.worker, 0)
 			defer loop.stopTimers()
 
-			loop.lastPushAt = time.Now()
+			holdPushes(loop)
 			liveWrite(loop, "cm1")
 			require.Len(t, loop.pendingWrites, 1)
 			require.True(t, f.worker.SetParentBranch(parent))

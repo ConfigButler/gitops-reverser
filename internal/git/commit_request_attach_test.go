@@ -69,6 +69,13 @@ func forceDue(loop *branchWorkerEventLoop) {
 	}
 }
 
+// holdPushes starts the push cooldown now and keeps every push behind it, a save's too, so the local
+// commits stay inspectable until the test pushes.
+func holdPushes(loop *branchWorkerEventLoop) {
+	loop.lastPushAt = time.Now()
+	loop.cooldownHoldsSaves = true
+}
+
 func outcome(t *testing.T, w *BranchWorker) (FinalizeResult, bool) {
 	t.Helper()
 	return w.LookupCommitRequestOutcome("default", crName, "uid-"+crName)
@@ -348,7 +355,7 @@ func TestAttach_ForeignWindowIsNotStolen(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -404,7 +411,7 @@ func TestAttach_ForeignWindowClosingBeforeExpiryIsStillAMismatch(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -447,7 +454,7 @@ func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *
 		worker, _, _ := setupCommitPushSplitWorker(t)
 		createPlainGitTarget(t, worker, "team-a", "team-a")
 		loop := newBranchWorkerEventLoop(worker, time.Hour)
-		loop.lastPushAt = time.Now()
+		holdPushes(loop)
 		defer loop.stopTimers()
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 			Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
@@ -497,7 +504,7 @@ func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *
 		worker, _, _ := setupCommitPushSplitWorker(t)
 		createPlainGitTarget(t, worker, "team-a", "team-a")
 		loop := newBranchWorkerEventLoop(worker, time.Hour)
-		loop.lastPushAt = time.Now()
+		holdPushes(loop)
 		defer loop.stopTimers()
 		loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 			Events: []Event{configMapTargetEvent("cm", "alice", "team-a")},
@@ -525,7 +532,7 @@ func TestAttach_ForeignWindowOpeningAfterExpiryIsNotAMismatch(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	// Bob parks with nothing open, and his grace runs out before anyone else starts work.
@@ -625,7 +632,7 @@ func TestFinalizeOpenWindow_ReturnsCommittedFlag(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	assert.False(t, loop.finalizeOpenWindow(), "no open window → false")
@@ -669,7 +676,7 @@ func TestAttach_NoDiffResolvesAlreadyPresentOnceTheRemoteConfirms(t *testing.T) 
 	require.Empty(t, loop.pendingWrites)
 
 	// Hold the push back, so the next assertion is about the finalize and nothing else.
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	// A second window re-asserts the SAME object: no diff. Attach a CommitRequest and
 	// finalize it (maxDuration 0s).
@@ -776,7 +783,7 @@ func TestAttach_ConflictReplayResolvesToPostReplaySHA(t *testing.T) {
 	// lastPushAt set so the finalize's push is deferred (a cooldown timer): the
 	// window commits locally, then we move the remote, then push explicitly.
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -958,7 +965,7 @@ func TestAttach_ReSentAttachDuringPushCooldownDoesNotResolve(t *testing.T) {
 
 	// The cooldown is active, so the finalize below commits locally and does not push.
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -1003,7 +1010,7 @@ func TestAttach_ReSentAttachDuringAFailedPushDoesNotResolve(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -1048,7 +1055,7 @@ func TestAttach_ACommittedRequestNeverClaimsAnotherWindow(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	const message = "save: only my own window"
@@ -1083,7 +1090,7 @@ func TestAttach_ShutdownFailsACommittedRequestThatNeverPushed(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{

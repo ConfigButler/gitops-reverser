@@ -59,12 +59,12 @@ func (c *commitRequestCore) followApply(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 ) (time.Duration, error) {
 	apply := nothingToApply()
+	known := false
 	if cr.Status.Commit != "" {
 		attach := git.AttachCommitRequest{
 			Namespace: cr.Namespace, Name: cr.Name, UID: string(cr.UID),
 			GitTargetName: cr.GitTargetKey().Name, GitTargetNamespace: cr.GitTargetKey().Namespace,
 		}
-		var known bool
 		var err error
 		apply, known, err = c.finalizer.LookupCommitRequestApply(ctx, attach)
 		if err != nil {
@@ -93,6 +93,9 @@ func (c *commitRequestCore) followApply(
 	}
 	if applyReported(cr) {
 		return c.expireFinished(ctx, p, cr)
+	}
+	if known {
+		return c.registeredPoll(), nil // the worker reports each move of the apply
 	}
 	return commitRequestPollInterval, nil
 }

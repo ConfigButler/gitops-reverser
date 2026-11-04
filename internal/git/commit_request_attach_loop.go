@@ -54,6 +54,7 @@ func (w *BranchWorker) recordCommitRequestOutcomeLocked(id commitRequestID, resu
 	}
 	now := time.Now()
 	w.crOutcomes[id] = commitRequestOutcomeEntry{result: result, resolvedAt: now}
+	w.reportCommitRequestChange(id)
 	for k, entry := range w.crOutcomes {
 		if now.Sub(entry.resolvedAt) > commitRequestOutcomeTTL && w.crQueuedAttaches[k] == 0 {
 			delete(w.crOutcomes, k)
@@ -162,7 +163,10 @@ func (w *BranchWorker) setCommitRequestPhase(id commitRequestID, phase CommitReq
 	if w.crPhases == nil {
 		w.crPhases = map[commitRequestID]CommitRequestPhase{}
 	}
-	w.crPhases[id] = phase
+	if w.crPhases[id] != phase {
+		w.crPhases[id] = phase
+		w.reportCommitRequestChange(id)
+	}
 }
 
 // LookupCommitRequestPhase returns where an unresolved request stands on this worker, or "" when

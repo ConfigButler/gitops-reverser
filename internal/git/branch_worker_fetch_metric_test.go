@@ -284,7 +284,7 @@ func TestGitFetchesTotal_ResyncWithRetainedWritesStillReadsTheRemote(t *testing.
 	// A live write is committed and retained: the push cooldown has not elapsed, so it is sitting
 	// in pendingWrites when the resync arrives.
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapEvent("retained", "alice", "live")},
@@ -326,7 +326,7 @@ func TestGitFetchesTotal_RecoveryIsOneSeriesWhetherOrNotWritesAreRetained(t *tes
 	f.publish("prime")
 
 	loop := newBranchWorkerEventLoop(f.worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	// Retained work, so the loop's replay path is the one that recovers.

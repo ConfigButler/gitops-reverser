@@ -185,7 +185,7 @@ func (c *commitRequestCore) keeps(
 	if err != nil || !found {
 		return !found, err
 	}
-	_, owner, refusal, err := c.owns(ctx, p, target)
+	_, owner, refusal, err := c.owns(ctx, p, cr, target)
 	return owner || refusal != "", err
 }
 

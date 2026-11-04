@@ -769,7 +769,7 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, 0)
 	// Pretend a push just happened so the cooldown gate is active; the
 	// scheduling logic must defer the next push rather than firing it.
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{
@@ -805,7 +805,7 @@ func TestEventLoop_CommitWindowZero_HonestPerEvent(t *testing.T) {
 func TestEventLoop_AuthorChangeFinalizesOpenWindow(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{
@@ -828,7 +828,7 @@ func TestEventLoop_TargetChangeFinalizesOpenWindow(t *testing.T) {
 	createPlainGitTarget(t, worker, "team-b", "team-b")
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{
@@ -848,7 +848,7 @@ func TestEventLoop_TargetChangeFinalizesOpenWindow(t *testing.T) {
 func TestEventLoop_RepeatedPathEditsCollapseInOpenWindow(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	first := configMapEvent("same", "alice", "team-a")
 	second := configMapEvent("same", "alice", "team-a")
@@ -877,7 +877,7 @@ func TestEventLoop_ByteCapFinalizesIncludingTrippingEvent(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	worker.branchBufferMaxBytes = 1
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapEvent("oversized", "alice", "team-a")},
@@ -894,7 +894,7 @@ func TestEventLoop_ByteCapFinalizesIncludingTrippingEvent(t *testing.T) {
 func TestEventLoop_AuthorChangeStartsFreshCommitTimer(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapEvent("first", "alice", "team-a")},
@@ -917,7 +917,7 @@ func TestEventLoop_AuthorChangeStartsFreshCommitTimer(t *testing.T) {
 func TestEventLoop_CrossAuthorSamePathPingPongUsesOnlyAuthorBoundaries(t *testing.T) {
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	for i, event := range []Event{
 		configMapEvent("F", "alice", "team-a"),
@@ -959,7 +959,7 @@ func TestEventLoop_DeferredEventCommitsDuringCooldownPushTogether(t *testing.T) 
 	initialHash := initialRef.Hash()
 
 	loop := newBranchWorkerEventLoop(worker, 0)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("live-a", "alice", "target-a")},
@@ -1018,7 +1018,7 @@ func TestResync_WorkerAppliesMarkAndSweepAndCommits(t *testing.T) {
 	initialHash := initialRef.Hash()
 
 	loop := newBranchWorkerEventLoop(worker, 0)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	// Seed a managed ConfigMap under the GitTarget path with a normal per-event commit.
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
@@ -1091,7 +1091,7 @@ func TestResync_WorkerEmptyDesiredSweepsManagedResource(t *testing.T) {
 	createGitTargetWithPruneMode(t, worker, "target-a", "live", configv1alpha3.PruneAlways)
 
 	loop := newBranchWorkerEventLoop(worker, 0)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("orphan", "alice", "target-a")},
 	}})

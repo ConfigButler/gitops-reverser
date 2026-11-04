@@ -151,7 +151,7 @@ func TestPublicationRetry_AMissingParentIsProbedOnTheOneSchedule(t *testing.T) {
 	f.worker.SetParentBranch("release")
 	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 	liveWrite(f.loop, "cm1")
 	gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release")
 	f.loop.pushPending()
@@ -173,7 +173,7 @@ func TestPublicationRetry_AFailureAfterTheParentReturnsWaitsForRecovery(t *testi
 	clock := useTestClock(f.worker)
 	f.worker.SetParentBranch("release")
 	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 	liveWrite(f.loop, "cm1")
 	gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release")
 	f.loop.pushPending()

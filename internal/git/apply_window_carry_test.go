@@ -49,7 +49,7 @@ func TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit(t *testing.T) 
 		f := newEchoFixture(t, slug, configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
 		f.writeWindow(edit("a1", "b1")) // y as Git holds it before anyone edits
 		requester := f.withClaim()
-		f.loop.lastPushAt = time.Now()
+		holdPushes(f.loop)
 
 		f.writeWindow(echoEvent("x", "x2"))
 		restore := failPushes(t, f.worker)

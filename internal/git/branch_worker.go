@@ -399,6 +399,10 @@ type BranchWorker struct {
 	// publicationReporter is told when the worker's publication report changes. Set by the
 	// WorkerManager before Start; nil in tests that do not assert on it. See publication.go.
 	publicationReporter func()
+	// commitRequestReporter is told when a CommitRequest's standing on this worker changes. Set by
+	// the WorkerManager before Start; nil in tests that do not assert on it. See
+	// commit_request_changes.go.
+	commitRequestReporter func(CommitRequestChange)
 	// publication is the loop's latest publication report, and backlog what it keeps, for readers
 	// outside the loop. See publication.go.
 	publication atomic.Pointer[PublicationStatus]
@@ -1030,8 +1034,11 @@ type branchWorkerEventLoop struct {
 	pendingWrites      []PendingWrite
 	pendingWritesBytes int64
 
-	lastPushAt  time.Time
-	commitTimer *time.Timer
+	lastPushAt time.Time
+	// cooldownHoldsSaves keeps a save's push behind the cooldown, like any other push. A test seam,
+	// for tests that inspect a save's write before it is published; never set otherwise.
+	cooldownHoldsSaves bool
+	commitTimer        *time.Timer
 	// commitTimerAt is the worker-clock time commitTimer is armed for, while it is armed. The timer
 	// itself runs on real time; tests that step the clock deliver its wake at this time.
 	commitTimerAt time.Time
@@ -1643,6 +1650,14 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 		l.pushPending()
 		return
 	}
+	if !l.cooldownHoldsSaves && l.pendingCarriesCommitRequest() {
+		// A save waits for this publication, and a person waits for the save: it is made at once too.
+		// Saves cannot burst the way plain writes can, since an author has one save in progress at a
+		// time, so the cooldown still paces every stream of plain writes.
+		l.w.Log.V(1).Info("Pushing at once: a CommitRequest waits for this push")
+		l.pushPending()
+		return
+	}
 	elapsed := time.Since(l.lastPushAt)
 	if elapsed >= PushCooldown {
 		l.pushPending()
@@ -1651,6 +1666,17 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 	if l.pushTimer == nil {
 		l.pushTimer = time.NewTimer(PushCooldown - elapsed)
 	}
+}
+
+// pendingCarriesCommitRequest reports whether a pending write carries a CommitRequest, which resolves
+// only once the write is pushed.
+func (l *branchWorkerEventLoop) pendingCarriesCommitRequest() bool {
+	for i := range l.pendingWrites {
+		if l.pendingWrites[i].CommitRequest != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // pushPending materializes the pending writes and publishes them. On success, pendingWrites is cleared,

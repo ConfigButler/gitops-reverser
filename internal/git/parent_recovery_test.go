@@ -90,7 +90,7 @@ func TestParentRecovery_RetainedWritesLandAfterAFailedFirstAttempt(t *testing.T)
 				f.loop.runParentProbe() // what the probe timer does
 			}
 
-			f.loop.lastPushAt = time.Now()
+			holdPushes(f.loop)
 			liveWrite(f.loop, "cm1")
 			require.Len(t, f.loop.pendingWrites, 1)
 			gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release") // the parent goes away
@@ -205,7 +205,7 @@ func TestParentRecovery_ProbeBudgetIsPerWorker(t *testing.T) {
 			if retained {
 				f.worker.SetParentBranch("release")
 				require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
-				f.loop.lastPushAt = time.Now()
+				holdPushes(f.loop)
 				liveWrite(f.loop, "first")
 				require.Len(t, f.loop.pendingWrites, 1)
 				gitIn(t, f.repoDir, "update-ref", "-d", "refs/heads/release")

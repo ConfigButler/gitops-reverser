@@ -96,8 +96,14 @@ func (p commitRequestPath) gitTargetKey(cr *configbutleraiv1alpha3.CommitRequest
 // commitRequestCore serves a CommitRequest for either path, one step at a time.
 type commitRequestCore struct {
 	// reader reads GitTargets, KubeProviders and Namespaces on the control cluster.
-	reader    client.Reader
-	finalizer CommitRequestFinalizer
+	reader client.Reader
+	// controlRequests reads CommitRequests on the control cluster, uncached, for a source-cluster
+	// path to tell its own cluster from the control cluster (sourceRefusal); nil on the control path.
+	controlRequests client.Reader
+	// wakeFallback is how often a request its worker registered is looked at, when the worker's
+	// changes wake its steps (CommitRequestWakes); zero polls it at commitRequestPollInterval.
+	wakeFallback time.Duration
+	finalizer    CommitRequestFinalizer
 	// authors finds a request's creator from audit facts; nil when author attribution is off.
 	authors watch.AuthorResolver
 	// streams holds the fact stream of commitrequests on each audit route a creator is looked up on.
@@ -152,7 +158,7 @@ func (c *commitRequestCore) serveOpen(
 		}
 		return c.awaitGitTarget(ctx, p, cr, targetKey)
 	}
-	provider, owner, refusal, err := c.owns(ctx, p, target)
+	provider, owner, refusal, err := c.owns(ctx, p, cr, target)
 	if err != nil {
 		return 0, err
 	}
@@ -187,9 +193,10 @@ func (c *commitRequestCore) gitTarget(
 // path. On the control cluster that is a provider with inCluster. A provider with a kubeconfig may point
 // back at the control cluster, and then its own watch serves the request, so it is left alone, unless
 // that provider serves no CommitRequests: then refusal says why, and where to create the request
-// instead. A provider that cannot be found picks no path yet.
+// instead. A provider that cannot be found picks no path yet. On a source cluster, see sourceRefusal.
 func (c *commitRequestCore) owns(
-	ctx context.Context, p commitRequestPath, target *configbutleraiv1alpha3.GitTarget,
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
+	target *configbutleraiv1alpha3.GitTarget,
 ) (*configbutleraiv1alpha3.KubeProvider, bool, string, error) {
 	key := target.KubeProviderKey()
 	var provider configbutleraiv1alpha3.KubeProvider
@@ -200,7 +207,11 @@ func (c *commitRequestCore) owns(
 		return nil, false, "", fmt.Errorf("read KubeProvider %s: %w", key, err)
 	}
 	if !p.controlCluster() {
-		return &provider, key == p.provider, "", nil
+		if key == p.provider {
+			return &provider, true, "", nil
+		}
+		refusal, err := c.sourceRefusal(ctx, p, cr, target, &provider)
+		return &provider, false, refusal, err
 	}
 	if provider.IsInCluster() {
 		return &provider, true, "", nil
@@ -211,6 +222,48 @@ func (c *commitRequestCore) owns(
 	return &provider, false, fmt.Sprintf("GitTarget %s mirrors another cluster, through KubeProvider %s; create "+
 		"the CommitRequest there, and set spec.commitRequests: Reconcile on KubeProvider %s",
 		client.ObjectKeyFromObject(target), key, key), nil
+}
+
+// sourceRefusal says why no path can serve a request on the source cluster of path p, which names a
+// GitTarget whose KubeProvider is another: empty while some path may still serve it.
+//
+//   - The GitTarget mirrors the cluster GitOps Reverser runs in. The control-cluster path serves it
+//     only when p's kubeconfig points back at that cluster, and then the request is the same object
+//     there, with the same UID. Read uncached, so a request created a moment ago is not mistaken for
+//     one that does not exist. Without the reader nothing is refused.
+//   - The GitTarget's KubeProvider serves no CommitRequests, so no watch picks the request up.
+//
+// A KubeProvider that does serve them may connect to this same cluster under another identity, and
+// then its watch serves the request: it is left alone.
+func (c *commitRequestCore) sourceRefusal(
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
+	target *configbutleraiv1alpha3.GitTarget, provider *configbutleraiv1alpha3.KubeProvider,
+) (string, error) {
+	here := fmt.Sprintf("the cluster KubeProvider %s connects to", p.provider)
+	targetKey := client.ObjectKeyFromObject(target)
+	if provider.IsInCluster() {
+		if c.controlRequests == nil {
+			return "", nil
+		}
+		var local configbutleraiv1alpha3.CommitRequest
+		err := c.controlRequests.Get(ctx, client.ObjectKeyFromObject(cr), &local)
+		switch {
+		case err == nil && local.UID == cr.UID:
+			return "", nil // the same object: this cluster is the control cluster, whose path serves it
+		case err != nil && !apierrors.IsNotFound(err):
+			return "", fmt.Errorf("read CommitRequest %s on the cluster GitOps Reverser runs in: %w",
+				client.ObjectKeyFromObject(cr), err)
+		}
+		return fmt.Sprintf("this CommitRequest is on %s, and GitTarget %s mirrors the cluster GitOps Reverser "+
+			"runs in, through KubeProvider %s; create the CommitRequest on the cluster GitOps Reverser runs in",
+			here, targetKey, provider.Key()), nil
+	}
+	if !provider.ServesCommitRequests() {
+		return fmt.Sprintf("this CommitRequest is on %s, and GitTarget %s mirrors the cluster KubeProvider %s "+
+			"connects to, which serves no CommitRequests; create the CommitRequest on that cluster, and set "+
+			"spec.commitRequests: Reconcile on KubeProvider %s", here, targetKey, provider.Key(), provider.Key()), nil
+	}
+	return "", nil
 }
 
 // awaitGitTarget waits attachTimeout from the request's creation for the GitTarget it names, which may
@@ -522,14 +575,34 @@ func (c *commitRequestCore) recordPhase(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 	phase git.CommitRequestPhase, held string,
 ) (time.Duration, error) {
+	poll := commitRequestPollInterval
+	if registered(phase) {
+		poll = c.registeredPoll()
+	}
 	if progressRecorded(cr, phase, held) {
-		return commitRequestPollInterval, nil
+		return poll, nil
 	}
 	markCommitRequestProgressing(cr, phase, held)
 	if err := p.store.updateStatus(ctx, cr); err != nil {
-		return commitRequestPollInterval, ignoreConflict(err)
+		return poll, ignoreConflict(err)
 	}
-	return commitRequestPollInterval, nil
+	return poll, nil
+}
+
+// registered reports whether the worker has registered a request in this phase, so it reports the
+// request's every change from now on. Before that, while there is no worker or the attach is still
+// on its way, nothing would wake the step.
+func registered(phase git.CommitRequestPhase) bool {
+	return phase == git.PhaseWaitingForWindow || phase.Held()
+}
+
+// registeredPoll is how soon a step looks again at a request its worker has registered: the
+// fallback for a dropped change when the worker's changes wake the steps, the poll otherwise.
+func (c *commitRequestCore) registeredPoll() time.Duration {
+	if c.wakeFallback > 0 {
+		return c.wakeFallback
+	}
+	return commitRequestPollInterval
 }
 
 // refusePrunedGitTargetRef fails a request whose spec names no GitTarget, which can only be one

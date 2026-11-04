@@ -3023,6 +3023,14 @@ The `GitTarget` a request names decides where it belongs, through the `KubeProvi
   other one's. Create it on the other cluster instead. When that `KubeProvider` does serve them, the
   request is left alone, since the kubeconfig may point back at this cluster and then its own watch
   serves the request. If it points elsewhere, nothing serves the request and it gets no status.
+- **A request on a source cluster, for a `GitTarget` that mirrors another cluster, is refused** with
+  reason `NotAllowed`, and the message names both clusters, when nothing can serve it from there:
+  the `GitTarget` mirrors the cluster GitOps Reverser runs in, or its `KubeProvider` serves no
+  `CommitRequest`s. Create it on the cluster the `GitTarget` mirrors. A refused request finishes,
+  so a `KubeProvider` with `ReconcileAndDeleteFinished` deletes it after the TTL. A kubeconfig that
+  points back at the cluster GitOps Reverser runs in sees that cluster's own requests, and leaves
+  them to it. A request whose `GitTarget`'s `KubeProvider` does serve `CommitRequest`s is left
+  alone, since that `KubeProvider` may connect to the same cluster under another identity.
 
 Only the path the `GitTarget`'s `KubeProvider` picks writes a request's progress, so several
 `KubeProvider`s that watch one cluster never fight over a request. Any of them may report
@@ -3085,12 +3093,13 @@ A request is registered with the branch worker only once its own audit event has
 and its edit is attributed the same way, so a request created just before its edit does not always
 reach the worker first. On a `GitTarget` whose windows close on the first silence (`idleTimeout:
 "0s"`), such an edit can commit alone before the request is there to attach to it. Make the edit
-once the request is claimed (`Ready=Unknown`), or give the `GitTarget` an `idleTimeout` that covers
-the gap.
+once the request is registered, when its `Reconciling` reason is `WaitingForWindow` (see
+[its status](#its-status)), or give the `GitTarget` an `idleTimeout` that covers the gap.
+`Ready=Unknown` alone is too early: it starts at reason `Saving`, before the registration.
 
 `maxDuration`, and `idleTimeout` when set, cover the span of the save's own writes after the
 attach. The worst case from registration to the finalize is `attachTimeout` plus `maxDuration`; the
-push follows, with its cooldown and any retries.
+push follows at once, without the push cooldown, with any retries a remote that refuses it needs.
 
 The two directions are not symmetric. Overshooting costs a few seconds of latency on the commit;
 undershooting `attachTimeout` resolves the request `Ready=True` with reason `NoWindow` while the
@@ -3103,6 +3112,59 @@ attach until it reads an outcome; the worker recognizes the re-send as the same 
 request never resolves `NoWindow` while its commit waits out the push cooldown. Applying resources
 and a request together gives no ordering guarantee between controllers and watch streams. See the
 [request contract](spec/commitrequest-design.md).
+
+#### Saving a folder with `kubectl apply`
+
+To save the objects of a folder in one commit with your message, put a `CommitRequest` in the
+folder, next to them, and give it a new name for every apply:
+
+```yaml
+# save-2026-10-28-checkout-limits.yaml
+apiVersion: configbutler.ai/v1alpha3
+kind: CommitRequest
+metadata:
+  name: save-2026-10-28-checkout-limits
+spec:
+  gitTargetRef:
+    name: example-target
+  message: "feat: raise the checkout limits"
+```
+
+`kubectl apply -f folder/` then commits the folder's changes, authored by you, with the request's
+message. kubectl applies the files in name order, so the request can land before or after the
+objects: with `attach: CurrentOrNext` the request attaches to the window the objects already opened,
+or waits for the one they open. Do not use `attach: Next` here: it would close the objects' window
+under the generated message, then wait for a write that never comes. Another unclaimed edit of yours
+on the same `GitTarget`, still in its window, shares the commit.
+
+It is one commit only when the window holds every write, and a window is not a transaction. Two
+things split it:
+
+- **Time.** With the defaults the window closes 2 seconds after the attach. Writes reach the branch
+  worker once their audit facts have named their author, so on a large folder, a loaded API server or
+  a source cluster with slow audit delivery, the last writes can arrive later than kubectl sent them.
+  A write after the close commits on its own, under the generated message. For such a folder, give
+  the request a longer window, `spec.window.maxDuration: "10s"` for example, or rolling collection
+  (see [the request window](#the-request-window-specwindow)); the commit lands that much later.
+- **Other writes on the branch.** A branch worker holds one window at a time, so a write by another
+  author, or for another `GitTarget` on the same branch, closes yours early, with the request's
+  message, and your later writes commit under the generated message.
+
+The request then ends `Committed` with the writes its window held.
+
+The name is what makes the next apply a save. Applying the same folder again does this:
+
+- **Nothing changed:** kubectl sends no write for an unchanged object, so there is nothing to save,
+  and the finished request keeps its outcome. If the request was already deleted (see
+  [finished requests](#finished-requests-are-deleted-after-48-hours)), the apply creates it again,
+  and it ends `NoWindow`.
+- **Objects changed, same request:** the request is unchanged and finished, so it saves nothing.
+  The edits commit on the `GitTarget`'s own timers, under the generated message.
+- **Message edited, same name:** the API server refuses the request, because its spec is
+  immutable, and kubectl exits with an error after applying the other files. Their edits commit
+  under the generated message.
+
+The request itself is never mirrored, even when a `WatchRule` covers its folder or its type.
 
 ### Who may save: `spec.allowedCommitRequests`
 
@@ -3237,8 +3299,15 @@ request produced a pushed commit:
   message, so the two would race for it and one message would be lost without a word; the later
   request is refused at once instead. Save again with a new request once the earlier one is `Ready`.
   A request for the `Next` window is not refused by one that is collecting: it closes that window
-  under the earlier request's message first. Saves by different authors never race, since each
-  author has windows of its own.
+  under the earlier request's message first. Saves by different authors do not race for a
+  message: a write by another author closes the open window, and its message, before it opens one
+  of its own.
+
+  `SaveInProgress` is decided when the branch worker registers the request, which is after its
+  author was found, not when it is created. A client that relies on it to keep two of its saves
+  apart waits until the `Reconciling` reason is `WaitingForWindow` or `CollectingWindow` before it
+  makes the save's edits, not only for `Ready=Unknown`: a request still `Saving` is not registered
+  yet, and its edits could reach the window of the save before it.
 
   `AlreadyPresent` means **the remote confirmed there was nothing to add**, so it is reported after
   the push rather than when the local plan found no difference. That costs a few seconds and buys a
@@ -3248,7 +3317,8 @@ request produced a pushed commit:
 - **Reconciling** / **Stalled**: the kstatus progress/blocked pair. `Reconciling=True` while the
   request is in progress, with the phase the branch worker reports as its reason: `Saving`
   (claimed, not yet registered), `WaitingForWorker` (the GitTarget has no branch worker yet),
-  `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`.
+  `WaitingForWindow`, `CollectingWindow`, or `WaitingForPush`. Each phase, and the outcome, is
+  written as soon as the branch worker reports it.
   `Stalled=True` when the request failed and needs attention (kstatus reports the object Failed).
 - **Pushed**: `True` once the commit, empty or not, is in the remote repository.
 - **Applied**: only with [`catchUp: AfterPush`](#applying-a-save-at-once), once `Ready=True`:
