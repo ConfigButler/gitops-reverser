@@ -36,6 +36,8 @@ type fakeFinalizer struct {
 	err      error
 
 	calls []git.AttachCommitRequest
+	// outcomeLookups are the lookups of a decided outcome, which send nothing.
+	outcomeLookups []git.AttachCommitRequest
 
 	// The withdraw reply. Left unset, the withdraw answers like the router does before it cancels
 	// anything: with the worker's outcome, or its phase while unresolved. withdrawPending makes an
@@ -51,6 +53,15 @@ type fakeFinalizer struct {
 	applyKnown   bool
 	applyErr     error
 	applyLookups int
+}
+
+// LookupCommitRequestOutcome answers with the canned outcome, as a worker that decided it does, and
+// records the lookup: nothing is sent to the worker.
+func (f *fakeFinalizer) LookupCommitRequestOutcome(
+	_ context.Context, attach git.AttachCommitRequest,
+) (git.FinalizeResult, bool, error) {
+	f.outcomeLookups = append(f.outcomeLookups, attach)
+	return f.result, f.resolved, f.err
 }
 
 func (f *fakeFinalizer) LookupCommitRequestApply(

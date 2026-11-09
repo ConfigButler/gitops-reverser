@@ -67,6 +67,17 @@ func (w *simulatedWorker) WithdrawCommitRequest(
 	return w.ServiceCommitRequest(ctx, attach)
 }
 
+func (w *simulatedWorker) LookupCommitRequestOutcome(
+	context.Context, git.AttachCommitRequest,
+) (git.FinalizeResult, bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.resolved {
+		return git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"}, true, nil
+	}
+	return git.FinalizeResult{}, false, nil
+}
+
 func (w *simulatedWorker) LookupCommitRequestApply(
 	context.Context, git.AttachCommitRequest,
 ) (git.SaveApply, bool, error) {
