@@ -7,30 +7,11 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
 
 ## Before the next release
 
-- [ ] **Test the failure boundaries of concurrent commit windows** (stage 3 of
-  [concurrent-author-windows.md](design/concurrent-author-windows.md#stages)). Stage 2 ships with no
-  flag: a branch worker keeps a window per author whenever their footprints are proven disjoint.
-  Before it is released, the reference model (`internal/git/window_model_test.go`) must cover both
-  close orders, conflicting writes, delete and recreate, `attach_next`, zero-duration windows, a
-  resync, shutdown, failed publication and replay, and buffer pressure, each with several windows
-  open. The reviews of stages 1 and 2 add:
-  - **gate:** the model retains work across failed pushes and retries before several windows are
-    released. Today it publishes at once after every wake (`windowModelRun.wake`) and asserts no
-    pending writes after it (`drained`), so decided-but-uncommitted writes with windows open
-    (cooldown, failed push, replay) are never modeled;
-  - reach floors the model asserts: shutdown, flush and push hint with two or more windows open,
-    `attach_next` with others open, a reproof overlap, `path_conflict`; a concurrency-biased profile;
-    CI raised to about 20 seeds × 60 steps;
-  - model steps: a shutdown mid-run; a timer overdue but not yet delivered (the `!isOpen` guard in
-    `attachWaitingCommitRequests` survives its removal); a late stale applier write (the model
-    never withholds);
-  - the GitTarget-generation and checkout-reset parts of a footprint revision are untested;
-  - measure the footprint index on realistic repositories and commit rates before widening the
-    layouts it proves. It is rebuilt whenever its revision changes, every local commit included;
-    a review measured a rebuild at about 3.5 ms and 3.9 MB allocated for 100 small manifests, and
-    33 ms and 37 MB for 1,000 (allocation, not retained heap), against 19 µs for a reuse. The
-    retained-byte budget does not charge the indexes, the accepted versions or the withheld-field
-    records, so a full budget does not bound the worker's memory.
+- [ ] **See the concurrent-authors outage e2e pass in CI** (`concurrent-authors-outage`,
+  `test/e2e/concurrent_authors_outage_e2e_test.go`): two authors save while every push is refused,
+  and the retry publishes both, one commit each, once Git takes pushes again. It is the last part of
+  stage 3 of [concurrent-author-windows.md](design/concurrent-author-windows.md#stages); the reference
+  model's part is done.
 
 ## Applier claims and bi-directional editing
 
@@ -120,6 +101,19 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 
 ## Branch worker and CommitRequests
 
+- [ ] **Measure the footprint index** on realistic repositories and commit rates before widening the
+  layouts it proves. It is rebuilt whenever its revision changes, every local commit included; a
+  review measured a rebuild at about 3.5 ms and 3.9 MB allocated for 100 small manifests, and 33 ms
+  and 37 MB for 1,000 (allocation, not retained heap), against 19 µs for a reuse. The retained-byte
+  budget does not charge the indexes, the accepted versions or the withheld-field records, so a full
+  budget does not bound the worker's memory.
+- [ ] What the window reference model (`internal/git/window_model_test.go`) does not cover: a resync
+  waiting for its retry whose fetch finds a push from outside and discards it (the model makes no
+  push from outside while a resync waits); objects of more than one field, so a withheld apply's
+  record is only ever one value; an applier write after its apply window's grace (the window runs on
+  the wall clock, so the model sends each late write inside it). Two guards no input reaches are pinned by unit
+  tests instead: the outage ending when its writes settle with no push, and an attach that closes a
+  later window in the same pass.
 - [ ] `expireWaitingCommitRequests` ranges over a map, so empty commits for saves that expire in
   the same pass land in random order; sort by `seq` (`internal/git/commit_request_attach_loop.go`).
 - [ ] `buildRequestRecordWrite` keeps only the username (`UserInfo{Username: pcr.author}`); carry the
