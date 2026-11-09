@@ -5,6 +5,8 @@ package git
 import (
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -569,4 +571,95 @@ func TestFootprint_OverlapUnionAndOutside(t *testing.T) {
 	assert.Equal(t, "[a b]", a.String())
 	assert.Equal(t, "unknown: why", unknown.String())
 	assert.Equal(t, "unproven", footprintString(nil))
+}
+
+// TestWindowAdmission_AGitTargetChangeProvesTheOpenWindowsAgain pins the generation in a footprint's
+// revision: a GitTarget that now places by a template proves nothing, so two windows proven apart
+// before the change close once the next write proves them again. With the generation left out, the
+// index of the old spec was reused, and they stayed open side by side.
+func TestWindowAdmission_AGitTargetChangeProvesTheOpenWindowsAgain(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-generation", nil)
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	require.Equal(t, []string{"alice", "bob"}, authorsOf(f.loop.windows.all()))
+
+	var target configv1alpha3.GitTarget
+	require.NoError(t, f.worker.Client.Get(f.worker.ctx, keyOf(echoTarget), &target))
+	target.Spec.Placement = &configv1alpha3.GitTargetPlacementSpec{Default: "all.yaml"}
+	target.Generation++
+	require.NoError(t, f.worker.Client.Update(f.worker.ctx, &target))
+	f.writeBy("carol", "q", "q3")
+
+	assert.Equal(t, []string{"carol"}, authorsOf(f.loop.windows.all()),
+		"proven again under the new spec, the open windows are unknown, and close before carol's write")
+}
+
+// TestWindowAdmission_AResetProvesTheOpenWindowsAgain pins the resets in a footprint's revision. A push
+// from outside makes carol's held write a no-op and moves z's document in with x's; the replay onto
+// it resets the checkout and commits nothing, so only the reset says the tree changed. The next write
+// proves alice's and bob's windows again, finds both in one file, and closes them. With the resets left
+// out, the index of the tree before the reset was reused, and both stayed open on one file.
+func TestWindowAdmission_AResetProvesTheOpenWindowsAgain(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-reset", nil)
+	f.loop.pushPending() // the bootstrap write; the cooldown holds every push after it
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	f.writeBy("carol", "q", "q3")
+	open := f.loop.windows.all()
+	require.Equal(t, []string{"alice", "bob", "carol"}, authorsOf(open))
+	f.loop.finalizeWindow(open[2], windowFinalizeReasonIdleTimeout)
+	f.loop.endWake(0)
+	require.Len(t, f.loop.pendingWrites, 1, "precondition: the cooldown holds carol's commit")
+	// Proven on the tree carol's commit made, so only the reset below can make these proofs stale.
+	f.writeBy("alice", "x", "x3")
+
+	gitIn(t, f.clone, "pull", "--quiet", "--ff-only", "origin", "main")
+	write := func(path, content string) {
+		require.NoError(t, os.WriteFile(filepath.Join(f.clone, path), []byte(content), 0o600))
+	}
+	write(echoFile("q"), echoDocument("q", "q3"))
+	write(echoFile("x"), echoDocument("x", "x1")+"---\n"+echoDocument("z", "z1"))
+	gitIn(t, f.clone, "rm", "--quiet", echoFile("z"))
+	gitIn(t, f.clone, "add", "-A")
+	gitIn(t, f.clone, "commit", "--quiet", "-m", "outside: q3, and z in with x")
+	gitIn(t, f.clone, "push", "--quiet", "origin", "HEAD:main")
+	resets, commits := f.worker.checkoutResets.Load(), f.worker.checkoutCommits.Load()
+	f.loop.pushPending()
+	require.Empty(t, f.loop.pendingWrites)
+	require.Greater(t, f.worker.checkoutResets.Load(), resets, "precondition: the replay reset the checkout")
+	require.Equal(t, commits, f.worker.checkoutCommits.Load(), "precondition: and committed nothing")
+
+	f.writeBy("dave", "q", "q4")
+	assert.Equal(t, []string{"dave"}, authorsOf(f.loop.windows.all()),
+		"proven again on the tree the reset brought, alice's and bob's windows share a file")
+}
+
+// TestWindowAdmission_AWindowAnAttachClosedTakesNoRequest pins the guard in
+// attachWaitingCommitRequests: an attach closes every window that is due, so a window later in the
+// pass may be gone, and a request that would have attached to it keeps waiting for the next. The
+// state is built by hand: a request waits only while its author has no window to take, so the model
+// never meets a second window with a request waiting for it in the pass.
+func TestWindowAdmission_AWindowAnAttachClosedTakesNoRequest(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-attach-closed", nil)
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	open := f.loop.windows.all()
+	require.Equal(t, []string{"alice", "bob"}, authorsOf(open))
+	open[1].timers.maxAt = f.worker.now().Add(-time.Second) // bob's window is due, its timer not delivered
+
+	waiting := func(author string, seq uint64) *pendingCommitRequest {
+		return &pendingCommitRequest{
+			id:     commitRequestID{Namespace: "default", Name: "save-" + author, UID: "uid-" + author},
+			author: author, gitTargetName: echoTarget, gitTargetNamespace: "default", seq: seq,
+			message: "feat: " + author, maxDuration: time.Hour, attachDeadline: f.worker.now().Add(time.Minute),
+		}
+	}
+	alice, bob := waiting("alice", 1), waiting("bob", 2)
+	f.loop.pendingCRs = map[commitRequestID]*pendingCommitRequest{alice.id: alice, bob.id: bob}
+
+	f.loop.attachWaitingCommitRequests()
+
+	assert.True(t, alice.attached, "alice's request takes her window")
+	assert.Equal(t, []string{"alice"}, authorsOf(f.loop.windows.all()), "and the attach closed bob's, which was due")
+	assert.False(t, bob.attached, "bob's request takes no window that is gone: it waits for his next")
 }
