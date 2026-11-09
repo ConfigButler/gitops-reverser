@@ -275,9 +275,11 @@ admission check reads.
 flowchart LR
     E["live event"] --> G{"render fidelity<br/>established for<br/>this target?"}
     G -- "no" --> DROP["dropped<br/>(the pending replay repairs it)"]
-    G -- "open" --> CAN{"same author<br/>and target as<br/>the open window?"}
-    CAN -- "no" --> FIN1["close window<br/>(identity change)"] --> NEW
+    G -- "open" --> CAN{"an open window of<br/>the same author<br/>and target?"}
     CAN -- "yes" --> ADD["add to window"]
+    CAN -- "no" --> PROVE{"footprints proven<br/>and disjoint?"}
+    PROVE -- "yes" --> NEW
+    PROVE -- "no" --> FIN1["close the windows<br/>it cannot sit beside<br/>(identity change,<br/>path conflict)"] --> NEW
     NEW["open window,<br/>snapshot target's timers"] --> ATT["attach a waiting save"] --> ADD
     ADD --> CAP{"retained bytes<br/>over budget?"}
     CAP -- "yes" --> FIN2["close window<br/>(buffer limit)"]

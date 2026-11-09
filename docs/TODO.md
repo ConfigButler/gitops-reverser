@@ -25,8 +25,12 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
     `attachWaitingCommitRequests` survives its removal); a late stale applier write (the model
     never withholds);
   - the GitTarget-generation and checkout-reset parts of a footprint revision are untested;
-  - a counter for window fallbacks (`footprint_fallback` counts the windows it closes, not the
-    fallback).
+  - measure the footprint index on realistic repositories and commit rates before widening the
+    layouts it proves. It is rebuilt whenever its revision changes, every local commit included;
+    a review measured a rebuild at about 3.5 ms and 3.9 MB allocated for 100 small manifests, and
+    33 ms and 37 MB for 1,000 (allocation, not retained heap), against 19 µs for a reuse. The
+    retained-byte budget does not charge the indexes, the accepted versions or the withheld-field
+    records, so a full budget does not bound the worker's memory.
 
 ## Applier claims and bi-directional editing
 
@@ -46,7 +50,7 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
   [branch-worker-event-model.md](design/branch-worker-event-model.md#saves-lose-execution-identity-across-a-restart).
 - [ ] **Gaps in the withheld-field record** (`internal/git/withheld_fields.go`): a field patch in the
   apply window forgets the object's accepted version, so a withhold over it records nothing;
-  `objectKey` leaves out the GitTarget and the cluster (it predates #466); accepted versions held
+  accepted versions held
   for render fidelity (`recordUnpublishedEdits`) and resyncs with `Initial: false` are untested;
   no counter shows how many fields are withheld.
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on

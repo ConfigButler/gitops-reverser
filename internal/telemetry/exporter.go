@@ -759,6 +759,8 @@ func registerObservableGauges() error {
 		{"gitopsreverser_git_branch_targets", GaugeGitBranchTargets},
 		{"gitopsreverser_apply_operations_unresolved", GaugeApplyOperationsUnresolved},
 		{"gitopsreverser_apply_appliers_held", GaugeAppliersHeld},
+		{"gitopsreverser_git_commit_windows_open", GaugeGitCommitWindowsOpen},
+		{"gitopsreverser_git_commit_windows_single", GaugeGitCommitWindowsSingle},
 	}
 	for _, o := range observable {
 		if _, err := otelMeter.Int64ObservableGauge(

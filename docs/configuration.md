@@ -3311,8 +3311,9 @@ request produced a pushed commit:
   request is refused at once instead. Save again with a new request once the earlier one is `Ready`.
   A request for the `Next` window is not refused by one that is collecting: it closes that window
   under the earlier request's message first. Saves by different authors do not race for a
-  message: a write by another author closes the open window, and its message, before it opens one
-  of its own.
+  message: each author's writes collect in a window of their own, side by side while their files
+  are proven not to overlap, and otherwise a write by another author closes the open window, and
+  its message, before it opens one of its own.
 
   `SaveInProgress` is decided when the branch worker registers the request, which is after its
   author was found, not when it is created. A client that relies on it to keep two of its saves
@@ -3339,8 +3340,10 @@ request produced a pushed commit:
 A request is served again after GitOps Reverser restarts: the path that owns it finds its own
 claim, and resumes with the author it recorded. A graceful stop, such as an upgrade or a rollout,
 first finishes the saves it holds: a request collecting its window is committed with its message,
-pushed, and its outcome written before the pod exits. A request still waiting for a window is
-picked up again by the next pod. A crash, or a stop that runs out of its grace period, loses the
+pushed, and its outcome written before the pod exits. Edits the branch worker had already accepted
+are committed too, each in its author's window; an edit still on its way from the cluster is not,
+and the next pod's startup replay writes it under a generated message. A request still waiting for
+a window is picked up again by the next pod. A crash, or a stop that runs out of its grace period, loses the
 open window: the next pod's startup replay writes its edits under a generated message, and the
 request attaches again as if new, so it can end `NoWindow`.
 

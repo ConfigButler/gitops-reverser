@@ -18,7 +18,7 @@ Neither is needed for the benefit this page delivers.
 
 ## The problem
 
-A branch worker holds **one** open commit window at a time (`branchWorkerEventLoop.openWindow`). A
+Before stage 2, a branch worker held **one** open commit window at a time (`branchWorkerEventLoop.openWindow`). A
 window belongs to one author on one `GitTarget`, and a write that is anyone else's cannot join it
 (`openWindow.canAppend`). It closes the window first, with close reason `identity_change`, and opens
 its own.
@@ -50,6 +50,14 @@ message, `cm/c` under hers. Nothing fails; the history is wrong about what belon
 gitops-api avoids it today by serializing every save and its edits behind one lock in its server
 (`commitGate`). A client that creates `CommitRequest`s on a source cluster from the browser has no
 such lock, so the split comes back.
+
+What this page delivers is **commit grouping**: when different authors edit files it can prove
+independent, each gets a commit of their own. It is not a transaction. A save still collects the
+writes that reach its author's window before its timers close it; events and the save arrive
+independently, so a deadline can still split a save, and nothing proves a save holds every edit its
+author meant. A footprint proves that two windows change different files, not that two objects in
+those files are consistent with each other. "This save is exactly these edits" needs explicit
+membership and a completion signal, which longer timers cannot give.
 
 Two saves by **one** author on one `GitTarget` are a different problem, and it is already handled.
 A window carries one message, so the second save is refused with `SaveInProgress` while the first
@@ -128,7 +136,8 @@ A write is **proven independent** only when all of these hold:
   is off, so the write registers nothing in a `kustomization.yaml` and creates none (a new file is
   always added to the kustomization governing it, and `useKustomize` creates one on the first new
   document);
-- the object's destination is the built-in path, with no `placement.byType` or `placement.default`
+- an object with a document already is written where that document lives, at any path; a new
+  object's destination is the built-in path, with no `placement.byType` or `placement.default`
   template for its type: a template can bundle several objects into one file (`all.yaml`);
 - the destination file holds only this object's document, or does not exist yet. The built-in
   path has no API version, so two versions of one object share a file: they count as one object.
@@ -286,8 +295,8 @@ window, so they are proven against today's behavior before they are used to judg
 
 ## Stages
 
-Stages 1 and 2 are built; stages 3, 4 and 5 are proposed. Stage 3 gates the next release, because
-stage 2 shipped without stage 4's flag.
+Stages 1 and 2 are built; stage 3 is in progress, stage 4 was decided against, and stage 5 is
+proposed. Stage 3 gates the next release, because stage 2 shipped without a flag.
 
 1. **Built. Extract window management without changing behavior.** Move the window bookkeeping
    (`openWindow`, its timers, attach and finalize) behind one type that holds a set of windows, with
@@ -300,10 +309,14 @@ stage 2 shipped without stage 4's flag.
    conflicting writes, delete and recreate, `attach_next`, zero-duration windows, resync, shutdown,
    failed publication and replay, and buffer pressure, each against the reference model, which
    first has to keep work pending across failed pushes and retries.
-4. **Proposed. Ship behind a startup flag**, off by default at first. The flag is read once, at start; changing
-   it takes a restart, and the restart drains every open window through the normal shutdown path
-   (opening order, close reason `shutdown`), so there is no live transition to get right. Measure concurrent-window
-   counts, forced splits by reason, save outcomes, and memory before turning it on by default.
+4. **Decided against (2026-10-28): no startup flag.** Stage 2 is always on, so stage 3's tests gate
+   the release instead of a default-off rollout. What the flag's measurement period was for is read
+   from the metrics: `git_commit_windows_open` shows windows open side by side,
+   `git_commit_windows_single` a worker that fell back to one at a time, and
+   `git_commit_windows_total` by `close_reason` the forced splits (`identity_change`,
+   `path_conflict`, `footprint_fallback`). Memory is not measured yet: the retained-byte budget
+   charges windows and pending writes, but not the footprint indexes, the accepted versions or the
+   withheld-field records.
 5. **Proposed. Reconsider the follow-ups** in
    [window-field-ownership-and-apply-hold.md](window-field-ownership-and-apply-hold.md), using those
    measurements. Field ownership and the apply hold are separate changes, each with its own
