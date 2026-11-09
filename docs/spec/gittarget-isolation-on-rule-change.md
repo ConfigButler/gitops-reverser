@@ -13,7 +13,7 @@
 > exist. The isolation guarantee is still pinned end to end by
 > `test/e2e/gittarget_isolation_e2e_test.go` ("Manager GitTarget Isolation",
 > label `manager`). Rule `operations` were later removed from both rule kinds
-> ([collection rename](../design/collection-terminology-rename.md)).
+> (collection rename).
 
 ## Problem
 

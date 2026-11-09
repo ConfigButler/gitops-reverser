@@ -13,7 +13,7 @@
 > [README.md](README.md),
 > [kustomize-support-boundary.md](kustomize-support-boundary.md),
 > [finished/images-and-replicas-edit-through.md](finished/images-and-replicas-edit-through.md),
-> [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md),
+> [support-contract.md](support-contract.md),
 > [../manifest/file-agnostic-placement.md](../../layout/new-file-placement-rules.md),
 > [../../finished/current-manifest-support-review.md](../../spec/current-manifest-support-review.md)
 
@@ -434,7 +434,7 @@ folder reached only through a `patches:` entry.
 - **`WatchRule` proposal is optional (open question).** Discovery can suggest
   `WatchRule`s from the kinds present in a folder, but watch selection is about
   *which cluster resources flow*
-  ([higher-level KRM documents](finished/higher-level-krm-documents.md)),
+  ([higher-level KRM documents](support-contract.md)),
   orthogonal to the Git path — it may be cleaner to stop at `GitTarget` and leave
   watch scoping to the user.
 

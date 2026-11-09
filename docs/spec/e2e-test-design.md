@@ -45,8 +45,6 @@ What it does not promise:
 - removal of all remaining shell from the harness
 - total independence from shared cluster-side services
 
-Those broader open items live in [e2e-finish-plan.md](../design/e2e-finish-plan.md).
-
 ## Cross-Cutting Requirements
 
 These requirements should shape any further e2e reorganization:

@@ -89,6 +89,6 @@ distinguishes those planned gates from the permanent construct boundary.
   cluster is opt-in, through `onRefusal: Reapply` and [the apply trigger](../apply-trigger.md);
   preflight itself promises no automatic rollback.
 - Historical implementation records: [image/replica edit-through](finished/images-and-replicas-edit-through.md)
-  and [higher-level KRM support](finished/higher-level-krm-documents.md).
+  and [higher-level KRM support](support-contract.md).
 - [Fixture corpus](../../../test/fixtures/gitops-layouts/) — executable evidence; its
   generated `support-today.md` is a scanner report, not the runtime contract.

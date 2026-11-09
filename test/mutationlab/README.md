@@ -69,7 +69,7 @@ because it carries a response body to recover the name from, which is what makes
 BODY rather than the name the thing the aggregated rows are actually missing. Rows 16
 and 17 test the watch transport itself; the driver uses the lab's targeted `/watch-probe` endpoint so
 transport-only events can be scenario-attributed — see the
-[watch-first ingestion architecture](../../docs/finished/watch-first-ingestion-architecture.md)
+[watch-first ingestion architecture](../../docs/architecture.md)
 design notes.
 
 > ⚠️ **The "no audit" rows record this cluster's audit POLICY, not the API server.** The lab cluster

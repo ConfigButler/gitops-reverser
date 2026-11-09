@@ -11,7 +11,7 @@
 > [orchestrator-knowledge-boundary.md](orchestrator-knowledge-boundary.md),
 > [values-content-architecture.md](values-content-architecture.md),
 > [acceptance-precision.md](acceptance-precision.md),
-> [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md)
+> [support-contract.md](support-contract.md)
 
 [expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md)
 names the free-standing Helm values file as *"the single highest-leverage thing available
@@ -124,7 +124,7 @@ Why this is not chart inflation, and not a widening of the boundary:
 - **No renderer stands between the object and Git.** The file is plain YAML we own end to
   end. Round-tripping it is the same comment-preserving `yaml.Node` edit the operator
   already performs on every manifest — the pipeline is kind-agnostic, which is precisely
-  what [finished/higher-level-krm-documents.md](finished/higher-level-krm-documents.md)
+  what [support-contract.md](support-contract.md)
   proved when a `HelmRelease` needed no new code.
 - **Fan-in must be modelled separately.** The current analyzer records only a path set; it cannot
   report consumers or calculate values-file fan-in. A future `InputBinding` graph can refuse a
