@@ -1894,7 +1894,7 @@ spec:
 ```
 
 **When a request is made.** After a [flush](bi-directional.md#flush-then-apply): when an apply comes
-due, the branch worker closes the open commit window, publishes the writes decided up to that
+due, the branch worker closes every open commit window, publishes the writes decided up to that
 moment at once, and asks for the tip that publication produced. An edit decided after that is
 recorded in the apply window, so an apply that writes over it is withheld from Git and repaired. A
 registered `CommitRequest` (a save sets its own commit boundary), a

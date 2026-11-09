@@ -1,9 +1,9 @@
 # Design: one commit window per author, open at the same time
 
-Status: **stages 1 and 2 built** (`internal/git/window_set.go`, `footprint.go`,
-`window_admission.go`; see [what stage 2 built](#what-stage-2-built)); **stages 3 to 5 proposed**.
-Stage 2 is on with no startup flag, so **stage 3 gates the next release**: it must land before the
-next tag is cut (`docs/TODO.md`, "Before the next release"). Raised by
+Status: **built and ready to release.** Stages 1 to 3 are built (`internal/git/window_set.go`,
+`footprint.go`, `window_admission.go`), stage 4 was decided against, and stage 5 is proposed. Stage 2
+is on with no startup flag, so stage 3 gated the release; its last part, the outage e2e spec, passed in
+CI on PR #476. [How it is proven](#how-it-is-proven) lists the tests. Raised by
 gitops-api's review of the source-side save (PR #456):
 with saves created straight from a browser, a second person's edit splits the first person's change
 into two commits. This page sets out the change that fixes that, the rules it must keep, how to test
@@ -197,7 +197,7 @@ unrelated push split a save that is protected today.
 | `apply_due` (`flushed`) | every window, when the flush begins and takes the flush mark | the flush does not begin while any request is registered (`writeBusy`) |
 | `resync_before_apply` | every window | none (as today) |
 | `shutdown` | every window | none |
-| `buffer_limit` | every window | none; closing only the largest is an open question |
+| `buffer_limit` | every window | none |
 | `path_conflict` | the windows whose footprint the new write overlaps | none |
 | `footprint_fallback` | every window but the newest, when a commit outside its footprint makes the worker hold one window at a time | none |
 | `identity_change` | every other window | stays for writes of another `GitTarget` and for unproven footprints |
@@ -226,7 +226,7 @@ map iteration or by time, so the order is deterministic and testable.
 Commits land in the order their windows close, not the order their first writes arrived. With Alice
 open since 10:00 and Bob since 10:01, Bob's commit can come first. Together with the footprint rule
 above, no file ever goes back in time, but `git log` no longer reads as one timeline of edits. That
-is the point of the change, and it needs saying in `docs/configuration.md` when it ships.
+is the point of the change, and `docs/configuration.md` says so.
 
 ### Saves
 
@@ -295,8 +295,8 @@ window, so they are proven against today's behavior before they are used to judg
 
 ## Stages
 
-Stages 1, 2 and 3 are built; stage 4 was decided against, and stage 5 is proposed. Stage 3 gates the
-next release, because stage 2 shipped without a flag: its last part is the outage e2e passing in CI.
+Stages 1, 2 and 3 are built; stage 4 was decided against, and stage 5 is proposed. Stage 3 gated the
+release, because stage 2 shipped without a flag.
 
 1. **Built. Extract window management without changing behavior.** Move the window bookkeeping
    (`openWindow`, its timers, attach and finalize) behind one type that holds a set of windows, with
@@ -305,7 +305,7 @@ next release, because stage 2 shipped without a flag: its last part is the outag
 2. **Built. Allow several windows for proven-independent destinations.** Writes keep whole-object commits
    and apply behavior stays as it is. Writes of another `GitTarget` keep closing other windows
    (`identity_change`), and every layout in the footprint table's "no" rows stays serial.
-3. **Built; gates the next release. Test the failure boundaries.** Both close orders,
+3. **Built. Test the failure boundaries.** Both close orders,
    conflicting writes, delete and recreate, `attach_next`, zero-duration windows, resync, shutdown,
    failed publication and replay, and buffer pressure, each against the reference model, which
    keeps work pending across failed pushes and retries. See [What stage 3 built](#what-stage-3-built).
@@ -373,19 +373,31 @@ and the test driver delivers the push and retry timers too.
   are the newest writes of their objects; a save that changes nothing commits nothing, so it adds no
   bootstrap files; a push that lands makes the base trusted again.
 
+## How it is proven
+
+Three layers, each catching what the one below cannot:
+
+| Layer | Where | What it proves |
+| --- | --- | --- |
+| Reference model | `internal/git/window_model_test.go` | Random runs of every input above, with several windows open, against an independent implementation: author, message and files of every commit, no older write landing after a newer conflicting one, each save settled once, the retained charge after every step. 20 seeds of 60 steps in CI, with the reach floors of stage 3. |
+| Admission unit tests | `internal/git/window_admission_test.go` | Each rule on its own: disjoint authors keep a window each, a write to another window's file closes it first, unproven writes and another `GitTarget` stay serial, a footprint bug is refused and the worker falls back, a reset or a `GitTarget` change proves the open windows again, shutdown closes oldest first, the gauges. |
+| e2e, label `concurrent-authors` | `test/e2e/concurrent_authors_e2e_test.go` | The whole path: kubectl as each person, audit attribution, watch, branch worker, Gitea, a `CommitRequest` per save. Two authors interleave and each save is one commit; three authors hold three windows at once (`git_commit_windows_open` reads 3), save in the reverse of the order they started, and Git's history is that close order; a write to a file in another author's open window closes that window first (`path_conflict`), its commit lands first with the older copy, and Git ends with the newer one. |
+| e2e, label `concurrent-authors-outage` | `test/e2e/concurrent_authors_outage_e2e_test.go` | Two saves made while Git refuses every push stay pending, neither gives up, and the retry publishes both as one commit each once Git is back. |
+
 ## What it costs
 
-- **The loop's state.** The single `openWindow` becomes a set with an opening order, the close timer
-  becomes the earliest of all windows' deadlines, and every path that reads `l.openWindow` today
-  (attach, finalize, the apply window, resync cut-off, metrics) has to say which window, or all.
-  Stage 1 does this refactor on its own, with no behavior change.
-- **Footprints at arrival.** Deciding a footprint needs the worker's placement index of the
-  `GitTarget` subtree when a write arrives, not only when it plans a commit.
-- **Memory.** One window per active author. The byte cap stays global, so the bound does not change.
-- **Tests.** The commit-window, attach and apply-window suites assume one window. Most of them keep
-  their meaning with one author; the interleaving cases are new, and the reference model is new.
-- **Metrics.** `git_commit_windows_total` gains `close_reason="path_conflict"`. A gauge of open
-  windows shows how often authors overlap at all.
+- **The loop's state.** A set of windows with an opening order; the close timer is the earliest of
+  their deadlines, and every reader of the open window (attach, finalize, the apply window, resync
+  cut-off, metrics) names which window, or all.
+- **Footprints at arrival.** The worker builds a placement index of the `GitTarget` subtree, rebuilt
+  whenever its revision changes, every own commit included: about 3.5 ms and 3.9 MB allocated for 100
+  small manifests, 33 ms and 37 MB for 1,000 (`docs/TODO.md` tracks measuring it on production-sized
+  repositories).
+- **Memory.** One window per active author. The byte cap stays global, but it does not charge the
+  footprint indexes, the accepted versions or the withheld-field records.
+- **Metrics.** `git_commit_windows_total` has `close_reason="path_conflict"` and
+  `"footprint_fallback"`; `git_commit_windows_open` shows how often authors overlap at all, and
+  `git_commit_windows_single` a worker that fell back to one window.
 
 ## Potential problems
 
@@ -431,12 +443,13 @@ the reference model checks every commit.
 
 ## Open questions
 
-1. Does `buffer_limit` close every window, or only the one that crossed it?
-2. After stage 4, do windows of different `GitTarget`s on one branch also stay open side by side?
-   The per-`GitTarget` encryption and bootstrap that made one window per target necessary are per
-   window already; the first release keeps them serial anyway.
-3. Is a cap on open windows needed beyond the byte cap, such as one per `GitTarget`?
-4. When a save's own window is closed early by `path_conflict`, it commits with the save's message
+Settled by the build: `buffer_limit` closes every window; windows of different `GitTarget`s on one
+branch stay serial; the proof at arrival is the placement index, with its cost under
+[what it costs](#what-it-costs).
+
+1. Do windows of different `GitTarget`s on one branch stay open side by side later? The
+   per-`GitTarget` encryption and bootstrap that made one window per target necessary are per window
+   already.
+2. Is a cap on open windows needed beyond the byte cap, such as one per `GitTarget`?
+3. When a save's own window is closed early by `path_conflict`, it commits with the save's message
    and less than the person meant to save. Is that acceptable, or should the save report it?
-5. How much of the proof can the worker's placement index answer at arrival without a plan, and
-   what does that lookup and the recomputation after each revision change cost?

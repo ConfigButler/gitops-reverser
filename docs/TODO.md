@@ -7,11 +7,9 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
 
 ## Before the next release
 
-- [ ] **See the concurrent-authors outage e2e pass in CI** (`concurrent-authors-outage`,
-  `test/e2e/concurrent_authors_outage_e2e_test.go`): two authors save while every push is refused,
-  and the retry publishes both, one commit each, once Git takes pushes again. It is the last part of
-  stage 3 of [concurrent-author-windows.md](design/concurrent-author-windows.md#stages); the reference
-  model's part is done.
+Nothing open. Concurrent commit windows, the last gate, passed: stage 3 of
+[concurrent-author-windows.md](design/concurrent-author-windows.md#stages), outage e2e included, was
+green in CI on PR #476.
 
 ## Applier claims and bi-directional editing
 
