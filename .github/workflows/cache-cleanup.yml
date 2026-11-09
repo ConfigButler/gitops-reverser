@@ -1,0 +1,81 @@
+# BuildKit cache cleanup: deletes the image builds' GitHub Actions cache blobs (keys
+# `buildkit-blob-*`) created more than a month ago.
+#
+# GitHub evicts a cache entry only after a week without use, so a layer every build reuses (the
+# empty layer, a base image) keeps one entry forever. If GitHub loses the file behind such an
+# entry, every image build that reads it fails with BlobNotFound until someone deletes it by hand:
+# that took down main's and every PR's image builds in November 2026. Capping an entry's age
+# bounds how long that can last, and costs one rebuild of the deleted layers, which the next build
+# on main writes back to the cache. Other cache keys (BuildKit's index entries, the Trivy database)
+# are left alone.
+name: Cache cleanup
+
+on:
+  schedule:
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: "Delete BuildKit blobs created more than this many days ago"
+        type: number
+        default: 30
+      dry_run:
+        description: "List what would be deleted without deleting it"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete old BuildKit cache blobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: write # delete cache entries
+    steps:
+      - name: Delete BuildKit blobs past their age
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days || 30 }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d "-${MAX_AGE_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Deleting buildkit-blob-* entries created before ${cutoff} (dry run: ${DRY_RUN})"
+
+          gh cache list --key buildkit-blob- --limit 5000 \
+            --json id,key,createdAt,sizeInBytes \
+            --jq ".[] | select(.createdAt < \"${cutoff}\") | \"\(.id) \(.createdAt) \(.sizeInBytes) \(.key)\"" \
+            > old-blobs.txt
+
+          count="$(wc -l < old-blobs.txt)"
+          echo "${count} entries are past their age"
+          deleted=0
+          failed=0
+          while read -r id created size key; do
+            echo "${id} created=${created} bytes=${size} ${key}"
+            if [ "${DRY_RUN}" = "true" ]; then
+              continue
+            fi
+            if gh cache delete "${id}"; then
+              deleted=$((deleted + 1))
+            else
+              failed=$((failed + 1))
+            fi
+          done < old-blobs.txt
+
+          {
+            echo "### BuildKit cache cleanup"
+            echo ""
+            echo "Created before \`${cutoff}\`: ${count} entries; deleted ${deleted}; failed ${failed}; dry run: ${DRY_RUN}."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # Fail loudly, so a lost permission or an API change does not leave old blobs in place.
+          [ "${failed}" -eq 0 ]
