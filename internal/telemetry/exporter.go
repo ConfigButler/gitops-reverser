@@ -254,9 +254,9 @@ var (
 	GitWritesDroppedTotal metric.Int64Counter
 	// GitCommitWindowsTotal counts closed commit windows, labelled by {gittarget_namespace,
 	// gittarget_name, close_reason, timer_source}. close_reason says what ended the window
-	// (idle_timeout, max_duration, attach_next, identity_change, buffer_limit, resync_before_apply,
-	// shutdown, foreign_commit for a Git host's push notice, apply_due for the
-	// flush before an apply); timer_source says whose timers were in effect: the GitTarget's,
+	// (idle_timeout, max_duration, attach_next, identity_change, path_conflict, buffer_limit,
+	// resync_before_apply, shutdown, foreign_commit for a Git host's push notice, apply_due for
+	// the flush before an apply); timer_source says whose timers were in effect: the GitTarget's,
 	// or a CommitRequest's that attached and replaced them. Every window is counted exactly once, at
 	// the start of its finalize, so a window that then produces no diff or fails to commit is counted
 	// too. A push replay rebuilds commits and closes no window, and a CommitEmpty record has none.

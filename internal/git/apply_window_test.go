@@ -126,9 +126,9 @@ func TestApplyWindow_OnlyAWithheldWriteIsKeptFromTheCommitWindow(t *testing.T) {
 		windowEvent("alpha", "2", FluxFieldManager),
 	}})
 
-	require.NotNil(t, loop.openWindow)
-	require.Len(t, loop.openWindow.pathToEvent, 1)
-	for _, event := range loop.openWindow.pathToEvent {
+	require.NotNil(t, loop.windows.only())
+	require.Len(t, loop.windows.only().pathToEvent, 1)
+	for _, event := range loop.windows.only().pathToEvent {
 		replicas, _, _ := unstructured.NestedString(event.Object.Object, "spec", "replicas")
 		assert.Equal(t, "3", replicas, "Git keeps the API's value")
 	}

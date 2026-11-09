@@ -62,7 +62,7 @@ func TestCommitWindowMetrics_AZeroTimerClosesAndCountsTheWindowAtOnce(t *testing
 
 	writeTo(loop, "first")
 
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "idle_timeout", windowTimerSourceTarget))
 	requireOneObservationPerWindow(t, reader, 1)
 }
@@ -75,23 +75,31 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 
 	// max_duration: the target's maximum runs out.
 	writeTo(loop, "a")
-	loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
+	loop.windows.only().timers.maxAt = time.Now().Add(-time.Millisecond)
 	loop.closeOrArmWindow()
 	loop.endWake(0)
 
-	// identity_change: another author's write arrives while alice's window is open.
+	// path_conflict: another author writes the file alice's open window holds.
 	writeTo(loop, "b")
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
-		Events: []Event{configMapTargetEvent("c", "bob", "team-a")},
+		Events: []Event{configMapTargetEvent("b", "bob", "team-a")},
 	}})
 
-	// shutdown: bob's window is open when the worker stops.
+	// identity_change: once the worker holds one window at a time, another author's write closes
+	// bob's window whatever it writes.
+	loop.singleWindow = true
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
+		Events: []Event{configMapTargetEvent("c", "carol", "team-a")},
+	}})
+
+	// shutdown: carol's window is open when the worker stops.
 	loop.handleShutdown()
 
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "max_duration", windowTimerSourceTarget))
+	assert.Equal(t, int64(1), windowsClosed(t, reader, "path_conflict", windowTimerSourceTarget))
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "identity_change", windowTimerSourceTarget))
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "shutdown", windowTimerSourceTarget))
-	requireOneObservationPerWindow(t, reader, 3)
+	requireOneObservationPerWindow(t, reader, 4)
 }
 
 // TestCommitWindowMetrics_AnAttachKeepsTheOpeningTimeAndCountsTheRequestsTimers pins the two
@@ -105,11 +113,11 @@ func TestCommitWindowMetrics_AnAttachKeepsTheOpeningTimeAndCountsTheRequestsTime
 
 	writeTo(loop, "first")
 	opened := time.Now().Add(-10 * time.Second) // as if the write had arrived ten seconds ago
-	loop.openWindow.openedAt = opened
+	loop.windows.only().openedAt = opened
 
 	serviceAttach(loop, attachReq("alice", time.Hour))
-	require.NotNil(t, loop.openWindow.pendingCR)
-	assert.Equal(t, opened, loop.openWindow.openedAt, "the attach restarts the timers, not the opening time")
+	require.NotNil(t, loop.windows.only().pendingCR)
+	assert.Equal(t, opened, loop.windows.only().openedAt, "the attach restarts the timers, not the opening time")
 	forceDue(loop)
 
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "max_duration", windowTimerSourceCommitRequest))

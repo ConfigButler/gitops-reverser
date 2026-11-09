@@ -36,11 +36,11 @@ func (f *replayFixture) send(events ...Event) {
 
 // windowNames is the objects the open window holds, in the order they were added.
 func (f *replayFixture) windowNames() []string {
-	if f.loop.openWindow == nil {
+	if f.loop.windows.only() == nil {
 		return nil
 	}
 	var names []string
-	for _, event := range f.loop.openWindow.orderedEvents() {
+	for _, event := range f.loop.windows.only().orderedEvents() {
 		names = append(names, event.Identifier.Name)
 	}
 	return names
@@ -57,7 +57,7 @@ func TestRenderFidelityHold_AnEditMadeWhileAnotherCollectionReplaysIsCommittedBy
 	f := newReplayFixture(t, "render-fidelity-hold-window-b")
 
 	f.send(f.streamEvent("edited", "alice", itypes.OperationUpdate))
-	require.Nil(t, f.loop.openWindow)
+	require.Nil(t, f.loop.windows.only())
 	require.NotNil(t, f.loop.holdTimer, "the held GitTarget's gate is looked at again")
 	assert.Positive(t, f.loop.heldBytes(), "held writes count against the intake budget")
 
@@ -66,7 +66,7 @@ func TestRenderFidelityHold_AnEditMadeWhileAnotherCollectionReplaysIsCommittedBy
 	f.loop.endWake(0) // the recheck
 
 	assert.Equal(t, []string{"edited"}, f.windowNames(), "released once the gate opened")
-	assert.Equal(t, "alice", f.loop.openWindow.Author, "with its author")
+	assert.Equal(t, "alice", f.loop.windows.only().Author, "with its author")
 	assert.Empty(t, f.loop.held)
 	assert.Zero(t, f.loop.heldEventBytes)
 	assert.Zero(t, writesDropped(t, reader, writeDropRenderFidelityPending))
@@ -82,10 +82,14 @@ func TestRenderFidelityHold_HeldEditsGoBeforeLaterOnes(t *testing.T) {
 
 	f.send(f.streamEvent("second", "bob", itypes.OperationUpdate))
 
-	require.NotNil(t, f.loop.openWindow)
-	assert.Equal(t, "bob", f.loop.openWindow.Author,
-		"alice's held edit went first, and bob's closed her window")
-	assert.Equal(t, []string{"second"}, f.windowNames())
+	// The two edits change different files, so their windows stay open side by side, in the order
+	// the edits were admitted.
+	open := f.loop.windows.all()
+	require.Len(t, open, 2)
+	assert.Equal(t, "alice", open[0].Author, "alice's held edit went first")
+	assert.Equal(t, "first", open[0].orderedEvents()[0].Identifier.Name)
+	assert.Equal(t, "bob", open[1].Author)
+	assert.Equal(t, "second", open[1].orderedEvents()[0].Identifier.Name)
 }
 
 // TestRenderFidelityHold_ASnapshotSupersedesTheEditsOfItsCollectionHeldBeforeIt: the replay resync
@@ -144,7 +148,7 @@ func TestRenderFidelityHold_ACreateHeldIsAdoptedOnceItIsInAWrite(t *testing.T) {
 		created := configMapTargetEvent("created", "alice", echoTarget)
 		created.SourceCollection = echoScope().Collection
 		f.writeWindow(created)
-		require.Nil(t, f.loop.openWindow, "held")
+		require.Nil(t, f.loop.windows.only(), "held")
 		require.Empty(t, requester.taken(), "nothing to adopt yet: the create is in no commit")
 		return f, requester, gate, revisions[echoScope().Collection]
 	}
@@ -358,6 +362,6 @@ func TestRenderFidelityHold_ADivergenceAfterAReplayDropsWhatWasHeld(t *testing.T
 	f.loop.endWake(0)
 
 	assert.Empty(t, f.loop.held)
-	assert.Nil(t, f.loop.openWindow)
+	assert.Nil(t, f.loop.windows.only())
 	assert.Equal(t, int64(1), writesDropped(t, reader, writeDropRenderFidelityDiverged))
 }

@@ -7,7 +7,13 @@ should land before the next tag is cut (the last release is v0.55.0). Checked ag
 
 ## Before the next release
 
-Nothing open.
+- [ ] **Test the failure boundaries of concurrent commit windows** (stage 3 of
+  [concurrent-author-windows.md](design/concurrent-author-windows.md#stages)). Stage 2 ships with no
+  flag: a branch worker keeps a window per author whenever their footprints are proven disjoint.
+  Before it is released, the reference model (`internal/git/window_model_test.go`) must cover both
+  close orders, conflicting writes, delete and recreate, `attach_next`, zero-duration windows, a
+  resync, shutdown, failed publication and replay, and buffer pressure, each with several windows
+  open.
 
 ## Applier claims and bi-directional editing
 

@@ -43,16 +43,16 @@ func TestWindowTimers_ContinuousActivityStopsAtTheTargetsMaxDuration(t *testing.
 	holdPushes(loop) // hold the push, so the local commit stays inspectable
 
 	writeTo(loop, "first")
-	require.NotNil(t, loop.openWindow)
+	require.NotNil(t, loop.windows.only())
 	// Rewind the deadline rather than sleeping past a short one: a 20ms maxDuration raced the
 	// opening write itself, which under a loaded test run took longer than 20ms and closed the
 	// window before the assertion above could see it.
-	require.WithinDuration(t, time.Now().Add(time.Hour), loop.openWindow.timers.maxAt, time.Minute,
+	require.WithinDuration(t, time.Now().Add(time.Hour), loop.windows.only().timers.maxAt, time.Minute,
 		"the window takes the target's maxDuration when it opens")
-	loop.openWindow.timers.maxAt = time.Now().Add(-time.Millisecond)
+	loop.windows.only().timers.maxAt = time.Now().Add(-time.Millisecond)
 	writeTo(loop, "second") // restarts idle, but maxDuration has already passed
 
-	assert.Nil(t, loop.openWindow, "a window closes at maxDuration however much keeps arriving")
+	assert.Nil(t, loop.windows.only(), "a window closes at maxDuration however much keeps arriving")
 	require.Len(t, loop.pendingWrites, 1, "both writes are in the one window it closed")
 	assert.Len(t, loop.pendingWrites[0].Events, 2)
 }
@@ -68,7 +68,7 @@ func TestWindowTimers_ATargetMaxDurationOfZeroCommitsEveryWrite(t *testing.T) {
 	writeTo(loop, "first")
 	writeTo(loop, "second")
 
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 	assert.Len(t, loop.pendingWrites, 2, "maxDuration 0s closes the window right after the write that opened it")
 }
 
@@ -82,13 +82,13 @@ func TestWindowTimers_ARequestIdleTimeoutLongerThanTheTargetsKeepsTheWindowOpen(
 	req.IdleTimeout = durationPtr(time.Hour)
 	serviceAttach(loop, req)
 	writeTo(loop, "first")
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: attached")
+	require.NotNil(t, loop.windows.only().pendingCR, "precondition: attached")
 
 	time.Sleep(20 * time.Millisecond)
 	loop.closeOrArmWindow() // what the commit timer does when it fires
 	loop.endWake(0)
 
-	assert.NotNil(t, loop.openWindow, "the request's longer idleTimeout replaces the target's")
+	assert.NotNil(t, loop.windows.only(), "the request's longer idleTimeout replaces the target's")
 }
 
 func TestWindowTimers_ARequestIdleTimeoutShorterThanTheTargetsClosesSooner(t *testing.T) {
@@ -101,13 +101,13 @@ func TestWindowTimers_ARequestIdleTimeoutShorterThanTheTargetsClosesSooner(t *te
 	req.IdleTimeout = durationPtr(5 * time.Millisecond)
 	serviceAttach(loop, req)
 	writeTo(loop, "first")
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: attached")
+	require.NotNil(t, loop.windows.only().pendingCR, "precondition: attached")
 
 	time.Sleep(20 * time.Millisecond)
 	loop.closeOrArmWindow()
 	loop.endWake(0)
 
-	assert.Nil(t, loop.openWindow, "the request's shorter idleTimeout replaces the target's hour")
+	assert.Nil(t, loop.windows.only(), "the request's shorter idleTimeout replaces the target's hour")
 }
 
 func TestWindowTimers_ARequestWithOnlyMaxDurationIgnoresTheTargetsIdleTimer(t *testing.T) {
@@ -122,7 +122,7 @@ func TestWindowTimers_ARequestWithOnlyMaxDurationIgnoresTheTargetsIdleTimer(t *t
 	loop.closeOrArmWindow()
 	loop.endWake(0)
 
-	assert.NotNil(t, loop.openWindow, "no idle close: maxDuration alone ends the collection")
+	assert.NotNil(t, loop.windows.only(), "no idle close: maxDuration alone ends the collection")
 }
 
 func TestWindowTimers_AWaitingRequestAttachesBeforeATargetIdleOfZeroCloses(t *testing.T) {
@@ -136,9 +136,9 @@ func TestWindowTimers_AWaitingRequestAttachesBeforeATargetIdleOfZeroCloses(t *te
 	serviceAttach(loop, req)
 	writeTo(loop, "first")
 
-	require.NotNil(t, loop.openWindow,
+	require.NotNil(t, loop.windows.only(),
 		"the request attaches in the step the write opens the window, before the zero timer closes it")
-	assert.Equal(t, "save", loop.openWindow.pendingMessage)
+	assert.Equal(t, "save", loop.windows.only().pendingMessage)
 }
 
 func TestWindowTimers_AZeroAttachTimeoutStillCollectsForMaxDuration(t *testing.T) {
@@ -152,8 +152,8 @@ func TestWindowTimers_AZeroAttachTimeoutStillCollectsForMaxDuration(t *testing.T
 	req.AttachTimeout = 0
 	serviceAttach(loop, req)
 
-	require.NotNil(t, loop.openWindow, "attachTimeout 0s never forces a zero collection")
-	assert.NotNil(t, loop.openWindow.pendingCR, "it attached to the window open at registration")
+	require.NotNil(t, loop.windows.only(), "attachTimeout 0s never forces a zero collection")
+	assert.NotNil(t, loop.windows.only().pendingCR, "it attached to the window open at registration")
 	_, resolved := outcome(t, worker)
 	assert.False(t, resolved)
 }
@@ -169,7 +169,7 @@ func TestWindowTimers_ARequestMaxDurationOfZeroFinalizesRightAfterTheAttach(t *t
 	req.MaxDuration = 0
 	serviceAttach(loop, req)
 
-	assert.Nil(t, loop.openWindow)
+	assert.Nil(t, loop.windows.only())
 	res, ok := outcome(t, worker)
 	require.True(t, ok)
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
@@ -186,8 +186,8 @@ func TestAttachSelection_CompetingRequestsAreServedFirstComeFirstServed(t *testi
 	serviceAttach(loop, namedAttachReq("late", time.Minute))
 	writeTo(loop, "first")
 
-	require.NotNil(t, loop.openWindow.pendingCR)
-	assert.Equal(t, "early", loop.openWindow.pendingCR.Name)
+	require.NotNil(t, loop.windows.only().pendingCR)
+	assert.Equal(t, "early", loop.windows.only().pendingCR.Name)
 }
 
 func TestAttachSelection_NextClosesTheOpenWindowUnderItsOwnMessage(t *testing.T) {
@@ -201,26 +201,26 @@ func TestAttachSelection_NextClosesTheOpenWindowUnderItsOwnMessage(t *testing.T)
 	current := namedAttachReq("current", time.Hour)
 	current.Message = "the earlier save"
 	serviceAttach(loop, current)
-	require.NotNil(t, loop.openWindow.pendingCR, "precondition: the earlier save is attached")
+	require.NotNil(t, loop.windows.only().pendingCR, "precondition: the earlier save is attached")
 
 	next := namedAttachReq("next", time.Hour)
 	next.Attach = configv1alpha3.AttachNext
 	next.Message = "the new save"
 	serviceAttach(loop, next)
 
-	assert.Nil(t, loop.openWindow, "Next closes the author's open window")
+	assert.Nil(t, loop.windows.only(), "Next closes the author's open window")
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Equal(t, "the earlier save", loop.pendingWrites[0].CommitMessage,
 		"the closed window keeps the message another request attached to it")
 
 	writeTo(loop, "after")
-	require.NotNil(t, loop.openWindow)
-	require.NotNil(t, loop.openWindow.pendingCR)
-	assert.Equal(t, "next", loop.openWindow.pendingCR.Name, "Next attaches to the window the next write opens")
+	require.NotNil(t, loop.windows.only())
+	require.NotNil(t, loop.windows.only().pendingCR)
+	assert.Equal(t, "next", loop.windows.only().pendingCR.Name, "Next attaches to the window the next write opens")
 
 	// A re-send of the same request closes nothing: the close is keyed to its registration.
 	serviceAttach(loop, next)
-	assert.NotNil(t, loop.openWindow, "a re-send must not close the window it attached to")
+	assert.NotNil(t, loop.windows.only(), "a re-send must not close the window it attached to")
 	assert.Len(t, loop.pendingWrites, 1)
 }
 
@@ -265,18 +265,18 @@ func TestWindowTimers_AWaitingRequestWithMaxDurationZeroCommitsExactlyTheNextWri
 	req.MaxDuration = 0
 	req.Message = "save: exactly the next change"
 	serviceAttach(loop, req)
-	require.Nil(t, loop.openWindow, "the request waits; it opens nothing")
+	require.Nil(t, loop.windows.only(), "the request waits; it opens nothing")
 	assert.Equal(t, PhaseWaitingForWindow, worker.LookupCommitRequestPhase("default", crName, "uid-"+crName))
 
 	writeTo(loop, "the-change")
 	loop.endWake(0)
-	assert.Nil(t, loop.openWindow, "the write opened a window, the request attached, and maxDuration: 0s closed it")
+	assert.Nil(t, loop.windows.only(), "the write opened a window, the request attached, and maxDuration: 0s closed it")
 	require.Len(t, loop.pendingWrites, 1)
 	assert.Equal(t, req.Message, loop.pendingWrites[0].CommitMessage)
 	require.Len(t, loop.pendingWrites[0].Events, 1, "the commit holds that one write")
 
 	writeTo(loop, "the-next-change")
-	require.NotNil(t, loop.openWindow, "a later write opens an ordinary window under the target's timers")
-	assert.Nil(t, loop.openWindow.pendingCR)
-	assert.Empty(t, loop.openWindow.pendingMessage)
+	require.NotNil(t, loop.windows.only(), "a later write opens an ordinary window under the target's timers")
+	assert.Nil(t, loop.windows.only().pendingCR)
+	assert.Empty(t, loop.windows.only().pendingMessage)
 }

@@ -379,7 +379,7 @@ func TestCommitEmpty_AZeroAttachTimeoutStillSeesAnotherAuthorsWindow(t *testing.
 			defer loop.stopTimers()
 
 			writeTo(loop, "alices-edit")
-			require.NotNil(t, loop.openWindow)
+			require.NotNil(t, loop.windows.only())
 
 			req := commitEmptyReq("bob", "bob's save")
 			req.AttachTimeout = 0
@@ -391,8 +391,8 @@ func TestCommitEmpty_AZeroAttachTimeoutStillSeesAnotherAuthorsWindow(t *testing.
 			assert.Equal(t, FinalizeWindowMismatch, res.Outcome)
 			assert.Empty(t, res.Commit)
 			assert.Empty(t, loop.pendingWrites, "no record was made")
-			require.NotNil(t, loop.openWindow, "and alice's window is left alone")
-			assert.Nil(t, loop.openWindow.pendingCR)
+			require.NotNil(t, loop.windows.only(), "and alice's window is left alone")
+			assert.Nil(t, loop.windows.only().pendingCR)
 		})
 	}
 }
@@ -442,7 +442,7 @@ func TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves(t *testing.T) {
 		req.Attach = configv1alpha3.AttachNext
 		serviceAttach(loop, req)
 		writeTo(loop, "oversized")
-		assert.Nil(t, loop.openWindow, "the buffer limit flushed the window")
+		assert.Nil(t, loop.windows.only(), "the buffer limit flushed the window")
 		loop.endWake(0)
 		loop.pushPending()
 

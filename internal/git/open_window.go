@@ -57,8 +57,13 @@ type openWindow struct {
 	// attach of a CommitRequest.
 	lastWriteAt time.Time
 
-	// seq is the window's place in the order windows opened (commitWindows.windowSeq).
+	// seq is the window's place in the order windows opened (commitWindows.windowSeq): its ID in the
+	// log lines, unique for the life of the worker and never a metric label.
 	seq uint64
+	// footprint is the Git files the window's writes may change, as last proven (footprint.go). Nil
+	// until the window is first open beside another: a window that never had company needs no proof.
+	// Once proven it covers every write the window collects, so its commit can be checked.
+	footprint *footprint
 	// bytes is what the window is charged: its events, and its attached request's message. The set's
 	// windowBytes is the sum of every open window's.
 	bytes int64

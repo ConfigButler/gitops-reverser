@@ -1450,11 +1450,22 @@ editing them affects windows that open afterward, never one already running. A
 [`CommitRequest`](#the-request-window-specwindow) that attaches to a window replaces both timers
 for that window.
 
-One branch worker holds one live window, bound to an author and target. Interleaved authors or
-targets split a burst. Atomic writes, a resync, buffer limits, shutdown, an `attach: Next` request,
-a push notice from the [receiver](#gitreceiver), and the
-[flush](bi-directional.md#flush-then-apply) before an apply can close a window early. Push cooldown
-is independent: a zero timer does not promise an immediate remote push. See the
+A branch worker holds a window per author of one target, side by side, while it can prove their
+writes change different files: each object alone in its own file, at the built-in path or where its
+document already lives, with no kustomization governing it and no `placement.byType` or
+`placement.default` template for a new one. Anything it cannot prove stays serial, one window at a
+time: an object in a file with other documents, anything under a kustomization or with
+`useKustomize` on, a new document placed by a template, an encrypted type. Such a write, a write to
+a file another author's open window holds, and a write of another target close the windows it
+cannot sit beside first, so those still split a burst. **Commits land in the order their windows
+close**, not the order their first writes arrived: with Alice's window open since 10:00 and Bob's
+since 10:01, Bob's commit can come first. No file ever goes back in time, but `git log` is no
+longer one timeline of edits.
+
+Atomic writes, a resync, buffer limits, shutdown, an `attach: Next` request, a push notice from the
+[receiver](#gitreceiver), and the [flush](bi-directional.md#flush-then-apply) before an apply close
+the open windows early. Push cooldown is independent: a zero timer does not promise an immediate
+remote push. See the
 [complete applier claim rules](spec/commit-window-refactor.md).
 
 Both values are **Go duration strings with a mandatory unit**, at most `24h`, checked by the API

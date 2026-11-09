@@ -82,14 +82,14 @@ func TestCatchUp_AnAPICreateIsAdoptedEvenAtTheTip(t *testing.T) {
 			owned := createdEvent("alpha", "kubectl-create")
 			owned.AppliedBy = AppliedBy{Kind: configv1alpha3.ApplierKindKustomization, Namespace: "x", Name: "other"}
 			loop.handleLiveEvents(&WriteRequest{Events: []Event{owned}})
-			loop.openWindow = nil
+			loop.windows.setOnly(nil)
 			loop.serviceAppliers()
 			require.Empty(t, requester.taken(), "neither is an API create of the folder's own objects")
 
 			loop.handleLiveEvents(&WriteRequest{
 				Events: []Event{createdEvent("alpha", "kubectl-create")},
 			})
-			loop.openWindow = nil
+			loop.windows.setOnly(nil)
 			loop.serviceAppliers()
 			adopt := requester.taken()
 			require.Len(t, adopt, 1, "adopted, although the applier is at the tip")
