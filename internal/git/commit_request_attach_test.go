@@ -69,10 +69,11 @@ func forceDue(loop *branchWorkerEventLoop) {
 	}
 }
 
-// holdPushes starts the push cooldown now and keeps every push behind it, a save's too, so the local
-// commits stay inspectable until the test pushes.
+// holdPushes keeps every push behind the cooldown, a save's too, so the local commits stay
+// inspectable until the test pushes. The cooldown runs on the worker's clock, so it starts an hour
+// ahead: a test that steps the clock still holds.
 func holdPushes(loop *branchWorkerEventLoop) {
-	loop.lastPushAt = time.Now()
+	loop.lastPushAt = loop.w.now().Add(time.Hour)
 	loop.cooldownHoldsSaves = true
 }
 
