@@ -365,18 +365,23 @@ func (l *branchWorkerEventLoop) writeBusy() bool {
 	return len(l.pendingCRs) > 0 || l.recovery.active || l.w.worktreeDirty()
 }
 
-// closeWindowForPushHint closes the open commit window early when a Git host has said the branch may
-// have moved, so its writes are published, and replayed onto the move, now rather than when the
-// window's timers allow. A window a CommitRequest holds is left to its save.
+// closeWindowForPushHint closes the open commit windows early when a Git host has said the branch may
+// have moved, so their writes are published, and replayed onto the move, now rather than when the
+// windows' timers allow. A window a CommitRequest holds is left to its save.
 func (l *branchWorkerEventLoop) closeWindowForPushHint() {
 	hinted := l.pushHinted
 	l.pushHinted = false
-	if !hinted || l.openWindow == nil || l.openWindow.pendingCR != nil || l.w.applyRequester == nil {
+	if !hinted || l.w.applyRequester == nil {
 		return
 	}
-	l.w.Log.Info("A Git host reported a push; closing the commit window to publish it now",
-		"branch", l.w.Branch)
-	l.finalizeOpenWindowWithReason(windowFinalizeReasonForeignCommit)
+	for _, window := range l.commitWindows.all() {
+		if window.pendingCR != nil {
+			continue
+		}
+		l.w.Log.Info("A Git host reported a push; closing the commit window to publish it now",
+			"branch", l.w.Branch)
+		l.finalizeWindow(window, windowFinalizeReasonForeignCommit)
+	}
 }
 
 // serviceAppliers settles the reports that came back, and sends whatever attempts are due, after a

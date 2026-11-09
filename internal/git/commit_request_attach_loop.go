@@ -210,7 +210,7 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		gitTargetNamespace: req.GitTargetNamespace,
 		message:            req.Message,
 		seq:                l.crSeq,
-		attachDeadline:     time.Now().Add(req.AttachTimeout),
+		attachDeadline:     l.w.now().Add(req.AttachTimeout),
 		idleTimeout:        req.IdleTimeout,
 		maxDuration:        req.MaxDuration,
 		commitEmpty:        req.CommitEmpty,
@@ -232,40 +232,40 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		"attach", string(req.Attach),
 		"attachTimeout", req.AttachTimeout.String())
 
-	if l.openWindow == nil {
-		return
-	}
-	if !pcr.matchesWindow(l.openWindow) {
+	if l.commitWindows.foreignTo(pcr) != nil {
 		// Noted here and not left to noteForeignWindow, which skips a request whose deadline has
 		// passed: with attachTimeout: 0s that is every request, so a foreign window open at
 		// registration would go unseen and the request would resolve NoWindow — and, with
 		// CommitEmpty, record an empty commit while another author's work is in flight.
 		pcr.sawForeignWindow = true
+	}
+	window := l.commitWindows.forRequest(pcr)
+	if window == nil {
 		return
 	}
 	if req.Attach == v1alpha3.AttachNext {
 		// Start clean: close the author's window under whatever message it already carries,
 		// including one another request attached, and wait for a write to open the next. The
 		// registration above is what makes this happen once per request.
-		l.finalizeOpenWindowWithReason(windowFinalizeReasonAttachNext)
+		l.finalizeWindow(window, windowFinalizeReasonAttachNext)
 		return
 	}
-	if l.openWindow.pendingCR == nil {
+	if window.pendingCR == nil {
 		// CurrentOrNext attaches to a window already open at registration before any deadline is
 		// consulted, which is what lets attachTimeout: 0s attach at all.
-		l.attachToOpenWindow(pcr)
+		l.attachToWindow(window, pcr)
 	}
 }
 
 // saveInProgress returns the earlier request a newly registered one would race for one window, or nil.
 // That is one of the same author on the same GitTarget (sameSaver) that is still waiting for a window,
-// or that is collecting the open one. A request that asks for the Next window does not race one that
+// or that is collecting an open window. A request that asks for the Next window does not race one that
 // is collecting: it closes that window under the earlier request's message first. A request already
 // waiting for its push holds no window, so it races nothing.
 func (l *branchWorkerEventLoop) saveInProgress(
 	pcr *pendingCommitRequest, attach v1alpha3.AttachPolicy,
 ) *pendingCommitRequest {
-	now := time.Now()
+	now := l.w.now()
 	for _, earlier := range l.pendingCRs {
 		if !earlier.sameSaver(pcr) {
 			continue
@@ -273,8 +273,7 @@ func (l *branchWorkerEventLoop) saveInProgress(
 		if earlier.waiting(now) {
 			return earlier
 		}
-		collecting := earlier.attached && l.openWindow != nil && l.openWindow.pendingCR != nil &&
-			*l.openWindow.pendingCR == earlier.id
+		collecting := earlier.attached && l.commitWindows.carrying(earlier.id) != nil
 		if collecting && attach != v1alpha3.AttachNext {
 			return earlier
 		}
@@ -320,12 +319,13 @@ func (p *pendingCommitRequest) waiting(now time.Time) bool {
 // pass. Nothing refused that request; it waited out its whole wait with nothing open, which is the
 // benign outcome.
 func (l *branchWorkerEventLoop) noteForeignWindow() {
-	if l.openWindow == nil {
-		return
-	}
-	now := time.Now()
+	now := l.w.now()
 	for _, pcr := range l.pendingCRs {
-		if !pcr.waiting(now) || pcr.sawForeignWindow || pcr.matchesWindow(l.openWindow) {
+		if !pcr.waiting(now) || pcr.sawForeignWindow {
+			continue
+		}
+		foreign := l.commitWindows.foreignTo(pcr)
+		if foreign == nil {
 			continue
 		}
 		pcr.sawForeignWindow = true
@@ -333,50 +333,52 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 			"request", pcr.id.Namespace+"/"+pcr.id.Name,
 			"requestAuthor", pcr.author,
 			"requestTarget", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
-			"windowAuthor", l.openWindow.Author,
-			"windowTarget", l.openWindow.GitTargetNamespace+"/"+l.openWindow.GitTarget)
+			"windowAuthor", foreign.Author,
+			"windowTarget", foreign.GitTargetNamespace+"/"+foreign.GitTarget)
 	}
 }
 
-// attachWaitingCommitRequests attaches the first-registered waiting request that matches the open
-// window, when the window carries none yet. A window carries at most one request; a second waits
-// for the next window, and a request whose deadline has passed takes none.
+// attachWaitingCommitRequests attaches, to each open window that carries no request yet, oldest
+// first, the first-registered waiting request that matches it. A window carries at most one request;
+// a second waits for the next window, and a request whose deadline has passed takes none.
 func (l *branchWorkerEventLoop) attachWaitingCommitRequests() {
-	if l.openWindow == nil || l.openWindow.pendingCR != nil {
-		return
-	}
-	now := time.Now()
-	var first *pendingCommitRequest
-	for _, pcr := range l.pendingCRs {
-		if !pcr.waiting(now) || !pcr.matchesWindow(l.openWindow) {
+	now := l.w.now()
+	for _, window := range l.commitWindows.all() {
+		if window.pendingCR != nil {
 			continue
 		}
-		if first == nil || pcr.seq < first.seq {
-			first = pcr
+		var first *pendingCommitRequest
+		for _, pcr := range l.pendingCRs {
+			if !pcr.waiting(now) || !pcr.matchesWindow(window) {
+				continue
+			}
+			if first == nil || pcr.seq < first.seq {
+				first = pcr
+			}
 		}
-	}
-	if first != nil {
-		l.attachToOpenWindow(first)
+		if first != nil {
+			l.attachToWindow(window, first)
+		}
 	}
 }
 
-// attachToOpenWindow binds a request's message to the open window and replaces the window's timers
-// with the request's own: the request's maxDuration runs from this attach, and so does its first
-// idle interval. A zero maxDuration closes the window right here. The message is the window's to
-// keep from now on, so it moves into the window's charge.
-func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
-	now := time.Now()
-	l.openWindow.pendingMessage = pcr.message
+// attachToWindow binds a request's message to an open window and replaces the window's timers with
+// the request's own: the request's maxDuration runs from this attach, and so does its first idle
+// interval. A zero maxDuration closes the window right here. The message is the window's to keep
+// from now on, so it moves into the window's charge.
+func (l *branchWorkerEventLoop) attachToWindow(window *openWindow, pcr *pendingCommitRequest) {
+	now := l.w.now()
+	window.pendingMessage = pcr.message
 	id := pcr.id
-	l.openWindow.pendingCR = &id
+	window.pendingCR = &id
 	pcr.attached = true
-	l.windowBytes += attachCharge(pcr.message)
+	l.commitWindows.charge(window, attachCharge(pcr.message))
 	timers := windowTimers{noIdle: pcr.idleTimeout == nil, maxAt: now.Add(pcr.maxDuration)}
 	if pcr.idleTimeout != nil {
 		timers.idle = *pcr.idleTimeout
 	}
-	l.openWindow.timers = timers
-	l.openWindow.lastWriteAt = now
+	window.timers = timers
+	window.lastWriteAt = now
 	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
@@ -390,7 +392,7 @@ func (l *branchWorkerEventLoop) attachToOpenWindow(pcr *pendingCommitRequest) {
 // still waiting. An attached request is not here: its window's timers close it, and whichever path
 // closes the window resolves it.
 func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
-	now := time.Now()
+	now := l.w.now()
 	for id, pcr := range l.pendingCRs {
 		if pcr.attached || pcr.attachDeadline.After(now) {
 			continue
@@ -534,7 +536,8 @@ func (l *branchWorkerEventLoop) rearmAttachTimer() {
 		l.stopAttachTimer()
 		return
 	}
-	delay := time.Until(earliest)
+	l.attachTimerAt = earliest
+	delay := earliest.Sub(l.w.now())
 	if delay < 0 {
 		delay = 0
 	}
@@ -562,4 +565,5 @@ func (l *branchWorkerEventLoop) stopAttachTimer() {
 		}
 	}
 	l.attachTimer = nil
+	l.attachTimerAt = time.Time{}
 }
