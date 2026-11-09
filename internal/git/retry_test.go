@@ -20,6 +20,8 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 )
 
 // failNextPushes makes the next n push attempts fail as an unreachable remote would, and counts every
@@ -223,4 +225,29 @@ func TestPublicationRetry_AHeldCommitRequestIsCommittedWithoutAnotherWrite(t *te
 	assert.Equal(t, FinalizeCommitted, res.Outcome)
 	assert.Equal(t, f.ref("feature").String(), res.Commit)
 	assert.Equal(t, int32(2), attempts.Load(), "one failed push, then the retry")
+}
+
+// An outage can end with nothing to publish: a resync decided while Git is down waits for the retry,
+// and committed then it changes nothing, so no write is left to push. The outage is over all the same:
+// the retry closes, and the next failure waits the first backoff again, not twice the last.
+func TestPublicationRetry_AnOutageEndsWhenItsWritesSettleWithoutAPush(t *testing.T) {
+	f := newAdmissionFixture(t, "retry-settles", nil)
+	f.loop.pushPending() // the bootstrap write
+	clock := useTestClock(f.worker)
+	outage := injectOutage(t)
+	outage.down = true
+	req := &ResyncRequest{Desired: []manifestanalyzer.DesiredResource{echoDesired("x", "x1")},
+		GitTargetName: echoTarget, GitTargetNamespace: "default", Result: make(chan ResyncResult, 1)}
+	f.loop.handleQueueItem(resyncItem(req))
+	require.Error(t, (<-req.Result).Err, "precondition: the resync waits for the retry")
+	require.Len(t, f.loop.pendingWrites, 1)
+	require.True(t, f.loop.retry.pending())
+
+	outage.down = false
+	clock.advance(retryInitialBackoff)
+	fireRetry(f.loop)
+
+	require.Empty(t, f.loop.pendingWrites, "the resync changed nothing")
+	assert.False(t, f.loop.retry.pending(), "the outage is over")
+	assert.Zero(t, f.loop.retry.backoff, "and the next one starts from the first backoff")
 }

@@ -295,8 +295,8 @@ window, so they are proven against today's behavior before they are used to judg
 
 ## Stages
 
-Stages 1 and 2 are built; stage 3 is in progress, stage 4 was decided against, and stage 5 is
-proposed. Stage 3 gates the next release, because stage 2 shipped without a flag.
+Stages 1, 2 and 3 are built; stage 4 was decided against, and stage 5 is proposed. Stage 3 gates the
+next release, because stage 2 shipped without a flag: its last part is the outage e2e passing in CI.
 
 1. **Built. Extract window management without changing behavior.** Move the window bookkeeping
    (`openWindow`, its timers, attach and finalize) behind one type that holds a set of windows, with
@@ -305,10 +305,10 @@ proposed. Stage 3 gates the next release, because stage 2 shipped without a flag
 2. **Built. Allow several windows for proven-independent destinations.** Writes keep whole-object commits
    and apply behavior stays as it is. Writes of another `GitTarget` keep closing other windows
    (`identity_change`), and every layout in the footprint table's "no" rows stays serial.
-3. **Proposed; gates the next release. Test the failure boundaries.** Both close orders,
+3. **Built; gates the next release. Test the failure boundaries.** Both close orders,
    conflicting writes, delete and recreate, `attach_next`, zero-duration windows, resync, shutdown,
    failed publication and replay, and buffer pressure, each against the reference model, which
-   first has to keep work pending across failed pushes and retries.
+   keeps work pending across failed pushes and retries. See [What stage 3 built](#what-stage-3-built).
 4. **Decided against (2026-10-28): no startup flag.** Stage 2 is always on, so stage 3's tests gate
    the release instead of a default-off rollout. What the flag's measurement period was for is read
    from the metrics: `git_commit_windows_open` shows windows open side by side,
@@ -345,6 +345,33 @@ The rules above, with these choices where the page left room:
 - **A request's own author's window stands in no one's way.** A save waiting while another author's
   window is open records a mismatch only when no window of its own author is open.
 - **The window ID** (`window`) is in the open, close and finalized log lines, with the branch.
+
+### What stage 3 built
+
+The reference model keeps work across wakes. A decided write is committed at the end of the wake
+that decided it, unless it needs a connection while a failed attempt waits for its retry (a resync
+during an outage), and published by a push that the cooldown spaces after the last one that landed;
+a save and an apply's flush push at once. A failed push keeps every write for the retry, 10s doubling
+to 5m. The push cooldown runs on the worker's clock, as the window timers and the retry already did,
+and the test driver delivers the push and retry timers too.
+
+- **Checked after every step:** the pending writes in order (which carry a save, which are a resync,
+  which are committed), what each is charged, the total retained charge, and all four timers.
+- **Inputs added:** a Git outage that starts and ends (every push, fetch and sync fails), a restart
+  mid-run (a new worker on an empty checkout), a timer overdue while an item is handled first, an
+  applier's write that lands over a newer edit (withheld, and a Repair asked for), and a push from
+  outside that moves one author's document into another's file under their open windows.
+- **Profiles:** wide, concurrent (authors keep to their own files) and outage (short clock steps, so
+  windows stay open across the cooldown and the retries). CI runs 20 seeds of 60 steps, about 15 s.
+- **Reach floors:** the search must reach, across its seeds, each of shutdown, flush and push hint
+  with several windows open, `attach_next` beside another window, a reproof that finds windows
+  overlap, `path_conflict`, a failed push, the cooldown and a retry wait with several windows open, a
+  commit waiting for its retry, a replay with a window open, buffer pressure with several windows
+  open, an apply waiting for the retry, a restart, an overdue timer, and a withheld applier write.
+- **Found:** no fault of the worker. The model learned four rules it never met while it pushed at
+  once: a pending resync holds every applier back (the barrier) and ends the flush; a resync's edits
+  are the newest writes of their objects; a save that changes nothing commits nothing, so it adds no
+  bootstrap files; a push that lands makes the base trusted again.
 
 ## What it costs
 

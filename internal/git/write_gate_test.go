@@ -108,6 +108,42 @@ func failPushes(t *testing.T, worker *BranchWorker) func() {
 	return restore
 }
 
+// remoteOutage is a Git host a test takes down and brings back, step by step: while it is down,
+// every push, fetch and sync fails on a transport error, so the worker learns nothing of the
+// remote, as in an outage. Up, each goes through to the real server.
+type remoteOutage struct{ down bool }
+
+// injectOutage installs an outage, up, until the test ends.
+func injectOutage(t *testing.T) *remoteOutage {
+	t.Helper()
+	o := &remoteOutage{}
+	unreachable := errors.New("dial tcp: connection refused")
+	push, fetch, sync := pushAtomicFn, fetchRemoteBranchHashFn, syncToRemoteFn
+	pushAtomicFn = func(ctx context.Context, repo *gogit.Repository, root plumbing.Hash,
+		branch plumbing.ReferenceName, auth []gitclient.Option) (PushOutcome, error) {
+		if o.down {
+			return PushOutcome{}, unreachable
+		}
+		return push(ctx, repo, root, branch, auth)
+	}
+	fetchRemoteBranchHashFn = func(ctx context.Context, repo *gogit.Repository, branch plumbing.ReferenceName,
+		auth []gitclient.Option) (plumbing.Hash, error) {
+		if o.down {
+			return plumbing.ZeroHash, unreachable
+		}
+		return fetch(ctx, repo, branch, auth)
+	}
+	syncToRemoteFn = func(ctx context.Context, repo *gogit.Repository, branch plumbing.ReferenceName,
+		parent string, auth []gitclient.Option) (*PullReport, error) {
+		if o.down {
+			return nil, unreachable
+		}
+		return sync(ctx, repo, branch, parent, auth)
+	}
+	t.Cleanup(func() { pushAtomicFn, fetchRemoteBranchHashFn, syncToRemoteFn = push, fetch, sync })
+	return o
+}
+
 // TestWriteGate_ARequestOnARefusingTargetFails is the whole matrix of a request that ends on a target
 // that refuses writes: each gate, each way a request can end, each whenNothingToCommit. Every cell
 // fails with the gate's error and leaves the remote and the retained writes untouched. Before

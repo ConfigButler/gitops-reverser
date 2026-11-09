@@ -1093,8 +1093,11 @@ type branchWorkerEventLoop struct {
 	// commitTimerAt is the worker-clock time commitTimer is armed for, while it is armed. The timer
 	// itself runs on real time; tests that step the clock deliver its wake at this time.
 	commitTimerAt time.Time
-	// pushTimer fires the next push when the success cooldown ends.
-	pushTimer *time.Timer
+	// pushTimer fires the next push when the success cooldown ends, and pushTimerAt is the
+	// worker-clock time it is armed for, while it is armed. Like commitTimerAt, tests that step the
+	// clock deliver its wake at this time.
+	pushTimer   *time.Timer
+	pushTimerAt time.Time
 	// retry is the one schedule of the next attempt at work a failed attempt left pending. See
 	// retry.go.
 	retry retrySchedule
@@ -1778,13 +1781,14 @@ func (l *branchWorkerEventLoop) maybeSchedulePush() {
 		l.pushPending()
 		return
 	}
-	elapsed := time.Since(l.lastPushAt)
+	elapsed := l.w.now().Sub(l.lastPushAt)
 	if elapsed >= PushCooldown {
 		l.pushPending()
 		return
 	}
 	if l.pushTimer == nil {
 		l.pushTimer = time.NewTimer(PushCooldown - elapsed)
+		l.pushTimerAt = l.lastPushAt.Add(PushCooldown)
 	}
 }
 
@@ -1850,7 +1854,7 @@ func (l *branchWorkerEventLoop) pushPending() {
 
 	l.pendingWrites = nil
 	l.pendingWritesBytes = 0
-	l.lastPushAt = time.Now()
+	l.lastPushAt = l.w.now()
 	l.stopPushTimer()
 	l.endOutage()
 	l.settleReplayRefusals(refused)
@@ -1902,6 +1906,7 @@ func (l *branchWorkerEventLoop) resolvePushedCommitRequests() {
 }
 
 func (l *branchWorkerEventLoop) stopPushTimer() {
+	l.pushTimerAt = time.Time{}
 	if l.pushTimer == nil {
 		return
 	}
