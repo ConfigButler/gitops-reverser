@@ -3,18 +3,23 @@
 package git
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
 	"github.com/ConfigButler/gitops-reverser/internal/types"
+	"github.com/ConfigButler/gitops-reverser/internal/typeset"
 )
 
 // spec.serializeNamespace overrides the inference at every site that decides whether
@@ -212,4 +217,119 @@ func TestSerializeNamespace_RefusalPublishesItsOwnReason(t *testing.T) {
 	var refused *manifestanalyzer.AcceptanceRefusedError
 	require.ErrorAs(t, err, &refused)
 	assert.Equal(t, "MultipleSourceNamespaces", manifestanalyzer.GitPathRefusalReason(refused))
+}
+
+// clearMetadataEncryptor stands in for sops under the encrypted_regex a target's .sops.yaml uses:
+// metadata stays in the clear, so whatever namespace it is handed ends up in the file.
+type clearMetadataEncryptor struct{}
+
+func (clearMetadataEncryptor) Encrypt(_ context.Context, plain []byte, _ ResourceMeta) ([]byte, error) {
+	return append(slices.Clone(plain), "sops:\n  version: 3.9.0\n  mac: stub\n"...), nil
+}
+
+func flushSecretWithNamespacePolicy(t *testing.T, worktree *gogit.Worktree, policy namespacePolicy, value string) {
+	t.Helper()
+	writer := newContentWriter(types.SensitiveResourcePolicy{})
+	writer.setEncryptor(clearMetadataEncryptor{}, "test-scope")
+	w := &BranchWorker{
+		contentWriter: writer,
+		mapper: typeset.NewSnapshotRegistry(typeset.Snapshot{Entries: []typeset.Entry{{
+			GVK:        schema.GroupVersionKind{Version: "v1", Kind: "Secret"},
+			GVR:        schema.GroupVersionResource{Version: "v1", Resource: "secrets"},
+			Namespaced: true,
+			Allowed:    true,
+		}}}),
+	}
+	event := Event{
+		Object: &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata":   map[string]interface{}{"name": "app", "namespace": "shop"},
+			"data":       map[string]interface{}{"apiKey": value},
+		}},
+		Identifier: types.ResourceIdentifier{Version: "v1", Resource: "secrets", Namespace: "shop", Name: "app"},
+		Operation:  "UPDATE",
+	}
+	_, err := w.flushEventsToWorktree(t.Context(), worktree, "", []Event{event}, nil, policy, v1alpha3.PruneOnEvent)
+	require.NoError(t, err)
+}
+
+// TestSerializeNamespace_FalseUpdatesTheSecretItAlreadyWrote is the sensitive half of
+// TestSerializeNamespace_FalseUpdatesTheDocumentItAlreadyWrote. An encrypted file is never patched:
+// every update re-encrypts the whole object, so it has its own place to leave the namespace out.
+func TestSerializeNamespace_FalseUpdatesTheSecretItAlreadyWrote(t *testing.T) {
+	worktree := newWorktreeForTest(t)
+	policy := serializeNamespacePolicy(false, "shop")
+
+	flushSecretWithNamespacePolicy(t, worktree, policy, "Z3JlZW4=")
+	flushSecretWithNamespacePolicy(t, worktree, policy, "Ymx1ZQ==")
+
+	body := readWorktreeFile(t, worktree, "shop/secrets/app.sops.yaml")
+	assert.Contains(t, body, "apiKey: Ymx1ZQ==", "the edit must land")
+	assert.NotContains(t, body, "namespace:", "and it must still carry no namespace")
+}
+
+// TestSensitiveUpdate_NamespaceFollowsThePolicy pins that re-encrypting an existing file decides the
+// namespace the way patching a plaintext one does: spec.serializeNamespace when it is set, and what
+// the document's own bytes do when it is not.
+func TestSensitiveUpdate_NamespaceFollowsThePolicy(t *testing.T) {
+	const (
+		namespaced    = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n  namespace: shop\n"
+		namespaceless = "apiVersion: v1\nkind: Secret\nmetadata:\n  name: app\n"
+		encryptedBody = "data:\n  apiKey: ENC[AES256,data:OLD,iv:aa,tag:bb]\nsops:\n  version: 3.9.0\n  mac: OLD\n"
+		suppliesShop  = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nnamespace: shop\n" +
+			"resources:\n  - app.sops.yaml\n"
+		suppliesNothing = "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" +
+			"resources:\n  - app.sops.yaml\n"
+	)
+
+	tests := []struct {
+		name          string
+		document      string
+		kustomization string
+		policy        namespacePolicy
+		wantNamespace bool
+	}{
+		{
+			name:          "unset: a kustomization supplies it, so the file keeps leaving it out",
+			document:      namespaceless,
+			kustomization: suppliesShop,
+			wantNamespace: false,
+		},
+		{
+			name:          "unset: a file that carries its own namespace keeps it",
+			document:      namespaced,
+			kustomization: suppliesNothing,
+			wantNamespace: true,
+		},
+		{
+			name:          "true writes it where the file left it out",
+			document:      namespaceless,
+			kustomization: suppliesShop,
+			policy:        serializeNamespacePolicy(true, "shop"),
+			wantNamespace: true,
+		},
+		{
+			name:          "false removes it where the file carried it",
+			document:      namespaced,
+			kustomization: suppliesShop,
+			policy:        serializeNamespacePolicy(false, "shop"),
+			wantNamespace: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			worktree := newWorktreeForTest(t)
+			root := worktree.Filesystem().Root()
+			seedFile(t, root, "kustomization.yaml", tt.kustomization)
+			seedFile(t, root, "app.sops.yaml", tt.document+encryptedBody)
+
+			flushSecretWithNamespacePolicy(t, worktree, tt.policy, "Ymx1ZQ==")
+
+			body := readWorktreeFile(t, worktree, "app.sops.yaml")
+			assert.Contains(t, body, "apiKey: Ymx1ZQ==", "the update must re-encrypt the file it found")
+			assert.Equal(t, tt.wantNamespace, strings.Contains(body, "namespace: shop"), body)
+		})
+	}
 }

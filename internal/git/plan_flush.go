@@ -575,7 +575,7 @@ func (wb *writeBatch) upsert(ctx context.Context, event Event) (upsertOutcome, e
 	if !wb.writer.isSensitiveIdentifier(event.Identifier) {
 		return wb.patchExisting(ctx, event, filePath, id, dm)
 	}
-	return wb.rewriteSensitive(ctx, event, filePath)
+	return wb.rewriteSensitive(ctx, event, filePath, dm)
 }
 
 // rewriteSensitive re-encrypts a sensitive document wholesale at its existing path.
@@ -584,10 +584,24 @@ func (wb *writeBatch) upsert(ctx context.Context, event Event) (upsertOutcome, e
 // blob and no plaintext live object can ever equal it. The oracle is told to expect this
 // object to move without being able to say what to — while still holding the write to
 // disturbing nothing else, which is the half that protects other environments.
-func (wb *writeBatch) rewriteSensitive(ctx context.Context, event Event, filePath string) (upsertOutcome, error) {
+//
+// The file is replaced rather than patched, so metadata.namespace has to be decided here the way
+// patchExisting decides it, or the first update of a namespace-free document writes it in.
+func (wb *writeBatch) rewriteSensitive(
+	ctx context.Context,
+	event Event,
+	filePath string,
+	dm *manifestanalyzer.DocumentModel,
+) (upsertOutcome, error) {
+	live := event.Object
+	if wb.namespaces.omitNamespace(dm.NamespaceAbsentFromFile()) && event.Object != nil {
+		event.Object = event.Object.DeepCopy()
+		event.Object.SetNamespace("")
+	}
+
 	outcome, err := wb.writeWholeFile(ctx, event, filePath)
 	if err == nil && wroteBytes(outcome) {
-		wb.intend(markUnchecked(intentFor(event.Object, filePath, false), true))
+		wb.intend(markUnchecked(intentFor(live, filePath, false), true))
 	}
 	return outcome, err
 }
