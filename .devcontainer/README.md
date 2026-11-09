@@ -178,6 +178,13 @@ cat ~/.config/git/allowed_signers
 git config --show-origin --get-regexp '^(commit\.gpgsign|gpg\.)'
 ```
 
+## Background Claude Code sessions
+
+The container keeps running when VS Code closes (`"shutdownAction": "none"`), so a `claude --bg`
+session can finish a long task on its own. Setup, the commands to check on it, and why it cannot
+commit or push while VS Code is closed:
+[`docs/background-claude-sessions.md`](../docs/background-claude-sessions.md).
+
 ## Optional `.env` for `gh`
 
 A repo-root `.env` file is optional. If present, login shells inside the devcontainer automatically

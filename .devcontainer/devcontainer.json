@@ -93,6 +93,9 @@
   "postCreateCommand": "bash .devcontainer/post-create.sh '${containerWorkspaceFolder}'",
   "postStartCommand": "bash .devcontainer/post-start.sh '${containerWorkspaceFolder}'",
   "remoteUser": "vscode",
+  // Keep the container running when the VS Code window closes, so a background
+  // `claude --bg` session (or a long e2e run) survives. Stop it with `docker stop`.
+  "shutdownAction": "none",
   "mounts": [
     "source=gomodcache,target=/go/pkg/mod,type=volume",
     "source=gobuildcache,target=/home/vscode/.cache/go-build,type=volume",
