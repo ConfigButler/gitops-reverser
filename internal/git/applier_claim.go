@@ -402,6 +402,7 @@ func (l *branchWorkerEventLoop) serviceAppliers() {
 	defer l.publishClaimStatus()
 	defer l.publishHeld()
 	now := time.Now()
+	defer l.forgetAccepted(now)
 	l.settleApplyResults(now)
 	l.followRecordedOperations(now)
 	converging := l.scheduleConverges(now)
@@ -660,7 +661,8 @@ func (l *branchWorkerEventLoop) endFlush() {
 
 // recordUnpublishedEdits records in the window of an attempt being sent the edits its commit does
 // not hold, which the apply may overwrite: those decided after the flush mark, and the live events
-// held for a GitTarget's render fidelity.
+// held for a GitTarget's render fidelity. Every live event of a held GitTarget is held, in order, so
+// the last one held of an object is its last accepted version.
 func (l *branchWorkerEventLoop) recordUnpublishedEdits(state *applierState) {
 	for _, target := range state.targets {
 		for key, at := range l.flushEdits[target.ref] {
@@ -669,6 +671,7 @@ func (l *branchWorkerEventLoop) recordUnpublishedEdits(state *applierState) {
 		if held := l.held[target.ref]; held != nil {
 			for _, h := range held.events {
 				state.window.recordEdit(objectKey(h.event.Identifier), h.event.LastFieldManagedAt)
+				l.keepAccepted(h.event)
 			}
 		}
 	}

@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -1107,6 +1108,11 @@ type branchWorkerEventLoop struct {
 	flushing   bool
 	flushMark  uint64
 	flushEdits map[itypes.ResourceReference]map[string]time.Time
+	// accepted is, by objectKey, the object of the last event an open apply window or the flush
+	// recorded as an edit, and withheld the fields withheld applies reverted that no event has
+	// changed since: the next event of the object is restored against them (withheld_fields.go).
+	accepted map[string]*unstructured.Unstructured
+	withheld withheldFields
 
 	// attachTimer fires at the earliest attach deadline of a waiting CommitRequest, so a request
 	// that no window reaches still resolves on time. An attached request needs no timer of its own:
@@ -1305,7 +1311,7 @@ func (l *branchWorkerEventLoop) dispatch(item WorkItem) int64 {
 // finalizing it as identity, the byte cap or a zero window require.
 func (l *branchWorkerEventLoop) handleLiveEvents(request *WriteRequest) {
 	for _, event := range request.Events {
-		if !l.mirrors(event) {
+		if !l.mirrors(&event) {
 			continue
 		}
 		l.w.liveEdits.Add(1)
@@ -1390,7 +1396,11 @@ func (l *branchWorkerEventLoop) appendLiveEvent(event Event) {
 // divergence the event is dropped, and while the gate is pending it is held, once judged as on
 // arrival, and committed in order when the gate opens (render_fidelity_hold.go). Events held for the
 // target earlier go first, once its gate opened.
-func (l *branchWorkerEventLoop) mirrors(event Event) bool {
+//
+// Every event is first restored against the fields withheld applies reverted, mirrored or not, so
+// the event carries none of them into a commit (withheld_fields.go).
+func (l *branchWorkerEventLoop) mirrors(event *Event) bool {
+	l.restoreWithheldEvent(event)
 	target := itypes.NewResourceReference(event.GitTargetName, event.GitTargetNamespace)
 	l.serviceHeld(target)
 	status, closed := l.w.renderFidelityClosed(event.GitTargetName, event.GitTargetNamespace)
@@ -1404,16 +1414,16 @@ func (l *branchWorkerEventLoop) mirrors(event Event) bool {
 	}
 	// Judged when it arrives, held or not: the apply windows and the flush record an edit when it
 	// was made.
-	if l.withholdLateApply(event) {
+	if l.withholdLateApply(*event) {
 		return false
 	}
 	if closed || l.held[target] != nil {
 		// Its adoption waits with it (F-c): an apply before the create is in a commit stamps nothing.
-		l.holdAtRenderFidelity(target, event, status)
+		l.holdAtRenderFidelity(target, *event, status)
 		return false
 	}
 	if event.Operation == string(itypes.OperationCreate) {
-		l.noteCreated(event)
+		l.noteCreated(*event)
 	}
 	return true
 }
