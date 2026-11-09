@@ -45,6 +45,26 @@ func TestLookupCommitRequestOutcome_ReadsWhatAStoppedWorkerDecided(t *testing.T)
 	require.NoError(t, err)
 	require.False(t, resolved, "no worker holds the request")
 
+	// The shutdown reads it from inside the manager's stop, which holds lifecycleMu: the lookup must not
+	// need that lock.
+	var (
+		atStop         git.FinalizeResult
+		resolvedAtStop bool
+		lookupReturned bool
+	)
+	workerManager.SetAfterWorkersStopped(func(ctx context.Context) {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			atStop, resolvedAtStop, _ = router.LookupCommitRequestOutcome(ctx, attach)
+		}()
+		select {
+		case <-done:
+			lookupReturned = true
+		case <-time.After(5 * time.Second):
+		}
+	})
+
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
@@ -70,6 +90,10 @@ func TestLookupCommitRequestOutcome_ReadsWhatAStoppedWorkerDecided(t *testing.T)
 	}, 5*time.Second, 50*time.Millisecond, "the worker resolves the request")
 	cancel()
 	<-stopped
+
+	require.True(t, lookupReturned, "the lookup inside the manager's stop does not deadlock")
+	require.True(t, resolvedAtStop, "the shutdown's settle step reads the outcome")
+	assert.Equal(t, git.FinalizeNoOpenWindow, atStop.Outcome)
 
 	result, resolved, err := router.LookupCommitRequestOutcome(context.Background(), attach)
 	require.NoError(t, err)

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 	"github.com/ConfigButler/gitops-reverser/internal/manifestanalyzer"
@@ -73,7 +74,7 @@ func carryWithheld(t *testing.T, slug string) *echoFixture {
 
 	f.writeWindow(carryApply("a1", "b1"))
 	require.True(t, f.echoApplier().repair, "the apply over E1 is withheld, and a Repair is pending")
-	require.Len(t, f.loop.withheld[carryKey()], 1, "the field the apply reverted is recorded")
+	require.Len(t, f.loop.withheld[carryKey()].Fields, 1, "the field the apply reverted is recorded")
 	return f
 }
 
@@ -113,7 +114,7 @@ func TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit(t *testing.T) 
 		assert.Contains(t, f.onMain(echoFile("y")), "a: a2",
 			"alice's commit of b keeps her own E1, not the withheld apply's a1")
 		assert.Contains(t, f.onMain(echoFile("y")), "b: b2")
-		assert.Len(t, f.loop.withheld[carryKey()], 1, "the cluster still runs a1: the record stays")
+		assert.Len(t, f.loop.withheld[carryKey()].Fields, 1, "the cluster still runs a1: the record stays")
 	})
 
 	t.Run("an edit of another author does not carry it either", func(t *testing.T) {
@@ -161,6 +162,93 @@ func TestApplyWindow_TheWithheldRecordEnds(t *testing.T) {
 		f.writeWindow(created)
 		f.publish()
 		assert.Contains(t, f.onMain(echoFile("y")), "a: a1", "the object made again is mirrored as it is")
+	})
+}
+
+// carryDeleteThenRecreate publishes alice's delete of y inside the open apply window, then has the
+// applier make y again, late: the apply is withheld, a Repair is pending, and the cluster runs y while
+// Git holds none.
+func carryDeleteThenRecreate(t *testing.T, slug string) *echoFixture {
+	t.Helper()
+	f := carryFlushOverAnEdit(t, slug)
+	f.publish()
+	deleted := carryEdit("alice", "a2", "b1")
+	deleted.Operation = string(itypes.OperationDelete)
+	f.writeWindow(deleted)
+	f.publish()
+	require.Empty(t, f.onMain(echoFile("y")), "precondition: alice's delete is published")
+
+	recreated := carryApply("a1", "b1")
+	recreated.Operation = string(itypes.OperationCreate)
+	f.writeWindow(recreated)
+	require.True(t, f.echoApplier().repair, "the apply that made y again is withheld, and a Repair is pending")
+	return f
+}
+
+// carryLabel is bob's kubectl label on y as the applier made it again: the whole object it carries
+// is the apply's.
+func carryLabel() Event {
+	event := carryApply("a1", "b1")
+	event.UserInfo.Username = "bob"
+	event.LastFieldManagers = []string{"kubectl-label"}
+	event.LastFieldManagedAt = time.Now().Add(2 * time.Hour)
+	event.Object.SetLabels(map[string]string{"team": "a"})
+	return event
+}
+
+// publishAny closes the open windows, if any, and pushes what is pending.
+func (f *echoFixture) publishAny() {
+	f.t.Helper()
+	f.loop.lastPushAt = time.Time{}
+	f.loop.finalizeOpenWindow()
+	f.loop.pushPending()
+}
+
+// TestApplyWindow_ADeleteInTheWindowStaysDeleted pins a delete as the last accepted version: an
+// apply that makes the object again, late, over the delete is withheld, and until the Repair's own
+// delete lands no later event of the object, by anyone, brings it back into Git.
+func TestApplyWindow_ADeleteInTheWindowStaysDeleted(t *testing.T) {
+	t.Run("a later edit does not bring it back", func(t *testing.T) {
+		f := carryDeleteThenRecreate(t, "carry-delete-label")
+		f.writeWindow(carryLabel())
+		f.publishAny()
+		assert.Empty(t, f.onMain(echoFile("y")),
+			"bob labelled the object the withheld apply made; committing it would undo alice's delete")
+		require.Len(t, f.loop.withheld[carryKey()].Fields, 1, "the record holds the object out")
+
+		repaired := carryApply("a1", "b1")
+		repaired.Operation = string(itypes.OperationDelete)
+		f.writeWindow(repaired) // the Repair deletes y on the cluster
+		f.publishAny()
+		assert.Empty(t, f.loop.withheld, "the Repair's delete clears the record")
+		assert.Empty(t, f.onMain(echoFile("y")))
+
+		created := carryEdit("bob", "a9", "b9")
+		created.Operation = string(itypes.OperationCreate)
+		f.writeWindow(created)
+		f.publishAny()
+		assert.Contains(t, f.onMain(echoFile("y")), "a: a9", "an object made after the Repair is mirrored")
+	})
+
+	t.Run("a resync does not bring it back", func(t *testing.T) {
+		f := carryDeleteThenRecreate(t, "carry-delete-resync")
+		snapshot := carryLabel()
+		req := &ResyncRequest{
+			Desired: []manifestanalyzer.DesiredResource{
+				{Resource: snapshot.Identifier, Object: snapshot.Object},
+				echoDesired("x", "x2"),
+			},
+			GitTargetName:      echoTarget,
+			GitTargetNamespace: "default",
+			Initial:            true,
+			Result:             make(chan ResyncResult, 1),
+		}
+		f.loop.handleQueueItem(resyncItem(req))
+		require.NoError(t, (<-req.Result).Err)
+		f.publishAny()
+
+		assert.Empty(t, f.onMain(echoFile("y")), "the snapshot holds y only because the apply made it again")
+		assert.Len(t, req.Desired, 2, "the snapshot itself is left as it was")
 	})
 }
 
@@ -217,7 +305,14 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 			Accepted: fieldValue{Value: []interface{}{"one", "two"}},
 			Applier:  fieldValue{Value: []interface{}{"one"}},
 		},
-	}, loop.withheld[key])
+	}, loop.withheld[key].Fields)
+
+	// A later object that carries every value the apply wrote is set back whole: extra, which the
+	// accepted version did not have, is removed again.
+	carried := loop.restoreWithheld(key, withheld.Object.DeepCopy())
+	assert.NotContains(t, carried.Object, "extra", "a field the accepted version lacked is removed")
+	assert.Equal(t, map[string]interface{}{"a": "a2", "c": "c1"}, carried.Object["data"])
+	require.Len(t, loop.withheld[key].Fields, 4, "every field still holds the apply's value")
 
 	// A later object: b added, data.a carried, data.c still missing, extra changed by someone, the
 	// list carried.
@@ -230,7 +325,7 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 	assert.Equal(t, map[string]interface{}{"a": "a2", "b": "b2", "c": "c1"}, restored.Object["data"])
 	assert.Equal(t, "y", restored.Object["extra"], "a field someone changed is theirs")
 	assert.Equal(t, []interface{}{"one", "two"}, restored.Object["spec"].(map[string]interface{})["list"])
-	assert.Len(t, loop.withheld[key], 3, "extra left the record")
+	assert.Len(t, loop.withheld[key].Fields, 3, "extra left the record")
 
 	// A second withhold, over a version without data at all, replaces the fields inside it.
 	loop.keepAccepted(Event{Identifier: accepted.Identifier, Object: restored})
@@ -239,8 +334,8 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 	again.Object.Object["spec"] = map[string]interface{}{"list": []interface{}{"one"}}
 	again.Object.Object["extra"] = "y"
 	loop.recordWithheld(again)
-	paths := make([][]string, 0, len(loop.withheld[key]))
-	for _, field := range loop.withheld[key] {
+	paths := make([][]string, 0, len(loop.withheld[key].Fields))
+	for _, field := range loop.withheld[key].Fields {
 		paths = append(paths, field.Path)
 	}
 	assert.ElementsMatch(t, [][]string{{"data"}, {"spec", "list"}}, paths)
@@ -252,4 +347,127 @@ func TestWithheldFields_RecordAndRestore(t *testing.T) {
 	}}
 	assert.Same(t, unrelated, loop.restoreWithheld(key, unrelated))
 	assert.Empty(t, loop.withheld)
+}
+
+// carryData is author's live update of y, holding data.
+func carryData(author string, data map[string]interface{}) Event {
+	event := carryEdit(author, "", "")
+	event.Object.Object["data"] = data
+	return event
+}
+
+// TestApplyWindow_TheCommonOrderKeepsTheEdit is S1 in its most common order, on the live path: the
+// attempt is out, the API edit lands, then the apply over it. The edit is accepted by the apply window
+// alone, with no flush in progress, and a later edit of another field that carries the apply's value
+// is set back to the edit's.
+func TestApplyWindow_TheCommonOrderKeepsTheEdit(t *testing.T) {
+	loop, _ := sentAttempt(t)
+	loop.handleLiveEvents(&WriteRequest{Events: []Event{
+		windowEvent("alpha", "3", "kubectl-edit"),
+		windowEvent("alpha", "2", FluxFieldManager),
+	}})
+	label := windowEvent("alpha", "2", "kubectl-label")
+	label.Object.SetLabels(map[string]string{"team": "a"})
+	loop.handleLiveEvents(&WriteRequest{Events: []Event{label}})
+
+	require.NotNil(t, loop.windows.only())
+	require.Len(t, loop.windows.only().pathToEvent, 1)
+	for _, event := range loop.windows.only().pathToEvent {
+		replicas, _, _ := unstructured.NestedString(event.Object.Object, "spec", "replicas")
+		assert.Equal(t, "3", replicas, "the label edit carried the withheld apply's 2; Git keeps the edit's 3")
+		assert.Equal(t, map[string]string{"team": "a"}, event.Object.GetLabels())
+	}
+}
+
+// TestApplyWindow_AFieldTheEditRemovedStaysRemoved: alice removes data.b, the apply over her edit
+// puts it back, and the next edit, which carries it, does not commit it.
+func TestApplyWindow_AFieldTheEditRemovedStaysRemoved(t *testing.T) {
+	f := carryFlushOverAnEdit(t, "carry-removed-field")
+	f.writeWindow(carryData("alice", map[string]interface{}{"a": "a2"})) // alice removes b
+	f.publish()
+	require.NotContains(t, f.onMain(echoFile("y")), "b: b1", "precondition: her removal is published")
+
+	f.writeWindow(carryApply("a1", "b1"))
+	require.True(t, f.echoApplier().repair, "the apply over her edit is withheld")
+	f.writeWindow(carryData("bob", map[string]interface{}{"a": "a1", "b": "b1", "c": "c1"}))
+	f.publish()
+
+	got := f.onMain(echoFile("y"))
+	assert.Contains(t, got, "a: a2")
+	assert.Contains(t, got, "c: c1")
+	assert.NotContains(t, got, "b: b1", "alice removed b; only the withheld apply put it back")
+}
+
+// TestApplyWindow_ChainedWithholdsKeepEveryEdit: a withhold, alice's edit of b, a second withheld
+// apply, of a newer commit, over both, then bob's edit of c. Each withhold is compared with the
+// event as restored, and the edit between them is accepted as restored, so Git keeps a2 and b2, and
+// the record holds a and b, each against the value accepted for it.
+func TestApplyWindow_ChainedWithholdsKeepEveryEdit(t *testing.T) {
+	f := carryWithheld(t, "carry-chained")
+	f.writeWindow(carryEdit("alice", "a1", "b2")) // alice edits b; the event carries the apply's a1
+
+	second := carryApply("a3", "b1")
+	second.LastFieldManagedAt = time.Now().Add(2 * time.Hour)
+	f.writeWindow(second)
+	f.writeWindow(carryData("bob", map[string]interface{}{"a": "a3", "b": "b1", "c": "c1"}))
+	f.publish()
+
+	got := f.onMain(echoFile("y"))
+	assert.Contains(t, got, "a: a2", "alice's E1, accepted before both applies")
+	assert.Contains(t, got, "b: b2", "alice's edit of b")
+	assert.Contains(t, got, "c: c1")
+	assert.ElementsMatch(t, []withheldField{
+		{Path: []string{"data", "a"}, Accepted: fieldValue{Value: "a2"}, Applier: fieldValue{Value: "a3"}},
+		{Path: []string{"data", "b"}, Accepted: fieldValue{Value: "b2"}, Applier: fieldValue{Value: "b1"}},
+	}, f.loop.withheld[carryKey()].Fields)
+}
+
+// TestApplyWindow_TheRecordEndsWhenNothingWillRepairIt pins the ends of a record that no event of
+// the object shows: the applier claim is gone, so no Repair will put the edit back; a resync of the
+// object's collection no longer finds the object.
+func TestApplyWindow_TheRecordEndsWhenNothingWillRepairIt(t *testing.T) {
+	t.Run("the applier claim is removed", func(t *testing.T) {
+		f := carryWithheld(t, "carry-claim-gone")
+		f.loop.syncAppliers(nil)
+		assert.Empty(t, f.loop.withheld)
+	})
+
+	t.Run("a resync no longer finds the object", func(t *testing.T) {
+		f := carryWithheld(t, "carry-resync-gone")
+		resync := func(scope *ResyncScope) {
+			req := &ResyncRequest{
+				Desired:            []manifestanalyzer.DesiredResource{echoDesired("x", "x2")},
+				GitTargetName:      echoTarget,
+				GitTargetNamespace: "default",
+				Scope:              scope,
+				Initial:            true,
+				Result:             make(chan ResyncResult, 1),
+			}
+			f.loop.handleQueueItem(resyncItem(req))
+			require.NoError(t, (<-req.Result).Err)
+		}
+		deployments := ResyncScopeFor(
+			schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}, "default")
+		resync(&deployments)
+		assert.Len(t, f.loop.withheld, 1, "a resync of another collection says nothing about y")
+		resync(nil)
+		assert.Empty(t, f.loop.withheld, "y is gone from the cluster")
+	})
+}
+
+// TestApplyWindow_AcceptedVersionsEndWithTheWindow: once the apply window has closed and the appliers
+// are serviced, no last accepted version is kept, so a write to the object is never withheld again.
+func TestApplyWindow_AcceptedVersionsEndWithTheWindow(t *testing.T) {
+	loop, req := sentAttempt(t)
+	loop.handleLiveEvents(&WriteRequest{Events: []Event{windowEvent("alpha", "3", "kubectl-edit")}})
+	require.Len(t, loop.accepted, 1)
+
+	report(req, ApplySucceeded)
+	loop.serviceAppliers()
+	require.Len(t, loop.accepted, 1, "the window stays open for its grace")
+	for _, state := range loop.appliers {
+		state.window.closesAt = time.Now().Add(-time.Millisecond)
+	}
+	loop.serviceAppliers()
+	assert.Empty(t, loop.accepted)
 }

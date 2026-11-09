@@ -3,6 +3,9 @@
 package git
 
 import (
+	"fmt"
+	"maps"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,6 +145,208 @@ func TestWindowAdmission_ClosingOneWindowArmsTheTimerForTheOthers(t *testing.T) 
 	assert.Equal(t, bobAt, f.loop.commitTimerAt)
 }
 
+func TestWindowAdmission_ShutdownClosesEveryWindowOldestFirst(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-shutdown", nil)
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	require.Len(t, f.loop.windows.all(), 2)
+	before := len(splitLines(gitIn(t, f.repoDir, "log", "--format=%H", "main")))
+
+	f.loop.handleShutdown()
+
+	assert.Empty(t, f.loop.windows.all())
+	assert.Equal(t, []string{"alice", "bob"},
+		splitLines(gitIn(t, f.repoDir, "log", "--reverse", "--format=%an", "-2", "main")),
+		"one commit per window, in the order the windows opened")
+	assert.Len(t, splitLines(gitIn(t, f.repoDir, "log", "--format=%H", "main")), before+3,
+		"the bootstrap write held behind the cooldown, then the two windows")
+	assert.Equal(t, echoDocument("x", "x2"), f.onMain(echoFile("x")))
+	assert.Equal(t, echoDocument("z", "z2"), f.onMain(echoFile("z")))
+}
+
+func TestWindowAdmission_AWriteOfAnotherGitTargetClosesTheOpenWindows(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-other-target", nil)
+	reader := captureInfo(f.worker)
+	createGitTargetWithPruneMode(t, f.worker, "team-b", "team-b", configv1alpha3.PruneOnEvent)
+	other := func(author, value string) Event {
+		event := configMapTargetEvent("b", author, "team-b")
+		event.Operation = string(itypes.OperationUpdate)
+		event.Object.Object["data"] = map[string]interface{}{"key": value}
+		return event
+	}
+	window := f.loop.defaultWindow
+	f.loop.defaultWindow = commitWindowDefaults{}
+	f.writeWindow(other("carol", "b1")) // team-b's folder is bootstrapped by its first commit
+	require.Empty(t, f.loop.windows.all())
+	f.loop.defaultWindow = window
+
+	f.writeBy("alice", "x", "x2")
+	f.writeWindow(other("bob", "b2"))
+
+	assert.Equal(t, []string{"bob"}, authorsOf(f.loop.windows.all()))
+	assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="author-or-target-change" `+
+		`"windowAuthor"="alice"`), 1, "per-target encryption and bootstrap stay serial")
+}
+
+// TestWindowAdmission_AFootprintBugIsRefusedOnTheRealPath drives a footprint bug through the loop: two
+// windows open side by side, the index is corrupted so x is proven at z's path, and alice's window
+// closes on its timer. Her commit is checked before it is made, refused, and undone; her save fails,
+// the worker falls back, and a resync is asked for.
+func TestWindowAdmission_AFootprintBugIsRefusedOnTheRealPath(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-violation-path", nil)
+	var asked []itypes.ResourceReference
+	f.worker.resyncRecheck = func(target itypes.ResourceReference) { asked = append(asked, target) }
+	f.writeBy("alice", "x", "x2")
+	serviceAttach(f.loop, attachReq("alice", time.Hour))
+	f.writeBy("bob", "q", "q3")
+	open := f.loop.windows.all()
+	require.Len(t, open, 2)
+	require.NotNil(t, open[0].pendingCR, "alice's save rides her window")
+	head := gitIn(t, f.worker.repoPath(), "rev-parse", "HEAD")
+
+	ix := f.loop.footprints[itypes.NewResourceReference(echoTarget, "default")]
+	require.NotNil(t, ix)
+	for dm, ref := range ix.docLoc {
+		if strings.HasSuffix(ref.FilePath, "configmaps/x.yaml") {
+			ref.FilePath = strings.TrimSuffix(ref.FilePath, "x.yaml") + "z.yaml"
+			ix.docLoc[dm] = ref
+		}
+	}
+
+	open[0].timers.maxAt = time.Now().Add(-time.Millisecond)
+	f.loop.closeOrArmWindow()
+	f.loop.endWake(0)
+
+	assert.Equal(t, head, gitIn(t, f.worker.repoPath(), "rev-parse", "HEAD"), "nothing was committed")
+	assert.Empty(t, gitIn(t, f.worker.repoPath(), "status", "--porcelain"), "and the worktree was undone")
+	assert.True(t, f.loop.singleWindow)
+	assert.Equal(t, []itypes.ResourceReference{itypes.NewResourceReference(echoTarget, "default")}, asked)
+	res, resolved := outcome(t, f.worker)
+	require.True(t, resolved)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), echoFile("x"))
+}
+
+// TestWindowAdmission_ACommitThatAddsOrDeletesAFileOutsideItsFootprintIsRefused: the check reads
+// every staged change, a file added or deleted as much as one modified.
+func TestWindowAdmission_ACommitThatAddsOrDeletesAFileOutsideItsFootprintIsRefused(t *testing.T) {
+	deleted := echoEvent("x", "x1")
+	deleted.Operation = string(itypes.OperationDelete)
+	created := echoEvent("w", "w1")
+	created.Operation = string(itypes.OperationCreate)
+	for name, tc := range map[string]struct {
+		event   Event
+		outside string
+	}{
+		"a file added":   {event: created, outside: echoFile("w")},
+		"a file deleted": {event: deleted, outside: echoFile("x")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newAdmissionFixture(t, "admission-violation-"+strings.ReplaceAll(name, " ", "-"), nil)
+			pendingWrite, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{tc.event})
+			require.NoError(t, err)
+			rev, ok := f.loop.currentRevision(echoTarget, "default")
+			require.True(t, ok)
+			pendingWrite.footprint = &footprint{paths: []string{echoFile("z")}, revision: rev}
+
+			err = f.worker.commitPendingWrites([]PendingWrite{*pendingWrite})
+			var violation *footprintViolationError
+			require.ErrorAs(t, err, &violation)
+			assert.Equal(t, []string{tc.outside}, violation.outside)
+		})
+	}
+}
+
+// TestFootprint_UnknownReasons pins every reason a write's footprint is unknown, and so serial, as
+// proveEvents says it.
+func TestFootprint_UnknownReasons(t *testing.T) {
+	kustomization := func(body string) string {
+		return "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" + body
+	}
+	deleted := echoEvent("gone", "g")
+	deleted.Operation = string(itypes.OperationDelete)
+	created := echoEvent("fresh", "f1")
+	created.Operation = string(itypes.OperationCreate)
+	patch := deploymentScalePatch("api", 3)
+	patch.GitTargetName, patch.GitTargetNamespace = echoTarget, "default"
+	secret := echoEvent("s", "s1")
+	secret.Identifier.Resource = "secrets"
+	secret.Object.SetKind("Secret")
+
+	for name, tc := range map[string]struct {
+		files     map[string]string
+		placement *configv1alpha3.GitTargetPlacementSpec
+		event     Event
+		why       string
+	}{
+		"a field patch":     {event: patch, why: "a field patch"},
+		"an encrypted type": {event: secret, why: "an encrypted type"},
+		"a generated object": {
+			files: map[string]string{echoTarget + "/kustomization.yaml": kustomization(
+				"configMapGenerator:\n- name: fresh\n  literals:\n  - a=b\n  options:\n    disableNameSuffixHash: true\n")},
+			event: created, why: "an object a configMapGenerator renders",
+		},
+		"useKustomize": {
+			placement: &configv1alpha3.GitTargetPlacementSpec{UseKustomize: true},
+			event:     created, why: "placement.useKustomize is on",
+		},
+		"placement.default": {
+			placement: &configv1alpha3.GitTargetPlacementSpec{Default: "{namespace}/all.yaml"},
+			event:     created, why: "placement.default is set",
+		},
+		"a read outside spec.path": {
+			files: map[string]string{
+				echoTarget + "/kustomization.yaml": kustomization("resources:\n- ../shared\n"),
+				"shared/kustomization.yaml":        kustomization("resources:\n- cm.yaml\n"),
+				"shared/cm.yaml":                   echoDocument("shared", "s"),
+			},
+			event: created, why: "the folder reads files outside spec.path",
+		},
+		"a folder that feeds a generator": {
+			files: map[string]string{
+				echoTarget + "/kustomization.yaml": kustomization("configMapGenerator:\n- name: g\n  files:\n  - data.txt\n"),
+				echoTarget + "/data.txt":           "data\n",
+			},
+			event: created, why: "the folder feeds a configMapGenerator",
+		},
+		"an unsupported kustomization": {
+			files: map[string]string{echoTarget + "/kustomization.yaml": kustomization(
+				"secretGenerator:\n- name: s\n  literals:\n  - a=b\n")},
+			event: created, why: "the folder holds a kustomization the writer does not model",
+		},
+		"a delete of an object no document holds": {
+			files: map[string]string{
+				echoTarget + "/kust/kustomization.yaml": kustomization("resources:\n- k.yaml\n"),
+				echoTarget + "/kust/k.yaml":             echoDocument("k", "k1"),
+			},
+			event: deleted, why: "a delete of an object no document holds, in a folder with a kustomization",
+		},
+		"a new document at a taken path": {
+			files: map[string]string{echoFile("fresh"): "note: not a manifest\n"},
+			event: created, why: "a new document at a path that is taken",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := map[string]string{
+				echoTarget + "/README.md":                  "readme\n",
+				echoTarget + "/" + gitTargetIgnoreFileName: "\n",
+			}
+			maps.Copy(files, tc.files)
+			f := newEchoFixtureWith(t, "footprint-"+strings.ReplaceAll(name, " ", "-"),
+				configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"}, files)
+			if tc.placement != nil {
+				var target configv1alpha3.GitTarget
+				require.NoError(t, f.worker.Client.Get(f.worker.ctx, keyOf(echoTarget), &target))
+				target.Spec.Placement = tc.placement
+				require.NoError(t, f.worker.Client.Update(f.worker.ctx, &target))
+			}
+			got := f.loop.proveEvents(echoTarget, "default", []Event{tc.event})
+			assert.False(t, got.known())
+			assert.Equal(t, tc.why, got.unknown)
+		})
+	}
+}
+
 func TestWindowAdmission_ACommitOutsideItsFootprintIsRefusedAndTheWorkerFallsBack(t *testing.T) {
 	f := newAdmissionFixture(t, "admission-violation", nil)
 	var asked []itypes.ResourceReference
@@ -175,6 +380,31 @@ func TestWindowAdmission_ACommitOutsideItsFootprintIsRefusedAndTheWorkerFallsBac
 	require.True(t, resolved)
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), echoFile("x"), "the save says which path broke the footprint")
+}
+
+// TestWindowAdmission_AFallbackLeavesOneWindowOpen pins the fallback closing the windows the wrong
+// rules admitted side by side: every one but the newest, oldest first, with footprint_fallback.
+func TestWindowAdmission_AFallbackLeavesOneWindowOpen(t *testing.T) {
+	f := newAdmissionFixture(t, "admission-fallback-closes", nil)
+	reader := captureInfo(f.worker)
+	f.writeBy("alice", "x", "x2")
+	f.writeBy("bob", "z", "z2")
+	f.writeBy("carol", "q", "q3")
+	require.Len(t, f.loop.windows.all(), 3)
+	decided := len(f.loop.pendingWrites)
+
+	refused, err := f.worker.buildGroupedPendingWrite(f.worker.ctx, []Event{echoEvent("w", "w1")})
+	require.NoError(t, err)
+	f.loop.pendingWrites = append(f.loop.pendingWrites, *refused)
+	violation := &footprintViolationError{outside: []string{echoFile("w")}, footprint: footprint{}}
+	f.loop.settleFailed(len(f.loop.pendingWrites)-1, fmt.Errorf("%w: %w", errWriteFailed, violation))
+
+	require.True(t, f.loop.singleWindow)
+	assert.Equal(t, []string{"carol"}, authorsOf(f.loop.windows.all()), "at most one window stays open")
+	require.Len(t, f.loop.pendingWrites, decided+2, "alice's and bob's windows are decided")
+	assert.Equal(t, "alice", f.loop.pendingWrites[decided].Author(), "oldest first")
+	assert.Equal(t, "bob", f.loop.pendingWrites[decided+1].Author())
+	assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="footprint-fallback"`), 2)
 }
 
 func TestFootprint_OverlapUnionAndOutside(t *testing.T) {

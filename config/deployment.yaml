@@ -134,7 +134,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       serviceAccountName: gitops-reverser
-      terminationGracePeriodSeconds: 10
+      terminationGracePeriodSeconds: 20
       volumes:
       - emptyDir: {}
         name: tmp-dir

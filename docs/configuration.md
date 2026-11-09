@@ -3157,9 +3157,9 @@ things split it:
   A write after the close commits on its own, under the generated message. For such a folder, give
   the request a longer window, `spec.window.maxDuration: "10s"` for example, or rolling collection
   (see [the request window](#the-request-window-specwindow)); the commit lands that much later.
-- **Other writes on the branch.** A branch worker holds one window at a time, so a write by another
-  author, or for another `GitTarget` on the same branch, closes yours early, with the request's
-  message, and your later writes commit under the generated message.
+- **Other writes on the branch.** A write for another `GitTarget` on the same branch, or by another
+  author to a file the branch worker cannot prove apart from your window's files, closes yours
+  early, with the request's message, and your later writes commit under the generated message.
 
 The request then ends `Committed` with the writes its window held.
 

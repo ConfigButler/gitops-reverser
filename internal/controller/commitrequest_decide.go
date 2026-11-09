@@ -91,6 +91,10 @@ func (c *commitRequestCore) decide(
 	}
 	current, written, err := c.writeOutcome(ctx, p, cr, o, afterClaim)
 	if err != nil || !written {
+		if err == nil && current != nil && commitRequestIsTerminal(current) {
+			// Another write got there first, and the request is finished all the same.
+			c.inFlight.forget(p, client.ObjectKeyFromObject(current))
+		}
 		return commitRequestRequeueNow, err
 	}
 	c.inFlight.forget(p, client.ObjectKeyFromObject(current))
@@ -115,15 +119,19 @@ func (c *commitRequestCore) decide(
 	return c.expireFinished(ctx, p, current)
 }
 
-// writeOutcome writes o onto cr, re-reading it on a conflict. written is false when the fresh object
-// already holds an outcome, or, before the claim, anything another path wrote; then the next step
-// decides from that.
+// writeOutcome writes o onto cr, re-reading it on a conflict. written is false when the object, cr or
+// the fresh one, already holds an outcome, or, before the claim, anything another path wrote; then it
+// returns that object, and the next step decides from it. It returns no object when the request is
+// gone or was replaced.
 func (c *commitRequestCore) writeOutcome(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 	o commitRequestOutcome, afterClaim bool,
 ) (*configbutleraiv1alpha3.CommitRequest, bool, error) {
 	current := cr
 	for attempt := 1; ; attempt++ {
+		if commitRequestIsTerminal(current) {
+			return current, false, nil
+		}
 		o.apply(current)
 		err := p.store.updateStatus(ctx, current)
 		if err == nil {
@@ -135,10 +143,10 @@ func (c *commitRequestCore) writeOutcome(
 		}
 		fresh, same, getErr := c.reread(ctx, p, current)
 		if getErr != nil || !same {
-			return current, false, getErr
+			return nil, false, getErr
 		}
-		if commitRequestIsTerminal(fresh) || (!afterClaim && len(fresh.Status.Conditions) > 0) {
-			return current, false, nil
+		if !afterClaim && len(fresh.Status.Conditions) > 0 {
+			return fresh, false, nil
 		}
 		current = fresh
 	}

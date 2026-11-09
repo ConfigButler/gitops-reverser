@@ -25,10 +25,14 @@ spec:
     name: {{ .GitBranchName }}
 {{ .KubeProviderRef }}
   path: {{ .Path }}
+{{- if or .CommitWindow .LiveTemplate .ReconcileTemplate }}
   commit:
+{{- end }}
+{{- if .CommitWindow }}
     window:
       idleTimeout: "{{ .CommitWindow }}"
       maxDuration: "{{ .CommitMaxDuration }}"
+{{- end }}
 {{- if or .LiveTemplate .ReconcileTemplate }}
     message:
 {{- if .LiveTemplate }}

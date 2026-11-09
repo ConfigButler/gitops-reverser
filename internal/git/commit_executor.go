@@ -415,7 +415,8 @@ func (w *BranchWorker) executeEventWrite(
 	// Before the commit, not after it: a window that changes a file outside its footprint may have
 	// been open beside one that changes that file too, and committing it could put an older value
 	// over a newer one. The caller undoes the worktree.
-	if err := w.checkFootprint(worktree, pendingWrite, first); err != nil {
+	checked, err := w.checkFootprint(worktree, pendingWrite, first)
+	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported, err
 	}
 
@@ -432,6 +433,7 @@ func (w *BranchWorker) executeEventWrite(
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported,
 			fmt.Errorf("failed to create commit: %w", err)
 	}
+	w.logFootprintChecked(repo, hash, pendingWrite, checked)
 
 	log.FromContext(ctx).Info(
 		"git commit created",

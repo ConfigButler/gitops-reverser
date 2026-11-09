@@ -20,41 +20,24 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/git"
 )
 
-// simulatedWorker answers like a branch worker that registers a request registerAfter after its first
-// attach and pushes its commit resolveAfter after that attach, reporting each change as the worker's
-// loop does.
+// simulatedWorker answers like a branch worker, and moves only when the test says so: report changes
+// its state and reports the change, as the worker's loop does.
 type simulatedWorker struct {
-	registerAfter, resolveAfter time.Duration
-	changes                     chan git.CommitRequestChange
+	change  git.CommitRequestChange
+	changes chan git.CommitRequestChange
 
 	mu       sync.Mutex
-	started  bool
+	steps    int
 	phase    git.CommitRequestPhase
 	resolved bool
-	pushedAt time.Time
 }
 
 func (w *simulatedWorker) ServiceCommitRequest(
-	_ context.Context, attach git.AttachCommitRequest,
+	context.Context, git.AttachCommitRequest,
 ) (git.FinalizeResult, bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.started {
-		w.started = true
-		change := git.CommitRequestChange{Namespace: attach.Namespace, Name: attach.Name, UID: attach.UID}
-		time.AfterFunc(w.registerAfter, func() {
-			w.mu.Lock()
-			w.phase = git.PhaseWaitingForWindow
-			w.mu.Unlock()
-			w.changes <- change
-		})
-		time.AfterFunc(w.resolveAfter, func() {
-			w.mu.Lock()
-			w.resolved, w.pushedAt = true, time.Now()
-			w.mu.Unlock()
-			w.changes <- change
-		})
-	}
+	w.steps++
 	if w.resolved {
 		return git.FinalizeResult{Outcome: git.FinalizeCommitted, Commit: "c0ffee", Branch: "main"}, true, nil
 	}
@@ -84,34 +67,78 @@ func (w *simulatedWorker) LookupCommitRequestApply(
 	return git.SaveApply{}, false, nil
 }
 
-// saveLatency is what a client waiting on a request sees: create to WaitingForWindow, and push to
-// Ready.
-type saveLatency struct{ registered, ready time.Duration }
+// report applies a change to the worker's state and reports it. The channel is buffered: on the
+// polled path nothing reads it.
+func (w *simulatedWorker) report(change func(*simulatedWorker)) {
+	w.mu.Lock()
+	change(w)
+	w.mu.Unlock()
+	w.changes <- w.change
+}
 
-// measureSaveLatency serves one request through a source cluster's watch, the production loop of
-// CommitRequestServer.consider, with or without the worker's changes waking it.
-func measureSaveLatency(t *testing.T, woken bool) saveLatency {
+func (w *simulatedWorker) stepsTaken() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.steps
+}
+
+// steppedTimers stands in for time.After between a request's steps: none fires until the test fires
+// them, so a step taken without fire was taken by a wake.
+type steppedTimers struct {
+	mu      sync.Mutex
+	pending []chan time.Time
+}
+
+func (s *steppedTimers) after(time.Duration) <-chan time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ch := make(chan time.Time, 1)
+	s.pending = append(s.pending, ch)
+	return ch
+}
+
+func (s *steppedTimers) armed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.pending) > 0
+}
+
+// fire runs out every timer armed so far.
+func (s *steppedTimers) fire() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ch := range s.pending {
+		ch <- time.Now()
+	}
+	s.pending = nil
+}
+
+// servedSave is one request served through a source cluster's watch, the production loop of
+// CommitRequestServer.consider, on stepped timers, with or without the worker's changes waking it.
+type servedSave struct {
+	t      *testing.T
+	c      client.Client
+	cr     *configv1alpha3.CommitRequest
+	worker *simulatedWorker
+	timers *steppedTimers
+}
+
+func serveSave(t *testing.T, woken bool) *servedSave {
 	t.Helper()
 	cr := newCommitRequest("save")
 	cr.Spec.GitTargetRef.Namespace = "default"
 	c := newCommitRequestClient(t, nil, cr, mirroringTarget("edge"), kubeconfigProvider("edge", true))
 	worker := &simulatedWorker{
-		registerAfter: 50 * time.Millisecond, resolveAfter: 3 * time.Second,
+		change:  git.CommitRequestChange{Namespace: "default", Name: "save", UID: string(cr.UID)},
 		changes: make(chan git.CommitRequestChange, 4),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	server := &CommitRequestServer{Client: c, Finalizer: worker}
+	t.Cleanup(cancel)
+	timers := &steppedTimers{}
+	server := &CommitRequestServer{Client: c, Finalizer: worker, after: timers.after}
 	if woken {
 		server.Wakes = NewCommitRequestWakes(worker.changes)
 		go func() { _ = server.Wakes.Start(ctx) }()
-	} else {
-		// Nothing listens to the worker's changes: the steps poll.
-		go func() {
-			for range worker.changes {
-				continue
-			}
-		}()
 	}
 	watcher := &commitRequestWatcher{
 		provider: types.NamespacedName{Namespace: "default", Name: "edge"}, path: watcherPath(c, "edge", false),
@@ -120,45 +147,63 @@ func measureSaveLatency(t *testing.T, woken bool) saveLatency {
 	u.SetNamespace("default")
 	u.SetName("save")
 	u.SetUID(cr.UID)
-
-	created := time.Now()
 	server.consider(ctx, watcher, u)
 
-	var latency saveLatency
-	require.Eventually(t, func() bool {
-		var got configv1alpha3.CommitRequest
-		if c.Get(ctx, client.ObjectKeyFromObject(cr), &got) != nil {
-			return false
-		}
-		reconciling := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReconciling)
-		if latency.registered == 0 && reconciling != nil && reconciling.Reason == string(git.PhaseWaitingForWindow) {
-			latency.registered = time.Since(created)
-		}
-		ready := apimeta.FindStatusCondition(got.Status.Conditions, ConditionTypeReady)
-		if ready == nil || ready.Status != metav1.ConditionTrue {
-			return false
-		}
-		worker.mu.Lock()
-		latency.ready = time.Since(worker.pushedAt)
-		worker.mu.Unlock()
-		return true
-	}, 10*time.Second, 5*time.Millisecond)
-	return latency
+	s := &servedSave{t: t, c: c, cr: cr, worker: worker, timers: timers}
+	require.Eventually(t, func() bool { return worker.stepsTaken() > 0 && timers.armed() }, 10*time.Second,
+		time.Millisecond, "the first step attaches the request and waits")
+	return s
 }
 
-// TestCommitRequestWakes_AWorkersChangeTakesTheNextStepAtOnce pins gitops-api ask #40: a request's
-// progress follows its worker's changes instead of a fixed poll. The worker here registers the request
-// 50ms after its attach and pushes 3s after it; with the changes waking the steps, a client waiting
-// for WaitingForWindow and then for Ready sees each within a few milliseconds, not the poll.
-func TestCommitRequestWakes_AWorkersChangeTakesTheNextStepAtOnce(t *testing.T) {
-	polled := measureSaveLatency(t, false)
-	woken := measureSaveLatency(t, true)
-	t.Logf("create -> WaitingForWindow: polled %s, woken %s", polled.registered, woken.registered)
-	t.Logf("push -> Ready: polled %s, woken %s", polled.ready, woken.ready)
+func (s *servedSave) conditions() []metav1.Condition {
+	var got configv1alpha3.CommitRequest
+	if s.c.Get(context.Background(), client.ObjectKeyFromObject(s.cr), &got) != nil {
+		return nil
+	}
+	return got.Status.Conditions
+}
 
-	assert.GreaterOrEqual(t, polled.registered, commitRequestPollInterval, "polled, the registration waits a poll")
-	assert.Less(t, woken.registered, 250*time.Millisecond, "woken, it is reported at once")
-	assert.Less(t, woken.ready, 250*time.Millisecond, "woken, the push is reported at once")
+func (s *servedSave) registered() bool {
+	reconciling := apimeta.FindStatusCondition(s.conditions(), ConditionTypeReconciling)
+	return reconciling != nil && reconciling.Reason == string(git.PhaseWaitingForWindow)
+}
+
+func (s *servedSave) ready() bool {
+	return apimeta.IsStatusConditionTrue(s.conditions(), ConditionTypeReady)
+}
+
+func registerRequest(w *simulatedWorker) { w.phase = git.PhaseWaitingForWindow }
+func pushRequest(w *simulatedWorker)     { w.resolved = true }
+
+// TestCommitRequestWakes_AWorkersChangeTakesTheNextStepAtOnce pins gitops-api ask #40: a request's
+// progress follows its worker's changes instead of a fixed poll. No timer between steps fires unless
+// the test fires it, so a step taken without one was taken by the worker's change.
+func TestCommitRequestWakes_AWorkersChangeTakesTheNextStepAtOnce(t *testing.T) {
+	t.Run("woken, each change takes the next step", func(t *testing.T) {
+		s := serveSave(t, true)
+		s.worker.report(registerRequest)
+		require.Eventually(t, s.registered, 10*time.Second, time.Millisecond,
+			"the registration is reported with no poll fired")
+		s.worker.report(pushRequest)
+		require.Eventually(t, s.ready, 10*time.Second, time.Millisecond,
+			"the push is reported with no poll fired")
+	})
+
+	t.Run("polled, each change waits for the poll", func(t *testing.T) {
+		s := serveSave(t, false)
+		s.worker.report(registerRequest)
+		assert.Never(t, s.registered, 200*time.Millisecond, 5*time.Millisecond,
+			"nothing takes the step before the poll")
+		s.timers.fire()
+		require.Eventually(t, s.registered, 10*time.Second, time.Millisecond, "the poll takes it")
+
+		require.Eventually(t, s.timers.armed, 10*time.Second, time.Millisecond)
+		s.worker.report(pushRequest)
+		assert.Never(t, s.ready, 200*time.Millisecond, 5*time.Millisecond,
+			"nothing takes the step before the poll")
+		s.timers.fire()
+		require.Eventually(t, s.ready, 10*time.Second, time.Millisecond, "the poll takes it")
+	})
 }
 
 // TestCommitRequestWakes_AChangeMidStepIsKeptForTheNextWait pins that a change reported while the

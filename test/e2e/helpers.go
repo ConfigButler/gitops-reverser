@@ -197,6 +197,10 @@ const e2eCommitWindow = "0s"
 // cap would be exactly such a timer.
 const e2eCommitMaxDuration = "24h"
 
+// e2eSchemaDefaultWindow asks for a GitTarget with no spec.commit.window at all, so the schema's
+// defaults apply: what a user who tunes nothing gets.
+const e2eSchemaDefaultWindow = ""
+
 // gitBranchName is the GitBranch the e2e helpers create for a GitProvider's branch: one per
 // provider and branch, in the provider's namespace, so every GitTarget the helpers create on that
 // branch shares it.
