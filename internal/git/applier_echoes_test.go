@@ -143,7 +143,7 @@ func (f *echoFixture) writeWindow(events ...Event) {
 func TestApplierEchoes_AnUnchangedObjectIsNoAction(t *testing.T) {
 	t.Run("alone, it is never retained", func(t *testing.T) {
 		f := newEchoFixture(t, "echo-unchanged-alone", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
-		f.loop.lastPushAt = time.Now()
+		holdPushes(f.loop)
 
 		f.writeWindow(echoEvent("x", "x1")) // the applier's echo of what Git holds
 		require.Empty(t, f.loop.pendingWrites, "a write that changes nothing settles at once")
@@ -158,7 +158,7 @@ func TestApplierEchoes_AnUnchangedObjectIsNoAction(t *testing.T) {
 	t.Run("beside a changed object, only the changed one is committed", func(t *testing.T) {
 		f := newEchoFixture(t, "echo-unchanged-batch", configv1alpha3.PruneOnEvent,
 			map[string]string{"x": "x1", "y": "y1"})
-		f.loop.lastPushAt = time.Now()
+		holdPushes(f.loop)
 
 		f.writeWindow(echoEvent("x", "x1"), echoEvent("y", "y2"))
 		require.Len(t, f.loop.pendingWrites, 1)
@@ -176,7 +176,7 @@ func TestApplierEchoes_AnUnchangedObjectIsNoAction(t *testing.T) {
 
 	t.Run("a save keeps every object it captured", func(t *testing.T) {
 		f := newEchoFixture(t, "echo-unchanged-save", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1"})
-		f.loop.lastPushAt = time.Now()
+		holdPushes(f.loop)
 		save := attachReq("alice", time.Hour)
 		save.GitTargetName = echoTarget
 		save.MaxDuration = 0
@@ -203,7 +203,7 @@ func TestApplierEchoes_AnUnchangedObjectIsNoAction(t *testing.T) {
 func TestApplierEchoes_AResyncReplayAppliesItsDecidedActions(t *testing.T) {
 	f := newEchoFixture(t, "echo-resync-replay", configv1alpha3.PruneAlways,
 		map[string]string{"x": "x1", "y": "y1", "gone": "g1"})
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 
 	req := &ResyncRequest{
 		Desired:            []manifestanalyzer.DesiredResource{echoDesired("x", "x1"), echoDesired("y", "y2")},
@@ -243,7 +243,7 @@ func TestApplierEchoes_AResyncReplayAppliesItsDecidedActions(t *testing.T) {
 func TestApplierEchoes_AReplayedResyncObeysATightenedPruneMode(t *testing.T) {
 	f := newEchoFixture(t, "echo-resync-tightened", configv1alpha3.PruneAlways,
 		map[string]string{"y": "y1", "gone": "g1"})
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 
 	req := &ResyncRequest{
 		Desired:            []manifestanalyzer.DesiredResource{echoDesired("y", "y2")},
@@ -314,7 +314,7 @@ func (f *echoFixture) echoApplier() *applierState {
 func TestApplierEchoes_FlushThenApply(t *testing.T) {
 	f := newEchoFixture(t, "echo-flush", configv1alpha3.PruneOnEvent, map[string]string{"x": "x1", "y": "y1"})
 	requester := f.withClaim()
-	f.loop.lastPushAt = time.Now() // the push cooldown runs: a flush does not wait for it
+	holdPushes(f.loop) // the push cooldown runs: a flush does not wait for it
 
 	f.writeWindow(echoEvent("x", "x2")) // E0, in the open window when the apply comes due
 	require.NotNil(t, f.loop.openWindow)
@@ -375,7 +375,7 @@ func TestApplierEchoes_AnApplierThatJoinsAFlushHoldsTheEditsSinceItsMark(t *test
 		t.Fatalf("no applier covers %s", target)
 		return nil
 	}
-	f.loop.lastPushAt = time.Now()
+	holdPushes(f.loop)
 
 	f.writeWindow(echoEvent("x", "x2"))
 	restore := failPushes(t, f.worker)

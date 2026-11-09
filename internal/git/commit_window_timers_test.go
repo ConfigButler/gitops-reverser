@@ -40,7 +40,7 @@ func TestWindowTimers_ContinuousActivityStopsAtTheTargetsMaxDuration(t *testing.
 	loop := newBranchWorkerEventLoop(worker, time.Hour) // the idle timer never fires here
 	defer loop.stopTimers()
 	loop.defaultWindow.maxDuration = time.Hour
-	loop.lastPushAt = time.Now() // hold the push, so the local commit stays inspectable
+	holdPushes(loop) // hold the push, so the local commit stays inspectable
 
 	writeTo(loop, "first")
 	require.NotNil(t, loop.openWindow)
@@ -63,7 +63,7 @@ func TestWindowTimers_ATargetMaxDurationOfZeroCommitsEveryWrite(t *testing.T) {
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 	loop.defaultWindow.maxDuration = 0
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	writeTo(loop, "first")
 	writeTo(loop, "second")
@@ -196,7 +196,7 @@ func TestAttachSelection_NextClosesTheOpenWindowUnderItsOwnMessage(t *testing.T)
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
 	defer loop.stopTimers()
 
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	writeTo(loop, "earlier")
 	current := namedAttachReq("current", time.Hour)
 	current.Message = "the earlier save"
@@ -232,7 +232,7 @@ func TestAttachSelection_TheWorkerReportsEachPhase(t *testing.T) {
 	phase := func() CommitRequestPhase { return worker.LookupCommitRequestPhase("default", crName, "uid-"+crName) }
 
 	assert.Empty(t, phase(), "nothing is reported before the worker registers the request")
-	loop.lastPushAt = time.Now() // keep the push behind its cooldown, so WaitingForPush is observable
+	holdPushes(loop) // keep the push behind its cooldown, so WaitingForPush is observable
 
 	serviceAttach(loop, attachReq("alice", time.Hour))
 	assert.Equal(t, PhaseWaitingForWindow, phase())
@@ -257,7 +257,7 @@ func TestWindowTimers_AWaitingRequestWithMaxDurationZeroCommitsExactlyTheNextWri
 	worker, _, _ := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now() // hold the pushes, so the retained writes can be inspected
+	holdPushes(loop) // hold the pushes, so the retained writes can be inspected
 	defer loop.stopTimers()
 
 	req := attachReq("alice", time.Hour)

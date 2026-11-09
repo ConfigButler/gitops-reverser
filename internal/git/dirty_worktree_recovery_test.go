@@ -141,7 +141,7 @@ func TestEveryLoopCommitPathRecoversADirtyWorktree(t *testing.T) {
 			repoPath := worker.repoPath()
 
 			loop := newBranchWorkerEventLoop(worker, time.Hour)
-			loop.lastPushAt = time.Now()
+			holdPushes(loop)
 			defer loop.stopTimers()
 
 			// Retained work, so commitPendingWrites cannot reset for us.

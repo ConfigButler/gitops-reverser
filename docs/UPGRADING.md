@@ -7,6 +7,36 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `CommitRequest` reports each phase as the worker reaches it
+
+A request's progress and outcome are written as soon as its branch worker reports them, instead of
+at a two-second poll. Once the worker has registered a request, the poll is only a ten-second
+fallback.
+
+A save's own writes now land in its window. A client that waits for its request to be registered
+before it writes, as `SaveInProgress` asks, used to learn of the registration up to two seconds
+late, which is the whole default `maxDuration`. The window then closed on the earlier writes under
+the save's message, and the save's own writes committed under the generated message, or under the
+next save's message.
+
+`SaveInProgress` is decided when the worker registers the request, after its author was found. A
+client that relies on it to keep two of its saves apart waits for the `Reconciling` reason
+`WaitingForWindow` or `CollectingWindow` before it makes the save's edits, not only for
+`Ready=Unknown`.
+
+## A source-cluster request no path can serve ends `NotAllowed`
+
+A `CommitRequest` on a source cluster whose `GitTarget` mirrors another cluster, either the cluster
+GitOps Reverser runs in or one whose `KubeProvider` serves no `CommitRequest`s, ends `Ready=False`
+with reason `NotAllowed`, naming both clusters. It used to keep no status at all. It finishes, so on
+a `KubeProvider` with `commitRequests: ReconcileAndDeleteFinished` it is deleted after the TTL.
+
+## A save is pushed at once
+
+A push that a `CommitRequest` waits on no longer waits out the five-second push cooldown, as a push
+an apply waits on already did not. Two saves in a row each resolve as soon as their commit is
+pushed. Commits that no save waits on still share one push per cooldown.
+
 ## Upgrading from 0.54.0: drain the `CommitRequest`s first
 
 Existing providers, branches, targets and claims keep running across this upgrade; none of the

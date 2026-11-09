@@ -71,7 +71,7 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	_, loop := newMetricsLoop(t, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	// max_duration: the target's maximum runs out.
 	writeTo(loop, "a")
@@ -101,7 +101,7 @@ func TestCommitWindowMetrics_AnAttachKeepsTheOpeningTimeAndCountsTheRequestsTime
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	_, loop := newMetricsLoop(t, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	writeTo(loop, "first")
 	opened := time.Now().Add(-10 * time.Second) // as if the write had arrived ten seconds ago
@@ -124,7 +124,7 @@ func TestCommitWindowMetrics_AttachNextCountsTheWindowItCloses(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	_, loop := newMetricsLoop(t, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 
 	writeTo(loop, "earlier")
 	next := attachReq("alice", time.Hour)
@@ -171,7 +171,7 @@ func TestCommitWindowMetrics_APushReplayClosesNoWindow(t *testing.T) {
 	worker, serverRepo, remoteURL := setupCommitPushSplitWorker(t)
 	createPlainGitTarget(t, worker, "team-a", "team-a")
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	defer loop.stopTimers()
 
 	writeTo(loop, "held")
@@ -196,7 +196,7 @@ func TestCommitWindowMetrics_ACommitEmptyRecordIsNotAWindow(t *testing.T) {
 	reader, err := telemetry.InitTestExporter()
 	require.NoError(t, err)
 	_, loop := newMetricsLoop(t, time.Hour)
-	loop.lastPushAt = time.Now() // hold the push, so the record can be seen
+	holdPushes(loop) // hold the push, so the record can be seen
 
 	serviceAttach(loop, commitEmptyReq("alice", "save: nothing changed"))
 	forceDue(loop)

@@ -243,7 +243,7 @@ func TestBranchWorker_LiveWriteOnAbsentBranchStartsFromTheParentsCurrentTip(t *t
 			hashB := f.pushToMain(map[string]string{"LATEST.md": "from main at B\n"})
 
 			// Hold the push so the cycle's recorded root can be read before it is sent.
-			loop.lastPushAt = time.Now()
+			holdPushes(loop)
 			liveWrite(loop, "cm1")
 			require.Len(t, loop.pendingWrites, 1)
 			assert.Equal(t, plumbing.NewBranchReferenceName("main"), f.worker.pushCycleRootBranch,
@@ -363,7 +363,7 @@ func TestBranchWorker_NoDiffLiveWriteOnAbsentBranchStaysOnStandby(t *testing.T) 
 		defer loop.stopTimers()
 		f.warmOnParent()
 
-		loop.lastPushAt = time.Now()
+		holdPushes(loop)
 		liveWrite(loop, "cm1")
 		require.Len(t, loop.pendingWrites, 1)
 		require.False(t, loop.pendingWrites[0].CommitSHA.IsZero(), "planned against A, the write is a commit")
@@ -480,7 +480,7 @@ func TestBranchWorker_NewBranchIsNotPublishedOnAnUncheckedParent(t *testing.T) {
 			return report, err
 		}
 
-		loop.lastPushAt = time.Now()
+		holdPushes(loop)
 		liveWrite(loop, "cm1")
 		f.pushToMain(map[string]string{"FIRST.md": "moved before the first attempt\n"})
 		loop.pushPending()
@@ -522,7 +522,7 @@ func TestBranchWorker_WriteBranchCreatedConcurrentlyIsBuiltOn(t *testing.T) {
 	defer loop.stopTimers()
 	f.warmOnParent()
 
-	loop.lastPushAt = time.Now()
+	holdPushes(loop)
 	liveWrite(loop, "cm1")
 	require.Len(t, loop.pendingWrites, 1)
 

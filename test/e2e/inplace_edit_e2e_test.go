@@ -348,6 +348,13 @@ func seedCommentIntoRepoFile(repo *RepoArtifacts, namespace, relPath, comment st
 
 func renderInPlaceFixtureFolder(fixtureRoot, namespace string) string {
 	GinkgoHelper()
+	return renderFixtureFolder(fixtureRoot, map[string]string{"__E2E_NAMESPACE__": namespace})
+}
+
+// renderFixtureFolder copies a fixture folder into a new temporary directory, replacing each
+// placeholder with its value in every file, and returns the directory.
+func renderFixtureFolder(fixtureRoot string, placeholders map[string]string) string {
+	GinkgoHelper()
 
 	rendered, err := os.MkdirTemp("", "gitops-reverser-e2e-manifest-folder-*")
 	Expect(err).NotTo(HaveOccurred(), "failed to create rendered fixture directory")
@@ -373,7 +380,9 @@ func renderInPlaceFixtureFolder(fixtureRoot, namespace string) string {
 		if readErr != nil {
 			return readErr
 		}
-		content = []byte(strings.ReplaceAll(string(content), "__E2E_NAMESPACE__", namespace))
+		for placeholder, value := range placeholders {
+			content = []byte(strings.ReplaceAll(string(content), placeholder, value))
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 			return err
 		}

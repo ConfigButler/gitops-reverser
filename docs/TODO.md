@@ -2,14 +2,10 @@
 
 The open work, in one list. Each item is one or two lines with a code pointer or the design page
 that argues it. Ranked within each group, most urgent first. **Before the next release** marks what
-should land before the next tag is cut (the last release is v0.53.0). Checked against `main` at
+should land before the next tag is cut (the last release is v0.55.0). Checked against `main` at
 `1bc97904` on 2026-10-24.
 
 ## Before the next release
-
-Nothing open. The 0.54.0 release PR's changelog was checked against what ships on 2026-10-24.
-
-## Applier claims and bi-directional editing
 
 - [ ] **A withheld apply rides the next edit.** S1 withholds an apply that lands over an edit decided
   after the flush mark, and a `Repair` puts the edit back. But the apply did land on the cluster, so
@@ -18,6 +14,9 @@ Nothing open. The 0.54.0 release PR's changelog was checked against what ships o
   `Repair` then applies the loss. The failing test is
   `TestApplyWindow_AWithheldApplyIsNotCommittedUnderTheNextEdit`
   (`internal/git/apply_window_carry_test.go`, skipped; `GITOPS_REVERSER_KNOWN_BUGS=1` runs it).
+
+## Applier claims and bi-directional editing
+
 - [ ] **Reopen the render-fidelity gate after a Git repair, automatically.** Today a target on
   `RenderMatchesLive=False` clears only on an explicit recheck (the
   `reconcile.configbutler.ai/requestedAt` annotation, which restarts every scope; the render

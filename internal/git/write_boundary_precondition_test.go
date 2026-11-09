@@ -239,7 +239,7 @@ func TestEventLoop_LiveFanInRefusal_FailsGitTargetAndCommitsNothing(t *testing.T
 	}
 
 	loop := newBranchWorkerEventLoop(worker, time.Hour)
-	loop.lastPushAt = time.Now() // keep the (irrelevant) push out of this test
+	holdPushes(loop) // keep the (irrelevant) push out of this test
 	defer loop.stopTimers()
 
 	event := overridesDeploymentEvent("ghcr.io/example/podinfo:9.9.9", 3)

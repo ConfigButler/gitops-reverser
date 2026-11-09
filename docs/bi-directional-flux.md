@@ -461,11 +461,13 @@ as failed, and records an `OperationUnfollowed` Event. A resumed `Kustomization`
 nothing watching it.
 
 **The apply window.** From the moment an operation is asked for until 10 seconds after it completes,
-a write by `kustomize-controller` alone to an object nobody edited is the apply landing, and is not
-mirrored. A write by `kustomize-controller` over a newer API edit, one made after the flush included,
-is withheld from Git, and GitOps Reverser asks for a `Repair`; the applier claim shows `repairPending`
-until that apply succeeds. Only a `kustomize-controller` entry as new as the edit or newer counts:
-undoing an edit can leave an older one as the newest entry, and that undo is mirrored. When
+and until the watch has delivered every write the cluster held then, for at most two minutes ([the
+life of an apply](bi-directional.md#the-life-of-an-apply)), a write by `kustomize-controller` alone
+to an object nobody edited is the apply landing, and is not mirrored. A write by
+`kustomize-controller` over a newer API edit, one made after the flush included, is withheld from
+Git, and GitOps Reverser asks for a `Repair`; the applier claim shows `repairPending` until that
+apply succeeds. Only a `kustomize-controller` entry as new as the edit or newer counts: undoing an
+edit can leave an older one as the newest entry, and that undo is mirrored. When
 `kustomize-controller` and another manager wrote in the same second, the write is mirrored and
 counted as `ambiguous`.
 
