@@ -569,6 +569,11 @@ It also applies the `GitProvider` and `KubeProvider` above, with their grants, a
 `main` in `platform` that the platform keeps for itself (`from: Same` in `allowedGitBranches`). The
 Role also needs whatever team A's own workloads require.
 
+Start from a repository that has a first commit on `main`. A tenant may write only
+`teams/<namespace>/*`, so in an empty repository it cannot create the default branch its branch
+starts from, and its `GitBranch` reports `DefaultBranchNotAllowed` until `main` exists
+([starting the write branch](#starting-the-write-branch-from-another-branch-specparentbranch)).
+
 | Identity | Manages | Cannot |
 |---|---|---|
 | The platform's reconciler | `GitProvider`, `KubeProvider` and their grants; Namespaces and their labels; tenant RBAC; platform `GitBranch`es such as `main` | |
