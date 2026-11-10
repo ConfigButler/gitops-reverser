@@ -3,6 +3,7 @@
 > **design**: built in #407, with #408's `spec.parentBranch` folded in and the hardening pass
 > ([`gittarget-parent-hardening.md`](gittarget-parent-hardening.md), done) applied. This page
 > records the contract as built and the reasoning behind it. Deferred:
+> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
 > [`gittarget-parent-observation.md`](gittarget-parent-observation.md).
 > Related: [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../definitions.md`](../definitions.md), and `architecture.md` (Ground rules; "A branch that does
@@ -150,11 +151,11 @@ Omitted is lenient: the default branch, and a root commit when the repository is
 that is the first-install case. Set is strict: it must exist, or the target refuses.
 
 In an empty repository the first commit creates the write branch, whatever branch the
-repository's `HEAD` names (decided 2026-11-10). The user asked for that branch, and the default
-branch can be changed afterwards. Status shows the name `HEAD` gives (`{state: Unborn, branch:
-main}`) when the server speaks protocol v2, read by `unbornHead` in `internal/git/git_smart_fetch.go`;
-it is never guessed. Considered and dropped: refusing until the default branch exists, and
-bootstrapping the default branch alongside the write branch.
+repository's `HEAD` names. Status shows that name (`{state: Unborn, branch: main}`) when the server
+speaks protocol v2, read by `unbornHead` in `internal/git/git_smart_fetch.go`; it is never guessed.
+Whether a write branch that is not the default should be created there is open: on Gitea it
+becomes the repository's default branch, and later branches build on it. See
+[`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md).
 
 **Deferred, additive when someone asks:**
 
