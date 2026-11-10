@@ -135,16 +135,11 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   `GitTarget`, plus the durable queue, plus whether a replica warms its fact index before starting a
   watch it took over. Redis becomes required in this mode.
   [ha-gittarget-distribution-plan.md](future/ha-gittarget-distribution-plan.md).
-- [ ] **Decide which branch a first commit may create in an empty repository.** Status now names an
-  empty repository's default branch when a protocol v2 server reports it (`unbornHead` in
-  `internal/git/git_smart_fetch.go`); behavior is unchanged. The policy choices are in
-  [gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md) §3.
-  `ParentUnborn` and `ErrDefaultBranchUnresolved` stay whatever is chosen: the first is a state the
-  repository is in, the second a repository with commits whose `HEAD` dangles.
 - [ ] **Drop `unbornHead` once go-git reports an empty repository's unborn HEAD.** Upstream main
   (`d6fa0275`) adds `LsRefsOutput.UnbornHead` but `GetRemoteRefs` still returns
-  `ErrEmptyRemoteRepository` before building `RemoteRefs`; an upstream PR returning the name there
-  (or on the error) would let `listRemoteRefs` go back to `Remote.List`.
+  `ErrEmptyRemoteRepository` before building `RemoteRefs`. An upstream PR returning the name there,
+  or on the error (an `EmptyRemoteRepositoryError{Unborn}` whose `Is(ErrEmptyRemoteRepository)` is
+  true, from both `GetRemoteRefs` v2 paths), would let `listRemoteRefs` go back to `Remote.List`.
 - [ ] **The branch claim is first-proven-wins** (`internal/git/branch_owner.go`). Anyone who can
   create a `GitProvider` and a `GitBranch` with a credential that passes the push-session proof can
   claim a branch no older `GitBranch` holds; on Gitea and Forgejo a read-only credential passes it

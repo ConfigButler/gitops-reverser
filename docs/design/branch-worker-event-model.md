@@ -579,8 +579,8 @@ The detailed design records continue to own adjacent policy:
   the parent after its advertisement.
 - [Parent observation](gittarget-parent-observation.md): deferred status work that adds no remote
   connections or publication permission. Incomplete ancestry evidence remains `Unknown`.
-- [Empty repositories](gittarget-parent-empty-repository.md): default-branch protocol discovery
-  and authorization to bootstrap it remain separate decisions.
+- [Empty repositories](gittarget-parent-branch.md#implicit-when-omitted-strict-when-set): the
+  first commit creates the write branch; protocol v2 discovery only names the default branch.
 - [Target status](gittarget-red-status-plan.md): the writer proves refusals and controllers
   project them. A sibling scope's success cannot clear another scope's refusal.
 - [Configuration freshness](gittarget-configuration-freshness.md): watch-plan application and

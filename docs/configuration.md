@@ -1551,7 +1551,9 @@ spec:
   until those are published the `GitBranch` reports `Ready=False` with reason
   `RecoveringParentBranch`.
 - An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
-  refs at all, tags included) the first commit starts a branch with no history. A repository that
+  refs at all, tags included) the first commit starts the write branch with no history, whatever
+  branch the repository's `HEAD` names; change the repository's default branch afterwards if you
+  want another one. A repository that
   is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
   writes nothing until `HEAD` is fixed or `parentBranch` is set; that never starts an orphan.
 - A detached `HEAD`, or a server that does not say what `HEAD` points at, resolves the way go-git

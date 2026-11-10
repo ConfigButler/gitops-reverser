@@ -3,7 +3,6 @@
 > **design**: built in #407, with #408's `spec.parentBranch` folded in and the hardening pass
 > ([`gittarget-parent-hardening.md`](gittarget-parent-hardening.md), done) applied. This page
 > records the contract as built and the reasoning behind it. Deferred:
-> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
 > [`gittarget-parent-observation.md`](gittarget-parent-observation.md).
 > Related: [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../definitions.md`](../definitions.md), and `architecture.md` (Ground rules; "A branch that does
@@ -57,7 +56,7 @@ check is what protects the first write.
 | no | yes | compare against the parent; create the write branch from its tip, checked at publication |
 | no | no, **set** | refuse: `Ready=False`, `Stalled=True`, reason `ParentBranchNotFound`; nothing written, no orphan branch |
 | no | no, omitted, not empty (`HEAD` resolves to no branch, or only tags) | refuse the same way: `ParentBranchNotFound`, with a message to fix `HEAD` or set the field |
-| no | no, omitted, empty repository (no refs at all) | unborn `HEAD`; the first commit is a root commit on the write branch |
+| no | no, omitted, empty repository (no refs at all) | unborn `HEAD`; the first commit is a root commit on the write branch, whatever branch the repository's `HEAD` names |
 
 - **Recovery from a missing parent** is held open by the branch worker until the held work lands,
   whatever the parent's observed state. It latches when an attempt fails on the parent and clears
@@ -148,9 +147,14 @@ The cost of the name: it can never hold a commit or a tag.
 ## Implicit when omitted, strict when set
 
 Omitted is lenient: the default branch, and a root commit when the repository is empty, because
-that is the first-install case. Set is strict: it must exist, or the target refuses. Which branch
-an empty repository's first commit may create is the open question in
-[`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md).
+that is the first-install case. Set is strict: it must exist, or the target refuses.
+
+In an empty repository the first commit creates the write branch, whatever branch the
+repository's `HEAD` names (decided 2026-11-10). The user asked for that branch, and the default
+branch can be changed afterwards. Status shows the name `HEAD` gives (`{state: Unborn, branch:
+main}`) when the server speaks protocol v2, read by `unbornHead` in `internal/git/git_smart_fetch.go`;
+it is never guessed. Considered and dropped: refusing until the default branch exists, and
+bootstrapping the default branch alongside the write branch.
 
 **Deferred, additive when someone asks:**
 
