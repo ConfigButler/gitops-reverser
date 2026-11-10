@@ -159,7 +159,7 @@ func TestBranchWorker_AnEmptyRepositoryWaitsUntilItsDefaultBranchIsAllowed(t *te
 	f.allowBranches("feature")
 
 	err := f.worker.ensureRepositoryInitialized(f.worker.ctx)
-	require.ErrorIs(t, err, ErrDefaultBranchNotAllowed)
+	require.ErrorIs(t, err, ErrDefaultBranchCreationNotAllowed)
 	o := f.observed()
 	assert.Equal(t, ParentUnborn, o.ParentState)
 	assert.Equal(t, "trunk", o.ParentBranch)

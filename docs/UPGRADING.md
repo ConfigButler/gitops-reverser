@@ -18,7 +18,7 @@ to become the default, and later branches built on it.
 
 That is a write to the default branch, so the provider's `spec.allowedGitBranches` must allow it for
 the `GitBranch`'s namespace. If it does not, the `GitBranch` reports `Ready=False`, `Stalled=True`,
-reason `DefaultBranchNotAllowed`, its `GitTarget`s report `GitBranchNotReady`, and nothing is
+reason `DefaultBranchCreationNotAllowed`, its `GitTarget`s report `GitBranchNotReady`, and nothing is
 written until you allow the branch or push a first commit to it:
 
 ```yaml

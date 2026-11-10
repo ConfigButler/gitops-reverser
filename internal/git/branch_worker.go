@@ -2827,7 +2827,7 @@ func (w *BranchWorker) noteFetchParent(parent parentConfig, err error) {
 		return
 	}
 	var unresolved *DefaultBranchUnresolvedError
-	var notAllowed *DefaultBranchNotAllowedError
+	var notAllowed *DefaultBranchCreationNotAllowedError
 	switch {
 	case errors.As(err, &unresolved):
 		w.recordMissingParent(parent.name, unresolved.Head)

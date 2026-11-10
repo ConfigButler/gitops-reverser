@@ -27,7 +27,7 @@ With `spec.parentBranch` omitted, in an empty repository:
 |---|---|---|---|
 | yes | yes | (it is `spec.branch`, so yes) | the first commit starts `spec.branch` with no history |
 | yes | no | yes | the default branch is created first with one empty commit; `spec.branch` starts from it |
-| yes | no | no | nothing is written: `GitBranch` `Ready=False`, `Stalled=True`, reason `DefaultBranchNotAllowed`; its `GitTarget`s `GitBranchNotReady` |
+| yes | no | no | nothing is written: `GitBranch` `Ready=False`, `Stalled=True`, reason `DefaultBranchCreationNotAllowed`; its `GitTarget`s `GitBranchNotReady` |
 | no (protocol v0/v1) | unknown | | the first commit starts `spec.branch` as the repository's first branch |
 
 - **The empty commit** is authored and signed like every other commit the provider makes

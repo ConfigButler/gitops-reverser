@@ -57,7 +57,7 @@ check is what protects the first write.
 | no | yes | compare against the parent; create the write branch from its tip, checked at publication |
 | no | no, **set** | refuse: `Ready=False`, `Stalled=True`, reason `ParentBranchNotFound`; nothing written, no orphan branch |
 | no | no, omitted, not empty (`HEAD` resolves to no branch, or only tags) | refuse the same way: `ParentBranchNotFound`, with a message to fix `HEAD` or set the field |
-| no | no, omitted, empty repository (no refs at all) | the write branch is the default branch, or the server does not name it: the first commit is a root commit on the write branch. Otherwise the default branch is created first with one empty commit if allowed, else `DefaultBranchNotAllowed` |
+| no | no, omitted, empty repository (no refs at all) | the write branch is the default branch, or the server does not name it: the first commit is a root commit on the write branch. Otherwise the default branch is created first with one empty commit if allowed, else `DefaultBranchCreationNotAllowed` |
 
 - **Recovery from a missing parent** is held open by the branch worker until the held work lands,
   whatever the parent's observed state. It latches when an attempt fails on the parent and clears
@@ -152,7 +152,7 @@ that is the first-install case. Set is strict: it must exist, or the target refu
 
 In an empty repository whose server names its default branch, a write branch that is not the
 default starts from it: the default branch is created first with one empty commit, when the
-provider allows this `GitBranch` to write it, and the `GitBranch` reports `DefaultBranchNotAllowed`
+provider allows this `GitBranch` to write it, and the `GitBranch` reports `DefaultBranchCreationNotAllowed`
 otherwise. See [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md).
 
 **Deferred, additive when someone asks:**

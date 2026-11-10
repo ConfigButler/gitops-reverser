@@ -48,7 +48,7 @@ var _ = Describe("Manager branch grants", Label("manager"), Ordered, func() {
 
 		// The platform owns main and initializes it. A tenant may write only teams/<ns>/*, so in an
 		// empty repository it could not create the default branch its branch starts from, and its
-		// GitBranch would report DefaultBranchNotAllowed.
+		// GitBranch would report DefaultBranchCreationNotAllowed.
 		By("the platform pushes a first commit to main")
 		commitFilesToBranchFromOutside(repo, platformNs, "main", "e2e: the platform initializes main",
 			map[string]string{"README.md": "shared repository\n"})

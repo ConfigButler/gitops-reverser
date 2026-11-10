@@ -57,11 +57,11 @@ const (
 	// GitBranchReasonParentBranchNotFound is the stall for a branch that cannot be created: the
 	// remote carries neither it nor the parent it would be created from.
 	GitBranchReasonParentBranchNotFound = "ParentBranchNotFound"
-	// GitBranchReasonDefaultBranchNotAllowed is the stall for a write branch in an empty repository
+	// GitBranchReasonDefaultBranchCreationNotAllowed is the stall for a write branch in an empty repository
 	// whose default branch the branch worker would create first, with one empty commit, for the
 	// write branch to start from, but the GitProvider's spec.allowedGitBranches does not allow this
 	// GitBranch to write it.
-	GitBranchReasonDefaultBranchNotAllowed = "DefaultBranchNotAllowed"
+	GitBranchReasonDefaultBranchCreationNotAllowed = "DefaultBranchCreationNotAllowed"
 	// GitBranchReasonRecoveringParentBranch is progress while the parent branch has been found again
 	// but the branch worker has not yet published the writes it kept while the parent was missing.
 	GitBranchReasonRecoveringParentBranch = "RecoveringParentBranch"
@@ -307,7 +307,7 @@ func (r *GitBranchReconciler) gateUnbornDefault(
 	if allowed {
 		return
 	}
-	rd.stalled(GitBranchReasonDefaultBranchNotAllowed, fmt.Sprintf(
+	rd.stalled(GitBranchReasonDefaultBranchCreationNotAllowed, fmt.Sprintf(
 		"The repository is empty and its default branch '%s' does not exist yet. Branch '%s' starts from "+
 			"it, so it is created first with one empty commit, but GitProvider '%s' does not allow this "+
 			"GitBranch to write '%s' (spec.allowedGitBranches). Allow '%s' there, or push a first commit to "+

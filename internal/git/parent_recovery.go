@@ -41,7 +41,7 @@ var errAwaitingParentProbe = fmt.Errorf("%w (unchanged since the last look; wait
 // repository's default branch that this GitBranch may not create.
 func isParentUnavailable(err error) bool {
 	return errors.Is(err, ErrParentBranchNotFound) || errors.Is(err, ErrDefaultBranchUnresolved) ||
-		errors.Is(err, ErrDefaultBranchNotAllowed)
+		errors.Is(err, ErrDefaultBranchCreationNotAllowed)
 }
 
 // parentRecovery is the loop's latch on parent recovery. Loop-goroutine only.

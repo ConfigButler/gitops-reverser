@@ -202,7 +202,7 @@ func describeMissingParentRecoverySpec() {
 // describeEmptyRepositoryBootstrapSpec: an empty Gitea repository's HEAD names main, and Gitea
 // speaks protocol v2, so the GitBranch knows it. The write branch is not main, so it starts from
 // main, which is created first with one empty commit. Creating it is a write to main: while the
-// GitProvider does not allow that, the GitBranch reports DefaultBranchNotAllowed, its GitTarget
+// GitProvider does not allow that, the GitBranch reports DefaultBranchCreationNotAllowed, its GitTarget
 // GitBranchNotReady, and nothing is written. Allowing main is the whole fix: the held edit lands on
 // the write branch, on top of main's empty first commit.
 func describeEmptyRepositoryBootstrapSpec() {
@@ -271,7 +271,7 @@ spec:
 			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.state")).To(Equal("Unborn"))
 			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.branch")).To(Equal("main"),
 				"Gitea answers protocol v2 ls-refs unborn")
-			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).To(Equal("DefaultBranchNotAllowed"))
+			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).To(Equal("DefaultBranchCreationNotAllowed"))
 			g.Expect(readyReasonOf(g, destName, testNs)).To(Equal("GitBranchNotReady"))
 		}, 3*time.Minute, 3*time.Second).Should(Succeed())
 		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, "main")).To(BeEmpty(), "main is not created")
@@ -299,7 +299,7 @@ spec:
 
 		Eventually(func(g Gomega) {
 			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).NotTo(
-				BeElementOf("DefaultBranchNotAllowed", "RecoveringParentBranch"))
+				BeElementOf("DefaultBranchCreationNotAllowed", "RecoveringParentBranch"))
 			g.Expect(readyReasonOf(g, destName, testNs)).NotTo(Equal("GitBranchNotReady"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 	})

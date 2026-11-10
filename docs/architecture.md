@@ -546,7 +546,7 @@ it. Every field but `spec.allowedGitTargets` is immutable:
   it does not exist. Omitted means the remote's default branch. An explicit parent must exist when
   creating the write branch (`ParentBranchNotFound`). The grants need not allow it, because it is
   only read. The exception is an empty repository with the parent omitted: its default branch is
-  created first, which is a write, so the grants must allow it (`DefaultBranchNotAllowed`).
+  created first, which is a write, so the grants must allow it (`DefaultBranchCreationNotAllowed`).
 - `spec.allowedGitTargets`: which namespaces' `GitTarget`s may write through it. Omitted, its own
   namespace's; a written list replaces that default, and `[]` admits none.
 - `status.repository`: the normalized repository URL, half of the key one `GitBranch` holds.

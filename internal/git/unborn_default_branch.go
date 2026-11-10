@@ -26,29 +26,29 @@ import (
 //
 // Creating the default branch is a write to a branch other than spec.branch, so it needs the same
 // permission: the GitProvider's spec.allowedGitBranches must allow this GitBranch to write it.
-// Without that, nothing is written and the GitBranch reports DefaultBranchNotAllowed until the
+// Without that, nothing is written and the GitBranch reports DefaultBranchCreationNotAllowed until the
 // branch is allowed or exists. A server that does not report the unborn name (protocol v0/v1) gives
 // nothing to create; the write branch then starts as the first branch, as before.
 
-// ErrDefaultBranchNotAllowed reports an empty repository whose default branch the worker would
+// ErrDefaultBranchCreationNotAllowed reports an empty repository whose default branch the worker would
 // create for the write branch to start from, but the GitProvider does not allow this GitBranch to
-// write it. DefaultBranchNotAllowedError names the branch.
-var ErrDefaultBranchNotAllowed = errors.New("the empty repository's default branch may not be created")
+// write it. DefaultBranchCreationNotAllowedError names the branch.
+var ErrDefaultBranchCreationNotAllowed = errors.New("the empty repository's default branch may not be created")
 
-// DefaultBranchNotAllowedError is ErrDefaultBranchNotAllowed with the branch the server named.
-type DefaultBranchNotAllowedError struct {
+// DefaultBranchCreationNotAllowedError is ErrDefaultBranchCreationNotAllowed with the branch the server named.
+type DefaultBranchCreationNotAllowedError struct {
 	// Branch is the short name of the unborn default branch.
 	Branch string
 }
 
-func (e *DefaultBranchNotAllowedError) Error() string {
+func (e *DefaultBranchCreationNotAllowedError) Error() string {
 	return fmt.Sprintf("the repository is empty and its default branch %q does not exist; "+
 		"spec.allowedGitBranches does not allow creating it", e.Branch)
 }
 
-// Is makes the error match ErrDefaultBranchNotAllowed.
-func (e *DefaultBranchNotAllowedError) Is(target error) bool {
-	return target == ErrDefaultBranchNotAllowed
+// Is makes the error match ErrDefaultBranchCreationNotAllowed.
+func (e *DefaultBranchCreationNotAllowedError) Is(target error) bool {
+	return target == ErrDefaultBranchCreationNotAllowed
 }
 
 // initializeCommitMessage is the message of the empty commit that creates the default branch.
@@ -80,7 +80,7 @@ func (w *BranchWorker) mayCreateUnbornDefault(
 
 // createUnbornDefault creates branch on the remote with one empty commit, signed and authored as the
 // worker's other commits are, from a checkout that a sync just left unborn (an empty index). It is
-// refused with DefaultBranchNotAllowedError when the GitBranch may not write branch.
+// refused with DefaultBranchCreationNotAllowedError when the GitBranch may not write branch.
 //
 // The push's own failure comes back as an unbornDefaultPushError: a push refused because somebody
 // else created branch meanwhile (the advertisement, or the server's compare-and-swap at upload) is
@@ -97,7 +97,7 @@ func (w *BranchWorker) createUnbornDefault(
 		return fmt.Errorf("check spec.allowedGitBranches for %q: %w", branch, err)
 	}
 	if !allowed {
-		return &DefaultBranchNotAllowedError{Branch: branch}
+		return &DefaultBranchCreationNotAllowedError{Branch: branch}
 	}
 	signer, err := getCommitSigner(ctx, w.Client, provider)
 	if err != nil {

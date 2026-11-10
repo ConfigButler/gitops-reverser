@@ -354,7 +354,7 @@ func TestGitBranch_AnUnresolvedDefaultBranchStallsToo(t *testing.T) {
 
 // TestGitBranch_AnEmptyRepositorysDefaultBranchMustBeAllowed: in an empty repository whose HEAD
 // names main, a write branch that is not main starts from main, which is created first. A GitBranch
-// whose provider does not allow it to write main stalls with DefaultBranchNotAllowed; one that may,
+// whose provider does not allow it to write main stalls with DefaultBranchCreationNotAllowed; one that may,
 // or whose write branch is main, does not.
 func TestGitBranch_AnEmptyRepositorysDefaultBranchMustBeAllowed(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -384,10 +384,10 @@ func TestGitBranch_AnEmptyRepositorysDefaultBranchMustBeAllowed(t *testing.T) {
 			assert.Equal(t, configbutleraiv1alpha3.GitBranchParentUnborn, got.Status.Remote.Parent.State)
 			assert.Equal(t, "main", got.Status.Remote.Parent.Branch)
 			if !tc.wantStall {
-				assert.NotEqual(t, GitBranchReasonDefaultBranchNotAllowed, readyOf(got).Reason)
+				assert.NotEqual(t, GitBranchReasonDefaultBranchCreationNotAllowed, readyOf(got).Reason)
 				return
 			}
-			assert.Equal(t, GitBranchReasonDefaultBranchNotAllowed, readyOf(got).Reason)
+			assert.Equal(t, GitBranchReasonDefaultBranchCreationNotAllowed, readyOf(got).Reason)
 			assert.Equal(t, metav1.ConditionFalse, readyOf(got).Status)
 			assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeStalled))
 			assert.Contains(t, readyOf(got).Message, "default branch 'main'")

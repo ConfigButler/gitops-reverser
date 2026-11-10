@@ -571,7 +571,7 @@ Role also needs whatever team A's own workloads require.
 
 Start from a repository that has a first commit on `main`. A tenant may write only
 `teams/<namespace>/*`, so in an empty repository it cannot create the default branch its branch
-starts from, and its `GitBranch` reports `DefaultBranchNotAllowed` until `main` exists
+starts from, and its `GitBranch` reports `DefaultBranchCreationNotAllowed` until `main` exists
 ([starting the write branch](#starting-the-write-branch-from-another-branch-specparentbranch)).
 
 | Identity | Manages | Cannot |
@@ -1248,7 +1248,7 @@ at, and `Ready`;
 | `PushSessionFailed` | The credential cannot open a push session; a holder keeps the branch meanwhile |
 | `BranchConflict` | Another `GitBranch` holds this repository branch (`Stalled=True`) |
 | `ParentBranchNotFound` | Neither the branch nor its parent is on the remote (`Stalled=True`) |
-| `DefaultBranchNotAllowed` | The repository is empty; the branch would start from the default branch, which `spec.allowedGitBranches` does not let this `GitBranch` create (`Stalled=True`) |
+| `DefaultBranchCreationNotAllowed` | The repository is empty; the branch would start from the default branch, which `spec.allowedGitBranches` does not let this `GitBranch` create (`Stalled=True`) |
 | `RecoveringParentBranch` | The parent is back and the worker is publishing what it held |
 
 ### Deleting a `GitBranch`
@@ -1563,7 +1563,7 @@ spec:
   history starts on the default branch, which stays the default, and the first pull request into it
   carries everything written. That is a write to the default branch, so the provider's
   `allowedGitBranches` must allow it for this namespace (`branchPatterns: ["main", "reverser/edits"]`).
-  Without that the `GitBranch` reports `DefaultBranchNotAllowed`, its `GitTarget`s report
+  Without that the `GitBranch` reports `DefaultBranchCreationNotAllowed`, its `GitTarget`s report
   `GitBranchNotReady`, and nothing is written until the branch is allowed or someone pushes a first
   commit to it. This needs the server to name its default branch, which Git protocol v2 does
   (GitHub, Gitea, Forgejo); over v0 `spec.branch` is created as the repository's first branch.
