@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	ctrlreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -56,6 +57,11 @@ const (
 	// GitBranchReasonParentBranchNotFound is the stall for a branch that cannot be created: the
 	// remote carries neither it nor the parent it would be created from.
 	GitBranchReasonParentBranchNotFound = "ParentBranchNotFound"
+	// GitBranchReasonDefaultBranchCreationNotAllowed is the stall for a write branch in an empty repository
+	// whose default branch the branch worker would create first, with one empty commit, for the
+	// write branch to start from, but the GitProvider's spec.allowedGitBranches does not allow this
+	// GitBranch to write it.
+	GitBranchReasonDefaultBranchCreationNotAllowed = "DefaultBranchCreationNotAllowed"
 	// GitBranchReasonRecoveringParentBranch is progress while the parent branch has been found again
 	// but the branch worker has not yet published the writes it kept while the parent was missing.
 	GitBranchReasonRecoveringParentBranch = "RecoveringParentBranch"
@@ -233,13 +239,14 @@ func (r *GitBranchReconciler) evaluate(
 	if !held {
 		return rd, 0, nil
 	}
-	heldFor := r.observeWorker(st, rd, branch, key, &provider)
+	heldFor := r.observeWorker(ctx, st, rd, branch, key, &provider)
 	return rd, heldFor, nil
 }
 
 // observeWorker publishes what the holder's branch worker last proved about the remote, and the
 // gates that come from it: a parent branch that is missing, and work held back while it was.
 func (r *GitBranchReconciler) observeWorker(
+	ctx context.Context,
 	st *reconcileStatus,
 	rd *readiness,
 	branch *configbutleraiv1alpha3.GitBranch,
@@ -259,6 +266,9 @@ func (r *GitBranchReconciler) observeWorker(
 		observed.ParentRequested == branch.Spec.ParentBranch && !differentRepository(observed.Repo, repo) {
 		rd.stalled(GitBranchReasonParentBranchNotFound, parentBranchNotFoundMessage(branch, observed.ParentBranch))
 	}
+	if seen && !differentRepository(observed.Repo, repo) {
+		r.gateUnbornDefault(ctx, rd, branch, provider, observed)
+	}
 	if r.WorkerManager == nil {
 		return heldFor
 	}
@@ -270,6 +280,39 @@ func (r *GitBranchReconciler) observeWorker(
 	rd.progressingIf(open && found, metav1.ConditionFalse, GitBranchReasonRecoveringParentBranch,
 		"The parent branch is on the remote again; the branch worker is publishing the work it held back")
 	return heldFor
+}
+
+// gateUnbornDefault stalls a GitBranch whose write branch would start from an empty repository's
+// default branch that it may not create: the worker creates that branch with one empty commit only
+// when spec.allowedGitBranches allows this GitBranch to write it, and holds the writes otherwise.
+// Allowed, the worker creates it on its next look, so nothing is reported.
+func (r *GitBranchReconciler) gateUnbornDefault(
+	ctx context.Context,
+	rd *readiness,
+	branch *configbutleraiv1alpha3.GitBranch,
+	provider *configbutleraiv1alpha3.GitProvider,
+	observed git.RemoteObservation,
+) {
+	unborn := observed.ParentBranch
+	if observed.ParentState != git.ParentUnborn || unborn == "" || unborn == branch.Spec.Branch ||
+		branch.Spec.ParentBranch != "" {
+		return
+	}
+	allowed, err := authz.GitBranchMayWrite(ctx, r.Client, client.ObjectKeyFromObject(branch), provider, unborn)
+	if err != nil {
+		logf.FromContext(ctx).V(1).Info("Could not check spec.allowedGitBranches for the default branch",
+			"defaultBranch", unborn, "error", err.Error())
+		return
+	}
+	if allowed {
+		return
+	}
+	rd.stalled(GitBranchReasonDefaultBranchCreationNotAllowed, fmt.Sprintf(
+		"The repository is empty and its default branch '%s' does not exist yet. Branch '%s' starts from "+
+			"it, so it is created first with one empty commit, but GitProvider '%s' does not allow this "+
+			"GitBranch to write '%s' (spec.allowedGitBranches). Allow '%s' there, or push a first commit to "+
+			"'%s'; nothing is written until then",
+		unborn, branch.Spec.Branch, branch.GitProviderKey(), unborn, unborn, unborn))
 }
 
 // lastPushNotice is when a Git host last reported a push to the repository branch key, which this

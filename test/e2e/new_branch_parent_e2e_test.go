@@ -46,6 +46,9 @@ var _ = Describe("New write branch starts from its parent", Label("manager"), fu
 	Context("with spec.parentBranch naming a branch that does not exist yet", Ordered, func() {
 		describeMissingParentRecoverySpec()
 	})
+	Context("in an empty repository with spec.parentBranch omitted", Ordered, Label("empty-repo"), func() {
+		describeEmptyRepositoryBootstrapSpec()
+	})
 })
 
 const parentBranchSelectorLabel = "e2e.configbutler.ai/parent-branch"
@@ -191,6 +194,112 @@ func describeMissingParentRecoverySpec() {
 		Eventually(func(g Gomega) {
 			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).NotTo(
 				BeElementOf("ParentBranchNotFound", "RecoveringParentBranch"))
+			g.Expect(readyReasonOf(g, destName, testNs)).NotTo(Equal("GitBranchNotReady"))
+		}, 2*time.Minute, 3*time.Second).Should(Succeed())
+	})
+}
+
+// describeEmptyRepositoryBootstrapSpec: an empty Gitea repository's HEAD names main, and Gitea
+// speaks protocol v2, so the GitBranch knows it. The write branch is not main, so it starts from
+// main, which is created first with one empty commit. Creating it is a write to main: while the
+// GitProvider does not allow that, the GitBranch reports DefaultBranchCreationNotAllowed, its GitTarget
+// GitBranchNotReady, and nothing is written. Allowing main is the whole fix: the held edit lands on
+// the write branch, on top of main's empty first commit.
+func describeEmptyRepositoryBootstrapSpec() {
+	const (
+		providerName = "empty-repo-provider"
+		destName     = "empty-repo-dest"
+		ruleName     = "empty-repo-rule"
+		gitPath      = "apps/empty-repo"
+	)
+	var (
+		testNs      string
+		repo        *RepoArtifacts
+		writeBranch string
+	)
+
+	applyProvider := func(patterns ...string) {
+		GinkgoHelper()
+		quoted := make([]string, 0, len(patterns))
+		for _, p := range patterns {
+			quoted = append(quoted, fmt.Sprintf("%q", p))
+		}
+		provider := fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
+kind: GitProvider
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  url: %s
+  allowedGitBranches:
+    - consumerNamespaces: {from: Same}
+      branchPatterns: [%s]
+  secretRef:
+    name: %s
+`, providerName, testNs, repo.RepoURLHTTP, strings.Join(quoted, ", "), repo.GitSecretHTTP)
+		out, err := kubectlRunWithStdin(testNs, provider, "apply", "-f", "-")
+		Expect(err).NotTo(HaveOccurred(), "apply GitProvider: %s", out)
+		verifyResourceStatus("gitprovider", providerName, testNs, "True", "Succeeded", "")
+	}
+
+	BeforeAll(func() {
+		testNs = testNamespaceFor("manager-empty-repo")
+		_, _ = kubectlRun("create", "namespace", testNs)
+		writeBranch = fmt.Sprintf("reverser-e2e-%d", GinkgoRandomSeed())
+		repo = SetupRepo(resolveE2EContext(), testNs, fmt.Sprintf("e2e-empty-repo-%d", GinkgoRandomSeed()))
+		_, err := kubectlRunInNamespace(testNs, "apply", "-f", repo.SecretsYAML)
+		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to test namespace")
+		applySOPSAgeKeyToNamespace(testNs)
+		applyProvider(writeBranch)
+	})
+
+	AfterAll(func() {
+		cleanupWatchRule(ruleName, testNs)
+		cleanupGitTarget(destName, testNs)
+		deleteGitProvider(testNs, providerName)
+		cleanupNamespace(testNs)
+	})
+
+	It("creates main first, once it may, and starts the requested branch from it", func() {
+		createGitTargetWithParentBranch(destName, testNs, providerName, gitPath, writeBranch, "")
+		branchName := gitBranchName(providerName, writeBranch)
+		applyParentSpecWatchRule(testNs, ruleName, destName)
+		applyParentConfigMap(testNs, "first-write")
+
+		By("main may not be written: the GitBranch and its GitTarget say so, and nothing is written")
+		Eventually(func(g Gomega) {
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.state")).To(Equal("Unborn"))
+			g.Expect(gitBranchRemoteField(g, branchName, testNs, "parent.branch")).To(Equal("main"),
+				"Gitea answers protocol v2 ls-refs unborn")
+			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).To(Equal("DefaultBranchCreationNotAllowed"))
+			g.Expect(readyReasonOf(g, destName, testNs)).To(Equal("GitBranchNotReady"))
+		}, 3*time.Minute, 3*time.Second).Should(Succeed())
+		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, "main")).To(BeEmpty(), "main is not created")
+		Expect(remoteBranchHeadOf(Default, repo.CheckoutDir, writeBranch)).To(BeEmpty(), "nothing is written")
+
+		By("allowing main creates it with one empty commit, and the held edit lands on top of it")
+		applyProvider("main", writeBranch)
+		editPath := path.Join(gitPath, testNs, "configmaps", "first-write.yaml")
+		Eventually(func(g Gomega) {
+			mainTip := remoteBranchHeadOf(g, repo.CheckoutDir, "main")
+			g.Expect(mainTip).NotTo(BeEmpty(), "main is created")
+			tip := remoteBranchHeadOf(g, repo.CheckoutDir, writeBranch)
+			g.Expect(tip).NotTo(BeEmpty(), "the write branch is created")
+			_, fetchErr := gitRun(repo.CheckoutDir, "fetch", "origin", "main", writeBranch)
+			g.Expect(fetchErr).NotTo(HaveOccurred())
+			roots, revErr := gitRun(repo.CheckoutDir, "rev-list", "--max-parents=0", tip)
+			g.Expect(revErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(roots)).To(Equal(mainTip), "the write branch's history starts at main")
+			files, lsErr := gitRun(repo.CheckoutDir, "ls-tree", "-r", "--name-only", mainTip)
+			g.Expect(lsErr).NotTo(HaveOccurred())
+			g.Expect(strings.TrimSpace(files)).To(BeEmpty(), "main's first commit is empty")
+			_, showErr := gitRun(repo.CheckoutDir, "cat-file", "-e", tip+":"+editPath)
+			g.Expect(showErr).NotTo(HaveOccurred(), "the held edit is on the write branch")
+		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(gitBranchReadyReasonOf(g, branchName, testNs)).NotTo(
+				BeElementOf("DefaultBranchCreationNotAllowed", "RecoveringParentBranch"))
 			g.Expect(readyReasonOf(g, destName, testNs)).NotTo(Equal("GitBranchNotReady"))
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
 	})

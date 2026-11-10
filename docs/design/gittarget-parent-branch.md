@@ -2,9 +2,9 @@
 
 > **design**: built in #407, with #408's `spec.parentBranch` folded in and the hardening pass
 > ([`gittarget-parent-hardening.md`](gittarget-parent-hardening.md), done) applied. This page
-> records the contract as built and the reasoning behind it. Deferred:
-> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
-> [`gittarget-parent-observation.md`](gittarget-parent-observation.md).
+> records the contract as built and the reasoning behind it. Empty repositories:
+> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) (built in #480).
+> Deferred: [`gittarget-parent-observation.md`](gittarget-parent-observation.md).
 > Related: [`push-notification-and-reconcile-trigger.md`](push-notification-and-reconcile-trigger.md),
 > [`../definitions.md`](../definitions.md), and `architecture.md` (Ground rules; "A branch that does
 > not exist yet").
@@ -57,7 +57,7 @@ check is what protects the first write.
 | no | yes | compare against the parent; create the write branch from its tip, checked at publication |
 | no | no, **set** | refuse: `Ready=False`, `Stalled=True`, reason `ParentBranchNotFound`; nothing written, no orphan branch |
 | no | no, omitted, not empty (`HEAD` resolves to no branch, or only tags) | refuse the same way: `ParentBranchNotFound`, with a message to fix `HEAD` or set the field |
-| no | no, omitted, empty repository (no refs at all) | unborn `HEAD`; the first commit is a root commit on the write branch |
+| no | no, omitted, empty repository (no refs at all) | the write branch is the default branch, or the server does not name it: the first commit is a root commit on the write branch. Otherwise the default branch is created first with one empty commit if allowed, else `DefaultBranchCreationNotAllowed` |
 
 - **Recovery from a missing parent** is held open by the branch worker until the held work lands,
   whatever the parent's observed state. It latches when an attempt fails on the parent and clears
@@ -148,9 +148,12 @@ The cost of the name: it can never hold a commit or a tag.
 ## Implicit when omitted, strict when set
 
 Omitted is lenient: the default branch, and a root commit when the repository is empty, because
-that is the first-install case. Set is strict: it must exist, or the target refuses. Which branch
-an empty repository's first commit may create is the open question in
-[`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md).
+that is the first-install case. Set is strict: it must exist, or the target refuses.
+
+In an empty repository whose server names its default branch, a write branch that is not the
+default starts from it: the default branch is created first with one empty commit, when the
+provider allows this `GitBranch` to write it, and the `GitBranch` reports `DefaultBranchCreationNotAllowed`
+otherwise. See [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md).
 
 **Deferred, additive when someone asks:**
 

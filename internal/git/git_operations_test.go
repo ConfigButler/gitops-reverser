@@ -191,7 +191,8 @@ func TestCheckRepo_PublicConnectivityEmpty(t *testing.T) {
 	skipIfPublicNetworkUnavailable(t, err)
 
 	require.NoError(t, err)
-	assert.Empty(t, repoInfo.DefaultBranch)
+	// GitHub answers protocol v2 ls-refs "unborn": the empty repository's HEAD names main.
+	assert.Equal(t, &BranchInfo{ShortName: "main", Unborn: true}, repoInfo.DefaultBranch)
 	assert.Equal(t, 0, repoInfo.RemoteBranchCount)
 
 	localPath := filepath.Join(tempDir, "local")
@@ -200,6 +201,7 @@ func TestCheckRepo_PublicConnectivityEmpty(t *testing.T) {
 	require.NotNil(t, pullReport)
 	assert.False(t, pullReport.ExistsOnRemote)
 	assert.True(t, pullReport.HEAD.Unborn)
+	assert.Equal(t, "main", pullReport.ParentBranch, "the default branch the server reported")
 
 	// Verify repository was cloned
 	localRepo, err := git.PlainOpen(localPath)

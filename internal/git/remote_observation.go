@@ -55,9 +55,10 @@ type RemoteObservation struct {
 	// together with its absence. Empty while the branch exists.
 	ParentState ParentState
 	// ParentBranch and ParentCommit name that parent and where it is. ParentCommit is empty
-	// unless ParentState is ParentFound; ParentBranch is empty for ParentUnborn. For an omitted
-	// parent that is ParentMissing, ParentBranch is the branch the remote's HEAD names, or empty
-	// when it names none.
+	// unless ParentState is ParentFound. For ParentUnborn, ParentBranch is the branch the empty
+	// repository's HEAD names, which only a protocol v2 server reports (see unbornHead), and empty
+	// otherwise. For an omitted parent that is ParentMissing, ParentBranch is the branch the
+	// remote's HEAD names, or empty when it names none.
 	ParentBranch string
 	ParentCommit string
 	// ParentRequested is spec.parentBranch as the observing operation read it: empty for the

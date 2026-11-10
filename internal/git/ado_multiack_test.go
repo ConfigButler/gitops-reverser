@@ -63,6 +63,11 @@ type adoSimulator struct {
 	// around, when set, serves each request in place of the backend and decides whether and how
 	// to call it: a test holds a request open, or lets the backend apply it and swallows the reply.
 	around atomic.Pointer[func(w http.ResponseWriter, r *http.Request, backend http.Handler)]
+
+	// protocolV2, when set, keeps the client's Git-Protocol header, so a client that asks for
+	// protocol v2 gets it, as from GitHub. Off, every request is forced to v0 (see
+	// startGitHTTPServer), which is what the ADO simulator and the request ledger measure.
+	protocolV2 atomic.Bool
 }
 
 // gitHTTPBackend locates canonical git's CGI server, skipping the test when it is unavailable.
@@ -127,8 +132,10 @@ func startGitHTTPServer(tb testing.TB, projectRoot, repoDir string, enforceMulti
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Force protocol v0: see the doc comment above.
-		r.Header.Del("Git-Protocol")
+		// Force protocol v0 unless the test opted into v2: see the doc comment above.
+		if !sim.protocolV2.Load() {
+			r.Header.Del("Git-Protocol")
+		}
 
 		// Count what crosses the wire, in both directions, for every request. The counting
 		// wrappers are installed before anything else touches the request so a rejection is

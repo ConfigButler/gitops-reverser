@@ -48,7 +48,15 @@ type GitBranchSpec struct {
 
 	// ParentBranch is the branch spec.branch is created from, and compared
 	// against while spec.branch does not exist on the remote. Omitted, it is the
-	// remote's default branch, or no history at all in an empty repository.
+	// remote's default branch.
+	//
+	// In an empty repository with this omitted, a spec.branch that is not the
+	// default branch starts from it: the default branch is created first, with
+	// one empty commit, when spec.allowedGitBranches lets this GitBranch write
+	// it. Otherwise this GitBranch reports Stalled=True, reason
+	// DefaultBranchCreationNotAllowed, and writes nothing. A server that does
+	// not name its default branch (Git protocol v0) gets spec.branch as its
+	// first branch.
 	//
 	// When set, it must exist on the remote for spec.branch to be created;
 	// otherwise this GitBranch reports Stalled=True, reason ParentBranchNotFound,
@@ -171,7 +179,8 @@ const (
 	// branch it carries.
 	GitBranchParentMissing GitBranchParentState = "Missing"
 	// GitBranchParentUnborn means the repository is empty, with no refs at all (tags included), and
-	// no parent is configured, so the first commit starts the branch with no history.
+	// no parent is configured. The first commit starts the branch with no history when it is the
+	// default branch; otherwise the default branch is created first, with one empty commit.
 	GitBranchParentUnborn GitBranchParentState = "Unborn"
 )
 
@@ -180,14 +189,15 @@ const (
 type GitBranchParentStatus struct {
 	// State is what the branch would be created from: "Found" (the parent branch's
 	// tip), "Missing" (the parent branch is not on the remote, so nothing is
-	// written) or "Unborn" (an empty repository and no spec.parentBranch, so the
-	// first commit has no history).
+	// written) or "Unborn" (an empty repository and no spec.parentBranch: the
+	// default branch is created first, unless it is spec.branch).
 	// +required
 	State GitBranchParentState `json:"state"`
 
 	// Branch is the parent branch: spec.parentBranch, or the remote's default
-	// branch when that is omitted. Empty when state is "Unborn", and when the
-	// remote names no default branch.
+	// branch when that is omitted. When state is "Unborn" it is the branch the
+	// empty repository's HEAD names, which only a server speaking Git protocol
+	// v2 reports. Empty when the remote names no default branch.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 

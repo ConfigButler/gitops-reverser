@@ -352,6 +352,50 @@ func TestGitBranch_AnUnresolvedDefaultBranchStallsToo(t *testing.T) {
 	assert.Contains(t, readyOf(got).Message, "spec.parentBranch")
 }
 
+// TestGitBranch_AnEmptyRepositorysDefaultBranchMustBeAllowed: in an empty repository whose HEAD
+// names main, a write branch that is not main starts from main, which is created first. A GitBranch
+// whose provider does not allow it to write main stalls with DefaultBranchCreationNotAllowed; one that may,
+// or whose write branch is main, does not.
+func TestGitBranch_AnEmptyRepositorysDefaultBranchMustBeAllowed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		allowed   []configbutleraiv1alpha3.BranchPattern
+		branch    string
+		wantStall bool
+	}{
+		"main not allowed":         {allowed: []configbutleraiv1alpha3.BranchPattern{"edits"}, branch: "edits", wantStall: true},
+		"main allowed":             {allowed: []configbutleraiv1alpha3.BranchPattern{"edits", "main"}, branch: "edits"},
+		"the write branch is main": {allowed: []configbutleraiv1alpha3.BranchPattern{"main"}, branch: "main"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newGitBranchFixture(t, branchProvider("platform", "acme", tc.allowed...),
+				branchObject("platform", "edits", "acme", tc.branch, time.Hour))
+			f.reconcile(t, "platform", "edits")
+			key := k8stypes.NamespacedName{Namespace: "platform", Name: "edits"}
+			require.NoError(t, f.workers.EnsureWorker(context.Background(), git.WorkerRequest{
+				GitBranch: key, Provider: k8stypes.NamespacedName{Namespace: "platform", Name: "acme"},
+				Branch: tc.branch, Repo: git.RepoIdentity{ProviderUID: "uid-acme", URL: gitBranchTestURL},
+			}))
+			worker, _ := f.workers.WorkerForGitBranch(key)
+
+			worker.RecordUnbornDefaultBranchForTest("main")
+			got := f.reconcile(t, "platform", "edits")
+			require.NotNil(t, got.Status.Remote)
+			require.NotNil(t, got.Status.Remote.Parent)
+			assert.Equal(t, configbutleraiv1alpha3.GitBranchParentUnborn, got.Status.Remote.Parent.State)
+			assert.Equal(t, "main", got.Status.Remote.Parent.Branch)
+			if !tc.wantStall {
+				assert.NotEqual(t, GitBranchReasonDefaultBranchCreationNotAllowed, readyOf(got).Reason)
+				return
+			}
+			assert.Equal(t, GitBranchReasonDefaultBranchCreationNotAllowed, readyOf(got).Reason)
+			assert.Equal(t, metav1.ConditionFalse, readyOf(got).Status)
+			assert.True(t, conditionIsTrue(got.Status.Conditions, ConditionTypeStalled))
+			assert.Contains(t, readyOf(got).Message, "default branch 'main'")
+			assert.Contains(t, readyOf(got).Message, "spec.allowedGitBranches")
+		})
+	}
+}
+
 // TestGitBranch_ARepointedProviderMovesTheClaim: a GitProvider recreated against another repository
 // is another key, so the GitBranch's claim moves with it.
 func TestGitBranch_ARepointedProviderMovesTheClaim(t *testing.T) {

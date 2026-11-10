@@ -181,6 +181,26 @@ func GitBranchClaimAdmitted(
 	return Decision{Allowed: true}, nil
 }
 
+// GitBranchMayWrite reports whether the GitBranch named gitBranch may write branch through provider:
+// the same spec.allowedGitBranches decision as GitBranchClaimAdmitted, for a branch other than its
+// own spec.branch. The branch worker asks it before it creates the default branch of an empty
+// repository for its write branch to start from, and the GitBranch reconciler asks it to say why it
+// did not. A non-NotFound read of the Namespace is returned as err.
+func GitBranchMayWrite(
+	ctx context.Context,
+	reader client.Reader,
+	gitBranch k8stypes.NamespacedName,
+	provider *configv1alpha3.GitProvider,
+	branch string,
+) (bool, error) {
+	nsLabels, err := namespaceLabels(ctx, reader, gitBranch.Namespace)
+	if err != nil {
+		return false, err
+	}
+	admission, _ := provider.AdmitsGitBranch(gitBranch, nsLabels, branch)
+	return admission.Admitted && admission.Allowed, nil
+}
+
 // ApplierClaimAdmitted reports whether an applier claim may hold its applier through the KubeProvider
 // it names (spec.kubeProviderRef): a grant in that provider's spec.allowedApplierClaims admits the
 // applier claim's namespace, and the applier lives in one of the applierNamespaces those grants

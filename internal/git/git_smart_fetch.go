@@ -6,11 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/protocol/capability"
+	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -102,19 +105,36 @@ func SmartFetchFrom(
 	parent string,
 	auth []gitclient.Option,
 ) (plumbing.ReferenceName, error) {
+	fetched, _, err := smartFetch(ctx, repo, target, parent, auth)
+	return fetched, err
+}
+
+// smartFetch is SmartFetchFrom, and for an empty repository also the branch its HEAD names when the
+// server reports it (see unbornHead). That second name is empty whenever the first is not.
+func smartFetch(
+	ctx context.Context,
+	repo *git.Repository,
+	target plumbing.ReferenceName,
+	parent string,
+	auth []gitclient.Option,
+) (plumbing.ReferenceName, plumbing.ReferenceName, error) {
 	remoteName := "origin"
 	remote, err := repo.Remote(remoteName)
 	if err != nil {
-		return "", fmt.Errorf("failed to get remote %s: %w", remoteName, err)
+		return "", "", fmt.Errorf("failed to get remote %s: %w", remoteName, err)
 	}
 
 	// 1. Audit: List refs
-	refs, err := listRemoteRefs(ctx, remote, auth)
+	urls := remote.Config().URLs
+	if len(urls) == 0 {
+		return "", "", fmt.Errorf("remote %s has no URL configured", remoteName)
+	}
+	refs, unborn, err := listRemoteRefs(ctx, urls[0], auth)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if len(refs) == 0 && parent == "" {
-		return "", nil
+		return "", unborn, nil
 	}
 
 	// 2. Analyze: Find default branch and check target existence
@@ -122,7 +142,7 @@ func SmartFetchFrom(
 
 	defaultFull, defaultShort, err := fallbackBranch(refs, parent, headFull, headShort, targetExists)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// 3. Plan: Build RefSpecs based on analysis
@@ -136,20 +156,20 @@ func SmartFetchFrom(
 	case defaultFull != "":
 		result = plumbing.ReferenceName(defaultFull)
 	default:
-		return "", nil
+		return "", "", nil
 	}
 
 	// 4. Execute: Fetch
 	if len(refSpecs) > 0 {
 		if err := fetchBounded(ctx, repo, remoteName, refSpecs, auth); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 
 	// 5. Repair: Fix local symbolic HEAD. It mirrors the remote's HEAD, never a configured parent.
 	repairRemoteSymbolicHead(repo, remoteName, headShort)
 
-	return result, nil
+	return result, "", nil
 }
 
 // fallbackBranch is the branch to fall back on, and to fetch as the safety net: the configured
@@ -186,20 +206,94 @@ func configuredParent(refs []*plumbing.Reference, parent string) (string, string
 }
 
 // listRemoteRefs reads the remote's advertisement, bounded by gitCallTimeout: see network_bound.go.
+// An empty repository is not an error: it has no refs, and the second result is the branch its HEAD
+// names when the server says so (see unbornHead), or empty when it does not.
 func listRemoteRefs(
-	ctx context.Context, remote *git.Remote, auth []gitclient.Option,
-) ([]*plumbing.Reference, error) {
+	ctx context.Context, remoteURL string, auth []gitclient.Option,
+) ([]*plumbing.Reference, plumbing.ReferenceName, error) {
 	ctx, cancel := boundGitCall(ctx)
 	defer cancel()
-	refs, err := remote.ListContext(ctx, &git.ListOptions{ClientOptions: boundToContext(ctx, auth)})
+	refs, unborn, err := advertise(ctx, remoteURL, boundToContext(ctx, auth))
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to list remote refs: %w", boundedCallError(ctx, err))
+	}
+	return refs, unborn, nil
+}
+
+// advertise is Remote.List with its default options (peeled refs left out), on a session of its
+// own so that an empty repository can be asked one more question on it. Remote.List returns
+// ErrEmptyRemoteRepository before it builds the transport.RemoteRefs whose Unborn field would
+// carry the answer (go-git v6.0.0-beta.1).
+func advertise(
+	ctx context.Context, rawURL string, auth []gitclient.Option,
+) ([]*plumbing.Reference, plumbing.ReferenceName, error) {
+	endpoint, err := transport.ParseURL(rawURL)
+	if err != nil {
+		return nil, "", err
+	}
+	session, err := gitclient.New(auth...).Handshake(ctx, &transport.Request{
+		URL:      endpoint,
+		Command:  transport.UploadPackService,
+		Protocol: config.DefaultProtocolVersion,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = session.Close() }()
+
+	advertised, err := session.GetRemoteRefs(ctx, nil)
 	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-		return nil, nil // Valid state, not an error
+		head, err := unbornHead(ctx, session)
+		return nil, head, err
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to list remote refs: %w", boundedCallError(ctx, err))
+		return nil, "", err
 	}
-	return refs, nil
+	var refs []*plumbing.Reference
+	for _, ref := range advertised.References {
+		if !ref.Name().IsPeeled() {
+			refs = append(refs, ref)
+		}
+	}
+	return refs, "", nil
 }
+
+// unbornHead is the branch an empty repository's HEAD names, read from a protocol v2 ls-refs with
+// the "unborn" argument (git 2.31 and later; GitHub answers it). It is empty when the session
+// speaks v0 or v1, when the server does not offer "unborn", and when the repository is no longer
+// empty by the time it answers: the name is evidence, never a guess.
+//
+// A server that offers "unborn" and then fails the call is an error, not an empty answer: the name
+// decides what the worker writes (unborn_default_branch.go), and reading a transient failure as
+// "the server does not say" would start the write branch as the repository's first branch.
+//
+// go-git sends the same request inside GetRemoteRefs and then discards the answer for an empty
+// repository, so this asks again through its public Commander. Delete it once a go-git release
+// reports the unborn HEAD of an empty repository.
+func unbornHead(ctx context.Context, session transport.Session) (plumbing.ReferenceName, error) {
+	commander, ok := session.(transport.Commander)
+	if !ok || !slices.Contains(session.Capabilities().Get(capability.LsRefs), lsRefsUnborn) {
+		return "", nil
+	}
+	out := &packp.LsRefsOutput{}
+	if err := commander.Command(ctx, "ls-refs", &packp.LsRefsArgs{Symrefs: true, Unborn: true}, out); err != nil {
+		return "", fmt.Errorf("read the empty repository's unborn HEAD: %w", err)
+	}
+	var head plumbing.ReferenceName
+	for _, ref := range out.References {
+		switch {
+		case ref.Type() == plumbing.HashReference:
+			return "", nil // it gained a ref since the advertisement: HEAD may well be born now
+		case ref.Name() == plumbing.HEAD && ref.Target().IsBranch():
+			head = ref.Target()
+		}
+	}
+	return head, nil
+}
+
+// lsRefsUnborn is the ls-refs feature a server offers when it reports an unborn HEAD. Sending the
+// argument to a server that does not offer it fails the command.
+const lsRefsUnborn = "unborn"
 
 // fetchBounded is SmartFetch's transfer, bounded by gitCallTimeout: see network_bound.go.
 func fetchBounded(

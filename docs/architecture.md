@@ -545,7 +545,8 @@ it. Every field but `spec.allowedGitTargets` is immutable:
 - `spec.parentBranch`: optional branch the write branch is created from and compared against while
   it does not exist. Omitted means the remote's default branch. An explicit parent must exist when
   creating the write branch (`ParentBranchNotFound`). The grants need not allow it, because it is
-  only read.
+  only read. The exception is an empty repository with the parent omitted: its default branch is
+  created first, which is a write, so the grants must allow it (`DefaultBranchCreationNotAllowed`).
 - `spec.allowedGitTargets`: which namespaces' `GitTarget`s may write through it. Omitted, its own
   namespace's; a written list replaces that default, and `[]` admits none.
 - `status.repository`: the normalized repository URL, half of the key one `GitBranch` holds.
@@ -1611,8 +1612,13 @@ parent like a moved branch: fetch, reset, replay, check again. A branch somebody
 meantime is a moved remote too, so the replay builds on their commit instead of overwriting it; that
 holds when the server refuses our upload too, because the fallback reads both refs from one
 advertisement. A cycle planned on an empty repository that has since gained refs is refused at the
-advertisement (`RepositoryNotEmptyError`) and replayed, never pushed as an orphan. A parent that is
-missing, or a default branch that does not resolve, opens parent recovery on the worker: it
+advertisement (`RepositoryNotEmptyError`) and replayed, never pushed as an orphan. In an **empty
+repository** whose server names its unborn default branch (protocol v2 `ls-refs`, read by
+`unbornHead`), a write branch that is not that branch starts from it: the worker pushes the default
+branch first, alone, with one empty commit, and from then on the write branch is an ordinary absent
+branch with a found parent. Over v0 the server names nothing and the write branch is the first
+branch. A parent that is missing, a default branch that does not resolve, or an empty repository's
+default branch the grants do not let the `GitBranch` create, opens parent recovery on the worker: it
 probes on its own backoff and publishes what it held back once the parent exists (see
 `docs/design/gittarget-parent-branch.md`). Proved end to end by the e2e spec "New write branch
 starts from its parent"; that publication alone finds a moved parent is proved by worker tests

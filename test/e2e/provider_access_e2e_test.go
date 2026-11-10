@@ -46,6 +46,13 @@ var _ = Describe("Manager branch grants", Label("manager"), Ordered, func() {
 		_, err := kubectlRunInNamespace(platformNs, "apply", "-f", repo.SecretsYAML)
 		Expect(err).NotTo(HaveOccurred(), "failed to apply git secrets to the platform namespace")
 
+		// The platform owns main and initializes it. A tenant may write only teams/<ns>/*, so in an
+		// empty repository it could not create the default branch its branch starts from, and its
+		// GitBranch would report DefaultBranchCreationNotAllowed.
+		By("the platform pushes a first commit to main")
+		commitFilesToBranchFromOutside(repo, platformNs, "main", "e2e: the platform initializes main",
+			map[string]string{"README.md": "shared repository\n"})
+
 		By("creating the platform's GitProvider: main for itself, teams/{consumer.namespace}/* for tenants")
 		_, err = kubectlRunWithStdin("", fmt.Sprintf(`apiVersion: configbutler.ai/v1alpha3
 kind: GitProvider
