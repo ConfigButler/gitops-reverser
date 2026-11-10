@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/assert"
@@ -175,6 +176,54 @@ func TestBranchWorker_AnEmptyRepositoryGetsItsDefaultBranchFirst(t *testing.T) {
 
 	liveWrite(f.loop, "cm1")
 	f.assertFeatureStartsOnInitializedTrunk()
+}
+
+// The default branch is prepared when the worker picks up work for the branch, before any change:
+// a write that changes nothing creates it, and the write branch still waits for a change. A refresh
+// only looks.
+func TestBranchWorker_TheDefaultBranchIsCreatedWhenWorkIsPickedUp(t *testing.T) {
+	f := emptyTrunkRepoOverV2(t, "unborn-default-eager")
+	f.allowBranches("trunk", "feature")
+
+	f.loop.handleRefreshRequest(&RefreshRequest{Target: refreshTarget(), MaxAge: time.Nanosecond})
+	assert.True(t, f.ref("trunk").IsZero(), "a refresh only looks")
+	assert.Equal(t, ParentUnborn, f.observed().ParentState)
+
+	deleted := configMapTargetEvent("never-written", "alice", newBranchTarget)
+	deleted.Operation = "DELETE"
+	deleted.Object = nil
+	f.loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{deleted}}})
+
+	trunk := f.ref("trunk")
+	require.False(t, trunk.IsZero(), "work picked up, nothing changed: trunk is created")
+	assert.Empty(t, f.parentOf(trunk))
+	assert.True(t, f.ref("feature").IsZero(), "the write branch waits for a change")
+	assert.Equal(t, ParentFound, f.observed().ParentState)
+}
+
+// A default branch somebody creates by hand, while this GitBranch may not create it, is enough: the
+// held write lands on their branch, and nothing of ours is added to it.
+func TestBranchWorker_ADefaultBranchCreatedByHandIsPickedUp(t *testing.T) {
+	f := emptyTrunkRepoOverV2(t, "unborn-default-by-hand")
+	f.allowBranches("feature")
+
+	liveWrite(f.loop, "cm1")
+	assert.True(t, f.ref("trunk").IsZero(), "not allowed: trunk is not created")
+	assert.True(t, f.ref("feature").IsZero(), "nothing is written")
+	require.Len(t, f.loop.pendingWrites, 1, "the write is held")
+	assert.Equal(t, ParentUnborn, f.observed().ParentState)
+	assert.Equal(t, "trunk", f.observed().ParentBranch)
+
+	theirs := simulateClientCommitOnDisk(t, f.repoDir, "trunk", "README.md", "created by hand\n")
+	pastProbeDeadline(f.worker)
+	f.loop.runParentProbe()
+
+	assert.Equal(t, theirs, f.ref("trunk"), "their trunk, untouched")
+	require.False(t, f.ref("feature").IsZero(), "the held write is published")
+	assert.Equal(t, theirs.String(), gitIn(t, f.repoDir, "merge-base", "feature", "trunk"), "on their trunk")
+	assert.Contains(t, gitIn(t, f.repoDir, "ls-tree", "-r", "--name-only", "feature"), cmFile("cm1"))
+	assert.NotContains(t, gitIn(t, f.repoDir, "log", "--format=%s", "feature"), "chore: initialize repository")
+	assert.Empty(t, f.loop.pendingWrites)
 }
 
 // The GitBranch may not write the default branch: nothing is written, the repository is reported

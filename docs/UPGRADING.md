@@ -12,9 +12,10 @@ We are pre-1.0, so breaking changes bump the **minor** version (release-please i
 In an empty repository with `spec.parentBranch` omitted, a `GitBranch` whose `spec.branch` is not
 the repository's default branch no longer creates `spec.branch` as the repository's first branch.
 The default branch the server names (`main` on GitHub, Gitea and Forgejo) is created first, with one
-empty commit authored and signed like the provider's other commits, and `spec.branch` starts from
-it. On Gitea and Forgejo the first branch pushed became the default branch, so a review branch used
-to become the default, and later branches built on it.
+empty commit authored and signed like the provider's other commits, as soon as the worker picks up
+work for the branch, and `spec.branch` starts from it once there is a change. On Gitea and Forgejo
+the first branch pushed became the default branch, so a review branch used to become the default,
+and later branches built on it.
 
 That is a write to the default branch, so the provider's `spec.allowedGitBranches` must allow it for
 the `GitBranch`'s namespace. If it does not, the `GitBranch` reports `Ready=False`, `Stalled=True`,

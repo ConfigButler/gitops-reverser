@@ -1561,7 +1561,10 @@ spec:
   no history. When `spec.branch` is another branch, the default branch is created first, with one
   empty commit authored and signed like every other commit, and `spec.branch` starts from it: the
   history starts on the default branch, which stays the default, and the first pull request into it
-  carries everything written. That is a write to the default branch, so the provider's
+  carries everything written. The default branch is created as soon as the worker picks up work for
+  the branch, even work that changes nothing, so a misconfigured credential or signing key shows up
+  at setup; `spec.branch` still waits for a change
+  ([the tests](../internal/git/unborn_head_test.go)). That is a write to the default branch, so the provider's
   `allowedGitBranches` must allow it for this namespace (`branchPatterns: ["main", "reverser/edits"]`).
   Without that the `GitBranch` reports `DefaultBranchCreationNotAllowed`, its `GitTarget`s report
   `GitBranchNotReady`, and nothing is written until the branch is allowed or someone pushes a first

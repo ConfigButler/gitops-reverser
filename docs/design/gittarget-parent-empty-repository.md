@@ -35,6 +35,12 @@ With `spec.parentBranch` omitted, in an empty repository:
   compare-and-swap on the branch being absent, before anything is written to `spec.branch`. After
   it, the repository is no longer empty, and `spec.branch` is an ordinary absent branch whose parent
   is `Found`.
+- **When:** as soon as the worker picks up work for the branch, even work that changes nothing; a
+  refresh only looks. It prepares the base the work builds on, and a bad credential, signing key or
+  branch protection fails at setup instead of at the first change. `spec.branch` still waits for a
+  change. A default branch somebody creates by hand meanwhile is used as it is
+  (`TestBranchWorker_TheDefaultBranchIsCreatedWhenWorkIsPickedUp`,
+  `TestBranchWorker_ADefaultBranchCreatedByHandIsPickedUp`).
 - **Permission is the existing allowlist.** Creating the default branch is a write to a branch
   other than `spec.branch`, so the provider's `spec.allowedGitBranches` must allow this `GitBranch`'s
   namespace to write it, as it would for a `GitBranch` on that branch. There is no setting to opt in
