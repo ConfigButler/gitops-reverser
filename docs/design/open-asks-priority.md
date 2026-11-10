@@ -42,7 +42,7 @@
 > 2026-07-28, which is the revision that filed #23), the API-surface block left unbuilt by the
 > status and configuration-model review — now sequenced in
 > `gittarget-api-wave.md` (removed) — and the config-surface proposal in
-> [`config-surface-for-a-structured-repository.md`](../future/config-surface-for-a-structured-repository.md)
+> `config-surface-for-a-structured-repository.md` (removed)
 > (B1–B6). This page merges them into one queue and says where we deliberately do **not** do
 > what was asked.
 >

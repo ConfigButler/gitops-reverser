@@ -8,7 +8,8 @@
 > drafts: `docs/reviews/20261023-gitbranch-claims-from-other-namespaces.md`,
 > `docs/reviews/20261023-gitbranch-claims-review.md` and `docs/future/gitprovider-branch-rules.md`,
 > and follows up items 1 and 2 of "Still missing" in the
-> [one-writer-per-branch status](../design/one-writer-per-branch-plan.md).
+> one-writer-per-branch status (`one-writer-per-branch-plan.md`, removed; its open items are in
+> [TODO.md](../TODO.md)).
 > [Tests to add](#tests-to-add) is the checklist for the PR.
 
 ## How it works: one tenant, end to end

@@ -27,7 +27,8 @@ import (
 // re-read the Git credentials Secret for every commit in a push cycle. Only the first commit
 // (the checkout holds no retained write yet) touches the remote through PrepareBranch and needs auth; later commits
 // build on the local repo and must not issue another Secret GET — with the Secret cache disabled
-// that would be a wasted API round-trip per commit. See docs/rbac.md §5.
+// that would be a wasted API round-trip per commit. See docs/rbac.md, "The operator does not read Secrets
+// wholesale".
 func TestCommitPendingWrites_ResolvesCredentialsOncePerPushCycle(t *testing.T) {
 	tempDir := t.TempDir()
 	remotePath := filepath.Join(tempDir, "remote")

@@ -7,7 +7,7 @@
 > Related: [Kubernetes watch options](../facts/kubernetes-watch-options.md),
 > [Architecture](../architecture.md),
 > [Attribution contract](attribution.md),
-> [Label-selection design](../design/watches-labels-simplification.md)
+> [Selecting objects by label](../configuration.md#selecting-objects-by-label-rulesobjectselector)
 
 ## The question
 
@@ -162,17 +162,15 @@ test today.
   cursor unadvanced; queue admission is the boundary asserted by this check.
 - For a selector replacement, pause the retired producer immediately before enqueue and
   initialize the replacement. The retired work must enter ahead of the replacement snapshot or
-  be canceled. It cannot arrive behind that snapshot and restore an excluded object. The
-  [label-selection design](../design/watches-labels-simplification.md#scope-integration-and-queue-ordering)
-  requires a producer handoff for this case, and `producerGate` in
+  be canceled. It cannot arrive behind that snapshot and restore an excluded object. This needs
+  a producer handoff, and `producerGate` in
   [`target_watch.go`](../../internal/watch/target_watch.go) provides it: retiring a stream waits
   out an enqueue in flight and admits none after. The check lives in
   [`producer_gate_test.go`](../../internal/watch/producer_gate_test.go).
 - Exercise overlapping watches with delayed attribution on one. Assert each watch's own order;
-  do not infer a global mutation order from their combined arrivals. The label-selection design
-  refuses conflicting selectors but retains the existing same-selector namespace overlap.
+  do not infer a global mutation order from their combined arrivals. Conflicting selectors are
+  refused, but the existing same-selector namespace overlap is retained.
 
-The label-selection design owns the additional
-[selector, attribution, and prune cases](../design/watches-labels-simplification.md#tests), including
-missing label-removal audit facts. Those cases concern which content and author reach Git in
-addition to the ordering checks here.
+Selector, attribution and prune cases, including missing label-removal audit facts, concern which
+content and author reach Git rather than ordering; the
+[label-selection contract](../configuration.md#selecting-objects-by-label-rulesobjectselector) covers them.

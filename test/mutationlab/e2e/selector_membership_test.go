@@ -39,7 +39,7 @@ const (
 
 // TestSelectorMembership captures what a label-selected collection sees, beside the unfiltered
 // stream and the audit and admission records of the same writes. It is the evidence behind the
-// objectSelector design (docs/design/watches-labels-simplification.md): the API server decides
+// objectSelector contract (docs/configuration.md, "Selecting objects by label"): the API server decides
 // membership, a label change that stops matching is a collection removal even though the object
 // still exists, and the only evidence that names who caused such a removal is the write at the
 // removal's exact resourceVersion.

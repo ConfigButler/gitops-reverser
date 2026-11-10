@@ -443,7 +443,7 @@ failure halves reproduce locally:
   `upload-pack` will actually emit multi-ACK streams on a fetch with `have` lines, which is the thing
   v5 cannot parse.
 
-The e2e lab already runs Gitea (see [`e2e-git-server-choice.md`](e2e-git-server-choice.md)), whose
+The e2e lab already runs Gitea, whose
 backend is canonical git, so no new server is needed — only the proxy and a `GitProvider` pointed at
 it. This is cheap, it is deterministic, it runs in CI, and it would let us:
 

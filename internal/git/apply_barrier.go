@@ -19,7 +19,7 @@ import (
 // not cover one that is behind: every event waits for its audit fact in turn, and on a source cluster
 // that sends none each waits the whole attribution grace, so the applier's writes can arrive long
 // after the window closed. Mirrored then, a write that reverted an edit made during the apply put the
-// revert in Git and lost the edit (docs/review/20261026-apply-window-late-events.md).
+// revert in Git and lost the edit (fixed in #456).
 //
 // So a window whose operation completed also waits for the watch. For each GitTarget the applier
 // covers, the watch side lists every stream's collection and takes the newest resourceVersion among

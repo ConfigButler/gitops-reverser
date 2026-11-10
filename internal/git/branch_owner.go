@@ -13,8 +13,7 @@ import (
 // One GitBranch per repository branch.
 //
 // A branch worker is keyed by its repository and branch (BranchKey) and pushes with one credential,
-// so exactly one GitBranch may write a repository branch: the one holding its claim. The rules are
-// the plan's (docs/design/gitbranch-and-kubeprovider-plan.md):
+// so exactly one GitBranch may write a repository branch: the one holding its claim. The rules:
 //
 //  1. A GitBranch becomes a candidate once its credential opens a receive-pack session on the
 //     remote (ProvePushSession). An unproven GitBranch claims nothing, so creating one first

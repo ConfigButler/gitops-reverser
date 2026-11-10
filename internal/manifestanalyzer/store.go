@@ -969,7 +969,6 @@ func collapseAssignments(nsByFile map[string]map[string]string) map[string]names
 // kustomize resolves a remote base by shelling out to `git fetch`, under LoadRestrictionsRootOnly
 // and an in-memory filesystem alike (both measured), and no build option turns it off. Refusing
 // before any build is invoked is what keeps "the operator never fetches a remote base" true.
-// See docs/design/support-boundary/kustomize-support-boundary.md §7.
 func hasRemoteResource(entries []string) bool {
 	for _, e := range entries {
 		if isRemoteResource(e) {

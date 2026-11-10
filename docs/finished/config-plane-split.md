@@ -936,7 +936,7 @@ YAML applied to the cluster. The source-cluster corner is its own gated leg
 5. **`GitProviderReady` projection trigger and `Ready` gating.** Wire a
    `Watches(&GitProvider{})` so a provider going un-ready promptly re-reconciles its
    GitTargets (best, but adds an edge to the set that
-   [`reconcile-triggering.md`](../design/reconcile-triggering.md) tracks), or lean on the
+   `reconcile-triggering.md` (removed) tracked), or lean on the
    5-minute periodic reconcile (simpler, laggier)? And does
    `SourceClusterReachable=Unknown` (pre-first-discovery) hold `Ready` at `Unknown`,
    or is `Ready` allowed to settle on the other axes first? (Proposal: `Watches`, and

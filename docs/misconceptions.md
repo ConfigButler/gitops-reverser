@@ -73,7 +73,7 @@ Two habits caused more of these than any single gap in knowledge. They are liste
   the applier's writes arrived after the window, were mirrored as edits, and reverted the newer API
   edit. *Fixed:* the window closes on watch progress, with the mark taken as the newest
   `resourceVersion` among the collection's objects, never the list's
-  ([review](review/20261026-apply-window-late-events.md), `internal/git/apply_barrier.go`).
+  (#456, `internal/git/apply_barrier.go`).
 - **The newest `managedFields` entries being the applier's alone proves the applier wrote.** An
   update that removes every field a manager owns deletes that manager's entry, so an older
   kustomize-controller entry ends up newest. *Cost:* a `kubectl label x tmp-` undo was withheld, and
@@ -174,9 +174,10 @@ Two habits caused more of these than any single gap in knowledge. They are liste
 - **`windowPathKey` is the Git path after placement.** It is the `GitTarget` path joined with the
   generated file name; the write plan resolves the destination only at commit
   ([concurrent-author-windows.md](design/concurrent-author-windows.md)).
-- **The push cooldown is inert now that the commit window batches.** Under alternating authors an
-  identity change closes the window, the silence timer never fires, and the cooldown is the only
-  batching left. The earlier "remove it" was retracted ([push-cooldown.md](design/push-cooldown.md)).
+- **The push cooldown is inert now that the commit window batches.** A write of another `GitTarget`,
+  or one whose footprint overlaps or cannot be proven, still closes the open windows early, and
+  windows open side by side close within seconds of each other; the cooldown batches those commits.
+  The earlier "remove it" was retracted ([push-cooldown.md](design/push-cooldown.md)).
 - **An idle apply follow ends when the worker's record ages out.** That happened only when another
   save resolved, so long applies were reported `Lost` and quiet workers followed forever. *Fixed:* an
   explicit `SaveApplyTimeout` (#460).
@@ -263,7 +264,7 @@ Two habits caused more of these than any single gap in knowledge. They are liste
   ([e2e-signing-followups.md](finished/e2e-signing-followups.md)).
 - **Migrating to Forgejo is required to unpin Gitea.** Both moved to Go's `CrossOriginProtection`,
   which a plain Go client passes; deleting the `_csrf` scrape unpinned Gitea in place
-  ([e2e-git-server-choice.md](design/e2e-git-server-choice.md)).
+  (#253).
 
 ## Kustomize, rendering and placement
 
