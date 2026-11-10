@@ -119,8 +119,8 @@ path order.
 
 Resyncs and atomic writes are different: they bypass the live-event window, but
 they do not jump ahead of already-windowed live events. If one arrives while the
-branch worker has an open event window, the worker finalizes that window into a
-commit pending write first, then appends its own pending write. This preserves
+branch worker has open event windows, the worker finalizes them, oldest first, into
+commit pending writes, then appends its own pending write. This preserves
 arrival order while keeping a resync or an atomic write as one batch.
 
 ## Core Types

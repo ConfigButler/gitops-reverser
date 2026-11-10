@@ -851,6 +851,7 @@ type windowedDeploymentPipeline struct {
 	gitProvider string
 	gitTarget   string
 	watchRule   string
+	basePath    string
 }
 
 // setupWindowedDeploymentPipeline creates the pipeline, every name derived from name, and returns
@@ -858,7 +859,7 @@ type windowedDeploymentPipeline struct {
 // until a commit window is finalized.
 func setupWindowedDeploymentPipeline(name, basePath, commitWindow string) windowedDeploymentPipeline {
 	By("creating " + name + " test namespace and applying git secrets")
-	p := windowedDeploymentPipeline{ns: testNamespaceFor(name)}
+	p := windowedDeploymentPipeline{ns: testNamespaceFor(name), basePath: basePath}
 	_, _ = kubectlRun("create", "namespace", p.ns)
 	p.repo = SetupRepo(resolveE2EContext(), p.ns, fmt.Sprintf("e2e-%s-%d", name, GinkgoRandomSeed()))
 	_, err := kubectlRunInNamespace(p.ns, "apply", "-f", p.repo.SecretsYAML)

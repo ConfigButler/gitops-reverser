@@ -83,7 +83,8 @@ fails; there is no plaintext opt-out.
 **Writes are serialized per Git branch.** One [BranchWorker](../internal/git/branch_worker.go) owns each
 repository branch: the repository's URL, normalized, and the branch. Multiple `GitTarget`s may share
 one branch, from any namespace, through the one `GitBranch` that holds it. Every write to that
-branch goes through the worker's single event loop and commit window.
+branch goes through the worker's single event loop, which holds a commit window per author, side
+by side only while it proves their files cannot overlap.
 
 **The worktree sits at the remote tip, or the worker knows it does not.** The write path used to
 fetch and hard-reset before the first commit of every publication cycle. It no longer does: the push
@@ -146,7 +147,7 @@ that is live and not yet in Git, and only the worker writing the branch can see 
 `GitTarget` names an **applier claim**, which holds its **applier** so that it applies nothing on
 its own (a Flux `Kustomization` is held suspended, an Argo CD `Application` held with automated sync off),
 and the branch worker sends **apply requests** instead. A request is sent only **after a flush**:
-when an apply comes due, the worker closes the open commit window, publishes every write decided so
+when an apply comes due, the worker closes every open commit window, publishes every write decided so
 far at once, and sends the request for the tip that publication produced. An edit decided after
 that is recorded in the apply window, so an apply that overwrites it is withheld and repaired.
 Continuous editing therefore never holds an apply back. A request goes out:
@@ -707,7 +708,8 @@ Following the ConfigMap edit:
    [GitTargetEventStream](../internal/reconcile/git_target_event_stream.go), and the
    [BranchWorker](../internal/git/branch_worker.go) appends it to the open commit window for
    `(author, GitTarget)`.
-5. **Commit + push.** When the window closes (5s of silence, a `CommitRequest`, or a buffer limit), the
+5. **Commit + push.** When the window closes (5s of silence, a `CommitRequest`, a buffer limit, or a
+   write to one of its files by another author, which closes it first), the
    manifest aware writer patches `team-a/.../app-config.yaml` in place, commits as the resolved author,
    and pushes via [PushAtomic](../internal/git/git_atomic_push.go) (retrying with fetch/reset/replay if
    the remote moved).
@@ -745,9 +747,10 @@ flowchart TD
     WINDOW --> TIMER{What closes it?}
     TIMER -->|silence timer| BASE
     TIMER -->|buffer limit or resync boundary| BASE
+    TIMER -->|another author writes one of its files| BASE
 
-    CR[CommitRequest persisted] --> AUTHOR[Author from its audit fact<br/>named or unnamed]
-    AUTHOR --> ATTACH[Attach to matching open window]
+    CR[CommitRequest persisted] --> CRAUTHOR[Author from its audit fact<br/>named or unnamed]
+    CRAUTHOR --> ATTACH[Attach to its author's open window]
     ATTACH -->|same author + GitTarget| BASE
     ATTACH -->|no matching window| BENIGN[Ready=True, Pushed=False]
 
@@ -1766,7 +1769,8 @@ unsafely: logged per-resource, counted in the resync summary as `placementSkippe
 - **Control-cluster path**: [internal/controller/commitrequest_controller.go](../internal/controller/commitrequest_controller.go)
 - **Source-cluster path**: [internal/controller/commitrequest_server.go](../internal/controller/commitrequest_server.go)
 
-A `CommitRequest` finalizes the open commit window for its GitTarget. It is picked up in one of two
+A `CommitRequest` finalizes its author's open commit window on its GitTarget; other authors' windows
+stay open beside it. It is picked up in one of two
 ways: by the `CommitRequestReconciler` on the control cluster, or by the `CommitRequestServer`'s watch
 of a source cluster, through the `KubeProvider` whose `spec.commitRequests` reconciles it. Both hand it
 to one core, which takes one step at a time, each decided again from the object as it is stored

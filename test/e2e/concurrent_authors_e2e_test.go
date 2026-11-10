@@ -107,13 +107,167 @@ var _ = Describe("Concurrent Authors", Label("concurrent-authors", "commit-reque
 				alice.expectCommit(g, p.repo.CheckoutDir, aliceSHA, file(aliceAPI), file(aliceWeb))
 				bob.expectCommit(g, p.repo.CheckoutDir, bobSHA, file(bobQueue), file(bobCron))
 
-				labelled, showErr := gitRun(p.repo.CheckoutDir, "show", aliceSHA+":"+file(aliceAPI))
-				g.Expect(showErr).NotTo(HaveOccurred())
-				g.Expect(labelled).To(ContainSubstring("tier: frontend"),
+				g.Expect(fileAt(g, p.repo.CheckoutDir, aliceSHA, file(aliceAPI))).To(ContainSubstring("tier: frontend"),
 					"alice's update after bob's writes is in her commit")
 			}, time.Minute, 2*time.Second).Should(Succeed())
 		})
+
+		// Three windows at once, saved in the reverse of the order they opened: commit order is close
+		// order. Each save is awaited before the next, so the order is the spec's, not a race between
+		// timers. Carol's commit lands while alice's and bob's windows stay open, and alice writes again
+		// after it, so her window is proven again against the tree carol's commit made.
+		It("keeps three windows open side by side, and commits each when its author saves", func() {
+			seed := GinkgoRandomSeed()
+			alice := author{user: "alice", message: "feat: add the checkout"}
+			bob := author{user: "bob", message: "feat: add the payment worker"}
+			carol := author{user: "carol", message: "feat: add the mailer"}
+			aliceAPI := fmt.Sprintf("checkout-api-%d", seed)
+			aliceWeb := fmt.Sprintf("checkout-web-%d", seed)
+			bobWorker := fmt.Sprintf("payment-worker-%d", seed)
+			carolMailer := fmt.Sprintf("mailer-%d", seed)
+			file := func(name string) string {
+				return path.Join(basePath, p.ns, "apps/deployments", name+".yaml")
+			}
+			base := pulledHead(p.repo.CheckoutDir)
+
+			By("alice, bob and carol each start work, interleaved")
+			alice.create(p.ns, aliceAPI)
+			bob.create(p.ns, bobWorker)
+			carol.create(p.ns, carolMailer)
+			alice.create(p.ns, aliceWeb)
+
+			By("the branch worker holds three windows open, and commits nothing")
+			expectOpenWindows(p.ns, 3)
+			Consistently(func(g Gomega) {
+				pullLatestRepoState(g, p.repo.CheckoutDir)
+				g.Expect(headOf(g, p.repo.CheckoutDir)).To(Equal(base),
+					"a window closed before its author saved\n%s",
+					recentCommitDiagnostics(p.repo.CheckoutDir, basePath))
+			}, 6*time.Second, 2*time.Second).Should(Succeed())
+
+			By("carol, who started last, saves first; alice's and bob's windows stay open")
+			carol.save(p.ns, "save-mailer", p.gitTarget)
+			carolSHA := awaitSave(p, "save-mailer")
+			Eventually(func(g Gomega) {
+				pullLatestRepoState(g, p.repo.CheckoutDir)
+				g.Expect(commitsSince(g, p.repo.CheckoutDir, base)).To(ConsistOf(carolSHA),
+					"only carol's save is committed\n%s", recentCommitDiagnostics(p.repo.CheckoutDir, basePath))
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+			expectOpenWindows(p.ns, 2)
+
+			By("alice writes again after carol's commit, and her write joins her open window")
+			alice.label(p.ns, aliceAPI, "tier=frontend")
+
+			By("bob saves, then alice")
+			bob.save(p.ns, "save-payment-worker", p.gitTarget)
+			bobSHA := awaitSave(p, "save-payment-worker")
+			alice.save(p.ns, "save-checkout", p.gitTarget)
+			aliceSHA := awaitSave(p, "save-checkout")
+
+			By("Git holds three commits in the order the windows closed, each one person's save")
+			Eventually(func(g Gomega) {
+				pullLatestRepoState(g, p.repo.CheckoutDir)
+				g.Expect(commitsOldestFirst(g, p.repo.CheckoutDir, base)).
+					To(Equal([]string{carolSHA, bobSHA, aliceSHA}), "commit order is close order\n%s",
+						recentCommitDiagnostics(p.repo.CheckoutDir, basePath))
+				carol.expectCommit(g, p.repo.CheckoutDir, carolSHA, file(carolMailer))
+				bob.expectCommit(g, p.repo.CheckoutDir, bobSHA, file(bobWorker))
+				alice.expectCommit(g, p.repo.CheckoutDir, aliceSHA, file(aliceAPI), file(aliceWeb))
+				g.Expect(fileAt(g, p.repo.CheckoutDir, aliceSHA, file(aliceAPI))).To(ContainSubstring("tier: frontend"),
+					"alice's write after carol's commit is in alice's commit")
+			}, time.Minute, 2*time.Second).Should(Succeed())
+		})
+
+		// The footprint rule: bob edits a Deployment alice created in her still-open window. If both
+		// windows stayed open and bob's closed first, alice's commit would put her older copy over
+		// bob's. So bob's write closes alice's window first (path_conflict): her commit lands first,
+		// under a generated message, and bob's save carries the newer copy, which Git ends with.
+		It("closes the other author's window first when one edits a file in it", func() {
+			seed := GinkgoRandomSeed()
+			alice := author{user: "alice"}
+			bob := author{user: "bob", message: "fix: label the shared cache"}
+			aliceCache := fmt.Sprintf("shared-cache-%d", seed)
+			bobIndexer := fmt.Sprintf("indexer-%d", seed)
+			file := func(name string) string {
+				return path.Join(basePath, p.ns, "apps/deployments", name+".yaml")
+			}
+			base := pulledHead(p.repo.CheckoutDir)
+
+			By("alice and bob each open a window on a file of their own")
+			alice.create(p.ns, aliceCache)
+			bob.create(p.ns, bobIndexer)
+			expectOpenWindows(p.ns, 2)
+
+			By("bob edits alice's Deployment, which closes her window first, and saves")
+			bob.label(p.ns, aliceCache, "owner=bob")
+			bob.save(p.ns, "save-indexer", p.gitTarget)
+			bobSHA := awaitSave(p, "save-indexer")
+
+			By("alice's commit lands first, with her copy; bob's lands after it, with his")
+			Eventually(func(g Gomega) {
+				pullLatestRepoState(g, p.repo.CheckoutDir)
+				diagnostics := recentCommitDiagnostics(p.repo.CheckoutDir, basePath)
+				commits := commitsOldestFirst(g, p.repo.CheckoutDir, base)
+				g.Expect(commits).To(HaveLen(2), "alice's window and bob's save\n%s", diagnostics)
+				g.Expect(commits[1]).To(Equal(bobSHA), "bob's save lands after alice's commit\n%s", diagnostics)
+				aliceSHA := commits[0]
+
+				authorOf, err := gitRun(p.repo.CheckoutDir, "show", "-s", "--format=%an", aliceSHA)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(strings.TrimSpace(authorOf)).To(Equal(alice.user), "the first commit is alice's window")
+				g.Expect(changedFiles(g, p.repo.CheckoutDir, aliceSHA)).To(Equal([]string{file(aliceCache)}))
+				aliceCopy := fileAt(g, p.repo.CheckoutDir, aliceSHA, file(aliceCache))
+				g.Expect(aliceCopy).NotTo(ContainSubstring("owner: bob"),
+					"alice's commit holds her copy, from before bob's edit")
+
+				bob.expectCommit(g, p.repo.CheckoutDir, bobSHA, file(aliceCache), file(bobIndexer))
+				g.Expect(fileAt(g, p.repo.CheckoutDir, "HEAD", file(aliceCache))).To(ContainSubstring("owner: bob"),
+					"Git ends with bob's newer copy")
+			}, time.Minute, 2*time.Second).Should(Succeed())
+
+			By("the forced close is counted as a path_conflict under this GitTarget")
+			ensurePrometheusClient()
+			waitForMetric(
+				fmt.Sprintf(`sum(gitopsreverser_git_commit_windows_total{close_reason="path_conflict",`+
+					`gittarget_namespace=%q,gittarget_name=%q}) or vector(0)`, p.ns, p.gitTarget),
+				func(v float64) bool { return v >= 1 },
+				"alice's window closed with path_conflict",
+			)
+		})
 	})
+
+// awaitSave waits for the named CommitRequest to be committed and pushed, and returns its commit.
+func awaitSave(p windowedDeploymentPipeline, name string) string {
+	GinkgoHelper()
+	var sha string
+	Eventually(func(g Gomega) {
+		sha = expectCommitRequestCommitted(g, p.ns, name, recentCommitDiagnostics(p.repo.CheckoutDir, p.basePath))
+	}, 2*time.Minute, 2*time.Second).Should(Succeed())
+	return sha
+}
+
+// expectOpenWindows waits for the branch worker of namespace's GitBranch to report n commit windows
+// open at once (git_commit_windows_open, read on a 5s scrape).
+func expectOpenWindows(namespace string, n int) {
+	GinkgoHelper()
+	ensurePrometheusClient()
+	waitForMetric(
+		fmt.Sprintf(`max(gitopsreverser_git_commit_windows_open{gitbranch_namespace=%q}) or vector(0)`, namespace),
+		func(v float64) bool { return v == float64(n) },
+		fmt.Sprintf("%d commit windows open side by side", n),
+	)
+}
+
+// pulledHead pulls the checkout and returns its HEAD.
+func pulledHead(checkoutDir string) string {
+	GinkgoHelper()
+	var head string
+	Eventually(func(g Gomega) {
+		pullLatestRepoState(g, checkoutDir)
+		head = headOf(g, checkoutDir)
+	}, 30*time.Second, 2*time.Second).Should(Succeed())
+	return head
+}
 
 // author is a person working through kubectl as themselves: every write is impersonated, so the
 // audit event names them, and system:masters spares each spec its own RBAC.
@@ -156,12 +310,22 @@ func (a author) expectCommit(g Gomega, checkoutDir, sha string, files ...string)
 		"commit %s is %s's", sha[:8], a.user)
 	g.Expect(strings.TrimSpace(message)).To(Equal(a.message), "commit %s carries %s's message", sha[:8], a.user)
 
-	changed, err := gitRun(checkoutDir, "show", "--name-only", "--format=", sha)
-	g.Expect(err).NotTo(HaveOccurred())
-	paths := strings.Fields(changed)
-	slices.Sort(paths)
 	want := slices.Sorted(slices.Values(files))
-	g.Expect(paths).To(Equal(want), "commit %s changes only %s's files", sha[:8], a.user)
+	g.Expect(changedFiles(g, checkoutDir, sha)).To(Equal(want), "commit %s changes only %s's files", sha[:8], a.user)
+}
+
+// changedFiles lists the files commit sha changes, sorted.
+func changedFiles(g Gomega, checkoutDir, sha string) []string {
+	out, err := gitRun(checkoutDir, "show", "--name-only", "--format=", sha)
+	g.Expect(err).NotTo(HaveOccurred())
+	return slices.Sorted(slices.Values(strings.Fields(out)))
+}
+
+// fileAt is the content of file at revision rev.
+func fileAt(g Gomega, checkoutDir, rev, file string) string {
+	out, err := gitRun(checkoutDir, "show", rev+":"+file)
+	g.Expect(err).NotTo(HaveOccurred(), "%s at %s", file, rev)
+	return out
 }
 
 // headOf is the checkout's HEAD.
@@ -174,6 +338,13 @@ func headOf(g Gomega, checkoutDir string) string {
 // commitsSince lists the commits on HEAD after base.
 func commitsSince(g Gomega, checkoutDir, base string) []string {
 	out, err := gitRun(checkoutDir, "rev-list", base+"..HEAD")
+	g.Expect(err).NotTo(HaveOccurred())
+	return strings.Fields(out)
+}
+
+// commitsOldestFirst lists the commits on HEAD after base, in the order they landed.
+func commitsOldestFirst(g Gomega, checkoutDir, base string) []string {
+	out, err := gitRun(checkoutDir, "rev-list", "--reverse", base+"..HEAD")
 	g.Expect(err).NotTo(HaveOccurred())
 	return strings.Fields(out)
 }
