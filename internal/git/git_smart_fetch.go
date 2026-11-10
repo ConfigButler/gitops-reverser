@@ -243,7 +243,8 @@ func advertise(
 
 	advertised, err := session.GetRemoteRefs(ctx, nil)
 	if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-		return nil, unbornHead(ctx, session), nil
+		head, err := unbornHead(ctx, session)
+		return nil, head, err
 	}
 	if err != nil {
 		return nil, "", err
@@ -259,32 +260,35 @@ func advertise(
 
 // unbornHead is the branch an empty repository's HEAD names, read from a protocol v2 ls-refs with
 // the "unborn" argument (git 2.31 and later; GitHub answers it). It is empty when the session
-// speaks v0 or v1, when the server does not offer "unborn", when the call fails, and when the
-// repository is no longer empty by the time it answers: the name is evidence, never a guess.
+// speaks v0 or v1, when the server does not offer "unborn", and when the repository is no longer
+// empty by the time it answers: the name is evidence, never a guess.
+//
+// A server that offers "unborn" and then fails the call is an error, not an empty answer: the name
+// decides what the worker writes (unborn_default_branch.go), and reading a transient failure as
+// "the server does not say" would start the write branch as the repository's first branch.
 //
 // go-git sends the same request inside GetRemoteRefs and then discards the answer for an empty
 // repository, so this asks again through its public Commander. Delete it once a go-git release
 // reports the unborn HEAD of an empty repository.
-func unbornHead(ctx context.Context, session transport.Session) plumbing.ReferenceName {
+func unbornHead(ctx context.Context, session transport.Session) (plumbing.ReferenceName, error) {
 	commander, ok := session.(transport.Commander)
 	if !ok || !slices.Contains(session.Capabilities().Get(capability.LsRefs), lsRefsUnborn) {
-		return ""
+		return "", nil
 	}
 	out := &packp.LsRefsOutput{}
 	if err := commander.Command(ctx, "ls-refs", &packp.LsRefsArgs{Symrefs: true, Unborn: true}, out); err != nil {
-		log.FromContext(ctx).V(1).Info("Could not read an empty repository's unborn HEAD", "error", err.Error())
-		return ""
+		return "", fmt.Errorf("read the empty repository's unborn HEAD: %w", err)
 	}
 	var head plumbing.ReferenceName
 	for _, ref := range out.References {
 		switch {
 		case ref.Type() == plumbing.HashReference:
-			return "" // it gained a ref since the advertisement: HEAD may well be born now
+			return "", nil // it gained a ref since the advertisement: HEAD may well be born now
 		case ref.Name() == plumbing.HEAD && ref.Target().IsBranch():
 			head = ref.Target()
 		}
 	}
-	return head
+	return head, nil
 }
 
 // lsRefsUnborn is the ls-refs feature a server offers when it reports an unborn HEAD. Sending the

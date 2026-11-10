@@ -9,13 +9,19 @@ package git
 
 import (
 	"context"
+	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fluxcd/pkg/apis/meta"
+	corev1 "k8s.io/api/core/v1"
 
 	configv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
@@ -106,6 +112,22 @@ func (f *realServerNewBranch) allowBranches(patterns ...configv1alpha3.BranchPat
 	require.NoError(f.t, f.worker.Client.Update(f.worker.ctx, provider))
 }
 
+// signCommits makes the fixture's GitProvider sign its commits with a fresh SSH key.
+func (f *realServerNewBranch) signCommits() {
+	f.t.Helper()
+	privateKey, _, err := GenerateSSHSigningKeyPair(nil)
+	require.NoError(f.t, err)
+	secret := &corev1.Secret{Data: map[string][]byte{signingKeyDataKey: privateKey}}
+	secret.Name, secret.Namespace = "signing-key", "default"
+	require.NoError(f.t, f.worker.Client.Create(f.worker.ctx, secret))
+	provider, err := f.worker.getGitProvider(f.worker.ctx)
+	require.NoError(f.t, err)
+	provider.Spec.Commit = &configv1alpha3.CommitSpec{
+		Signing: &configv1alpha3.CommitSigningSpec{SecretRef: meta.LocalObjectReference{Name: secret.Name}},
+	}
+	require.NoError(f.t, f.worker.Client.Update(f.worker.ctx, provider))
+}
+
 // emptyTrunkRepoOverV2 is an empty repository whose HEAD names trunk, served over v2, with the
 // write branch feature.
 func emptyTrunkRepoOverV2(t *testing.T, slug string) *realServerNewBranch {
@@ -139,6 +161,7 @@ func (f *realServerNewBranch) assertFeatureStartsOnInitializedTrunk() {
 func TestBranchWorker_AnEmptyRepositoryGetsItsDefaultBranchFirst(t *testing.T) {
 	f := emptyTrunkRepoOverV2(t, "unborn-default-created")
 	f.allowBranches("trunk", "feature")
+	f.signCommits()
 
 	require.NoError(t, f.worker.ensureRepositoryInitialized(f.worker.ctx))
 	o := f.observed()
@@ -146,6 +169,9 @@ func TestBranchWorker_AnEmptyRepositoryGetsItsDefaultBranchFirst(t *testing.T) {
 	assert.Equal(t, "trunk", o.ParentBranch)
 	assert.Equal(t, f.ref("trunk").String(), o.ParentCommit)
 	assert.True(t, f.ref("feature").IsZero(), "nothing written yet")
+
+	assert.Contains(t, gitIn(t, f.repoDir, "cat-file", "-p", "trunk"), "gpgsig -----BEGIN SSH SIGNATURE-----",
+		"the first commit is signed like every other commit")
 
 	liveWrite(f.loop, "cm1")
 	f.assertFeatureStartsOnInitializedTrunk()
@@ -185,6 +211,45 @@ func TestBranchWorker_AnEmptyRepositoryWaitsUntilItsDefaultBranchIsAllowed(t *te
 	f.loop.runParentProbe()
 	f.assertFeatureStartsOnInitializedTrunk()
 	assert.Empty(t, f.loop.pendingWrites, "the held write landed")
+}
+
+// A server that offers "unborn" and then fails the query is an error, so the cycle retries: read as
+// "the server does not say", it would start the write branch as the repository's first branch.
+func TestListRemoteRefs_AFailedUnbornQueryIsAnError(t *testing.T) {
+	sim := emptyRepoServedOver(t, true)
+	var posts atomic.Int32
+	around := func(w http.ResponseWriter, r *http.Request, backend http.Handler) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git-upload-pack") && posts.Add(1) == 2 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		backend.ServeHTTP(w, r)
+	}
+	sim.around.Store(&around)
+
+	_, unborn, err := listRemoteRefs(context.Background(), sim.RepoURL, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unborn HEAD")
+	assert.Empty(t, unborn)
+}
+
+// A local default branch the checkout still holds (an earlier attempt whose push failed, or history
+// fetched before the remote was emptied) is never the first commit's parent, and is not uploaded.
+func TestBranchWorker_TheDefaultBranchsFirstCommitIgnoresALeftoverLocalBranch(t *testing.T) {
+	f := emptyTrunkRepoOverV2(t, "unborn-default-leftover")
+	f.allowBranches("feature")
+	require.ErrorIs(t, f.worker.ensureRepositoryInitialized(f.worker.ctx), ErrDefaultBranchCreationNotAllowed)
+	liveWrite(f.loop, "cm1")
+	require.Len(t, f.loop.pendingWrites, 1)
+
+	leftover := branchOnDisk(t, f.worker.repoPath(), "trunk", "never on the remote\n")
+
+	f.allowBranches("trunk", "feature")
+	pastProbeDeadline(f.worker)
+	f.loop.runParentProbe()
+	f.assertFeatureStartsOnInitializedTrunk()
+	assert.Error(t, exec.Command("git", "-C", f.repoDir, "cat-file", "-e", leftover.String()).Run(),
+		"the leftover commit was not uploaded")
 }
 
 // Somebody else creates the default branch between our advertisement and our upload. The server

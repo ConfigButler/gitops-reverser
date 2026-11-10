@@ -104,6 +104,13 @@ func (w *BranchWorker) createUnbornDefault(
 		return err
 	}
 
+	// The first commit has no parent, whatever the checkout holds: a local branch left by an
+	// earlier attempt whose push failed, or by history fetched before the remote was emptied,
+	// would become its parent and be uploaded with it.
+	local := plumbing.NewBranchReferenceName(branch)
+	if err := repo.Storer.RemoveReference(local); err != nil && !errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return fmt.Errorf("clear the local %q: %w", branch, err)
+	}
 	if err := setHead(repo, branch); err != nil {
 		return fmt.Errorf("point HEAD at %q: %w", branch, err)
 	}
