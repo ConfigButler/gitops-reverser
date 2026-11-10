@@ -7,6 +7,31 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## An empty repository gets its default branch first
+
+In an empty repository with `spec.parentBranch` omitted, a `GitBranch` whose `spec.branch` is not
+the repository's default branch no longer creates `spec.branch` as the repository's first branch.
+The default branch the server names (`main` on GitHub, Gitea and Forgejo) is created first, with one
+empty commit authored and signed like the provider's other commits, and `spec.branch` starts from
+it. On Gitea and Forgejo the first branch pushed became the default branch, so a review branch used
+to become the default, and later branches built on it.
+
+That is a write to the default branch, so the provider's `spec.allowedGitBranches` must allow it for
+the `GitBranch`'s namespace. If it does not, the `GitBranch` reports `Ready=False`, `Stalled=True`,
+reason `DefaultBranchNotAllowed`, its `GitTarget`s report `GitBranchNotReady`, and nothing is
+written until you allow the branch or push a first commit to it:
+
+```yaml
+allowedGitBranches:
+  - consumerNamespaces: {from: Same}
+    branchPatterns: ["main", "reverser/edits"]
+```
+
+A `GitBranch` whose `spec.branch` is the default branch, as in the quickstart, is unaffected. So is
+a server that does not name its default branch (Git protocol v0), where `spec.branch` is still
+created as the first branch. `status.remote.parent.branch` now names the default branch of an empty
+repository when the server reports it.
+
 ## A `CommitRequest` reports each phase as the worker reaches it
 
 A request's progress and outcome are written as soon as its branch worker reports them, instead of

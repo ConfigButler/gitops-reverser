@@ -1243,6 +1243,7 @@ at, and `Ready`;
 | `PushSessionFailed` | The credential cannot open a push session; a holder keeps the branch meanwhile |
 | `BranchConflict` | Another `GitBranch` holds this repository branch (`Stalled=True`) |
 | `ParentBranchNotFound` | Neither the branch nor its parent is on the remote (`Stalled=True`) |
+| `DefaultBranchNotAllowed` | The repository is empty; the branch would start from the default branch, which `spec.allowedGitBranches` does not let this `GitBranch` create (`Stalled=True`) |
 | `RecoveringParentBranch` | The parent is back and the worker is publishing what it held |
 
 ### Deleting a `GitBranch`
@@ -1551,9 +1552,17 @@ spec:
   until those are published the `GitBranch` reports `Ready=False` with reason
   `RecoveringParentBranch`.
 - An omitted parent is the remote's default branch, as last discovered. In an empty repository (no
-  refs at all, tags included) the first commit starts the write branch with no history, whatever
-  branch the repository's `HEAD` names; change the repository's default branch afterwards if you
-  want another one. A repository that
+  refs at all, tags included) whose default branch is `spec.branch`, the first commit starts it with
+  no history. When `spec.branch` is another branch, the default branch is created first, with one
+  empty commit authored and signed like every other commit, and `spec.branch` starts from it: the
+  history starts on the default branch, which stays the default, and the first pull request into it
+  carries everything written. That is a write to the default branch, so the provider's
+  `allowedGitBranches` must allow it for this namespace (`branchPatterns: ["main", "reverser/edits"]`).
+  Without that the `GitBranch` reports `DefaultBranchNotAllowed`, its `GitTarget`s report
+  `GitBranchNotReady`, and nothing is written until the branch is allowed or someone pushes a first
+  commit to it. This needs the server to name its default branch, which Git protocol v2 does
+  (GitHub, Gitea, Forgejo); over v0 `spec.branch` is created as the repository's first branch.
+  A repository that
   is not empty but whose `HEAD` names no branch it carries also reports `ParentBranchNotFound`, and
   writes nothing until `HEAD` is fixed or `parentBranch` is set; that never starts an orphan.
 - A detached `HEAD`, or a server that does not say what `HEAD` points at, resolves the way go-git
@@ -1716,9 +1725,10 @@ status:
   created from, observed together with the branch's absence. `state` is `Found` (the first commit
   builds on `commit`, the parent's tip), `Missing` (the parent is not on the remote either; the
   `GitBranch` reports `ParentBranchNotFound` and nothing is written) or `Unborn` (an empty repository, with
-  no refs at all, and no parent configured; the first commit starts the branch with no history). For
-  `Unborn`, `branch` is the branch the empty repository's `HEAD` names, which only a server speaking
-  Git protocol v2 reports (GitHub does); it is empty when the server does not say. See
+  no refs at all, and no parent configured). For `Unborn`, `branch` is the branch the empty
+  repository's `HEAD` names, which only a server speaking Git protocol v2 reports, and empty when the
+  server does not say. Unless it is `spec.branch`, it is created first and `spec.branch` starts from
+  it. See
   [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
 `kubectl get gitbranch` shows `commit` in the `Commit` column, and `-o wide` shows

@@ -135,11 +135,6 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   `GitTarget`, plus the durable queue, plus whether a replica warms its fact index before starting a
   watch it took over. Redis becomes required in this mode.
   [ha-gittarget-distribution-plan.md](future/ha-gittarget-distribution-plan.md).
-- [ ] **Decide which branch an empty repository's first commit may create.** Today a review branch
-  becomes the repository's first branch; on Gitea it then becomes the default, and later branches
-  build on its unreviewed commits. Recommended: refuse until the default branch exists (B), then
-  seed it when the provider may write it (C/D).
-  [gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md).
 - [ ] **Drop `unbornHead` once go-git reports an empty repository's unborn HEAD.** Upstream main
   (`d6fa0275`) adds `LsRefsOutput.UnbornHead` but `GetRemoteRefs` still returns
   `ErrEmptyRemoteRepository` before building `RemoteRefs`. An upstream PR returning the name there,

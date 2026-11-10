@@ -22,8 +22,8 @@
 > (empty-repository bootstrap rules, ancestry status) is not part of it.
 >
 > Related: [`gittarget-parent-branch.md`](gittarget-parent-branch.md), the feature as built;
-> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md) and
-> [`gittarget-parent-observation.md`](gittarget-parent-observation.md), deferred follow-ups.
+> [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md), built in #480; and
+> [`gittarget-parent-observation.md`](gittarget-parent-observation.md), a deferred follow-up.
 
 ## Merge review at `93120caf`
 
@@ -94,7 +94,7 @@ resolving `Committed`.
 ### Out of scope for this pass
 
 - [`gittarget-parent-empty-repository.md`](gittarget-parent-empty-repository.md): which branch an
-  empty repository's first commit may create. Keep today's bootstrap behavior here.
+  empty repository's first commit may create. Kept here; changed later in #480.
 - [`gittarget-parent-observation.md`](gittarget-parent-observation.md): the parent's state after
   the write branch exists.
 

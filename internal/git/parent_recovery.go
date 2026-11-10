@@ -37,9 +37,11 @@ var errAwaitingParentProbe = fmt.Errorf("%w (unchanged since the last look; wait
 	ErrParentBranchNotFound)
 
 // isParentUnavailable reports an error caused by the parent a new write branch would be created
-// from: a configured parent that is absent, or a default branch that does not resolve.
+// from: a configured parent that is absent, a default branch that does not resolve, or an empty
+// repository's default branch that this GitBranch may not create.
 func isParentUnavailable(err error) bool {
-	return errors.Is(err, ErrParentBranchNotFound) || errors.Is(err, ErrDefaultBranchUnresolved)
+	return errors.Is(err, ErrParentBranchNotFound) || errors.Is(err, ErrDefaultBranchUnresolved) ||
+		errors.Is(err, ErrDefaultBranchNotAllowed)
 }
 
 // parentRecovery is the loop's latch on parent recovery. Loop-goroutine only.
@@ -145,7 +147,18 @@ func (l *branchWorkerEventLoop) probeParent() (bool, error) {
 	if err != nil {
 		return true, fmt.Errorf("read the remote advertisement: %w", err)
 	}
-	return w.recordAdvertisement(advertisement, parent.name), nil
+	missing := w.recordAdvertisement(advertisement, parent.name)
+	unborn := advertisement.parentBranch
+	if missing || !advertisement.empty || parent.name != "" || unborn == "" || unborn == w.Branch {
+		return missing, nil
+	}
+	// Still empty, and the write branch would start from a default branch the worker has to create
+	// first: that is found only once this GitBranch may create it.
+	allowed, err := w.mayCreateUnbornDefault(w.ctx, provider, unborn)
+	if err != nil {
+		return true, fmt.Errorf("check spec.allowedGitBranches for %q: %w", unborn, err)
+	}
+	return !allowed, nil
 }
 
 // publishRecovery mirrors the latch for the readers outside the loop: the controller, and the

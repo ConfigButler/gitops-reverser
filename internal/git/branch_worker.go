@@ -2788,7 +2788,16 @@ func (w *BranchWorker) prepareBranch(
 	ctx context.Context, repoPath string, auth []gitclient.Option,
 ) (*PullReport, error) {
 	parent := w.parentSnapshot()
-	report, err := PrepareBranchFrom(ctx, w.repo.URL, repoPath, w.Branch, parent.name, auth)
+	prepare := func() (*PullReport, error) {
+		return PrepareBranchFrom(ctx, w.repo.URL, repoPath, w.Branch, parent.name, auth)
+	}
+	report, err := prepare()
+	if err == nil && w.unbornDefaultToCreate(report, parent) != "" {
+		var repo *gogit.Repository
+		if repo, err = gogit.PlainOpen(repoPath); err == nil {
+			report, err = w.startFromUnbornDefault(ctx, repo, report, parent, auth, prepare)
+		}
+	}
 	w.noteFetchParent(parent, err)
 	return report, err
 }
@@ -2798,7 +2807,13 @@ func (w *BranchWorker) syncToRemote(
 	ctx context.Context, repo *gogit.Repository, auth []gitclient.Option,
 ) (*PullReport, error) {
 	parent := w.parentSnapshot()
-	report, err := syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), parent.name, auth)
+	sync := func() (*PullReport, error) {
+		return syncToRemoteFn(ctx, repo, plumbing.NewBranchReferenceName(w.Branch), parent.name, auth)
+	}
+	report, err := sync()
+	if err == nil {
+		report, err = w.startFromUnbornDefault(ctx, repo, report, parent, auth, sync)
+	}
 	w.noteFetchParent(parent, err)
 	return report, err
 }
@@ -2812,9 +2827,13 @@ func (w *BranchWorker) noteFetchParent(parent parentConfig, err error) {
 		return
 	}
 	var unresolved *DefaultBranchUnresolvedError
+	var notAllowed *DefaultBranchNotAllowedError
 	switch {
 	case errors.As(err, &unresolved):
 		w.recordMissingParent(parent.name, unresolved.Head)
+	case errors.As(err, &notAllowed):
+		// The repository is still empty, and its default branch is named: Unborn, as observed.
+		w.recordAbsentBranch(notAllowed.Branch, "", ObservedByFetch)
 	case errors.Is(err, ErrParentBranchNotFound):
 		w.recordMissingParent(parent.name, parent.name)
 	}
@@ -3359,6 +3378,13 @@ func (w *BranchWorker) RecordMissingParentForTest(parent string) {
 // (empty: no HEAD at all), for tests in another package.
 func (w *BranchWorker) RecordUnresolvedDefaultBranchForTest(head string) {
 	w.recordMissingParent("", head)
+}
+
+// RecordUnbornDefaultBranchForTest records the observation a fetch makes of an empty repository
+// whose HEAD names head, with the write branch absent and no parent configured, for tests in
+// another package.
+func (w *BranchWorker) RecordUnbornDefaultBranchForTest(head string) {
+	w.recordAbsentBranch(head, "", ObservedByFetch)
 }
 
 // BaseTrustedForTest exposes the flag to tests in another package.
