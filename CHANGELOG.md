@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.56.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.55.0...v0.56.0) (2026-11-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **git:** in an empty repository with spec.parentBranch omitted, a GitBranch whose spec.branch is not the default branch the server names (Git protocol v2: GitHub, Gitea, Forgejo) creates that default branch first, with one empty commit authored and signed like the provider's other commits, and starts spec.branch from it, instead of creating spec.branch as the repository's first branch. The provider's spec.allowedGitBranches must allow the GitBranch to write the default branch; otherwise the GitBranch reports Ready=False, Stalled=True, reason DefaultBranchCreationNotAllowed, its GitTargets report GitBranchNotReady, and nothing is written until the branch is allowed or has a first commit. status.remote.parent.branch names an empty repository's default branch when the server reports it. See docs/UPGRADING.md, "An empty repository gets its default branch first".
+
+### Features
+
+* **git:** keep a commit window per author when their files cannot overlap ([#467](https://github.com/ConfigButler/gitops-reverser/issues/467)) ([ce076c9](https://github.com/ConfigButler/gitops-reverser/commit/ce076c92e3cac3836ffae239cf14d8608fb5da4b))
+* **git:** name an empty repository's default branch, and create it before the write branch ([#480](https://github.com/ConfigButler/gitops-reverser/issues/480)) ([105e9dc](https://github.com/ConfigButler/gitops-reverser/commit/105e9dc9e3c0d93cbadd380a8db661a3a2dda34f))
+
+
+### Bug Fixes
+
+* **commitrequest:** keep a save's writes under its message, and answer it sooner ([#465](https://github.com/ConfigButler/gitops-reverser/issues/465)) ([8cd9887](https://github.com/ConfigButler/gitops-reverser/commit/8cd9887988f075625ef610edb188f4a242c22055))
+* **commitrequest:** settle every save before the controller exits ([#468](https://github.com/ConfigButler/gitops-reverser/issues/468)) ([893366e](https://github.com/ConfigButler/gitops-reverser/commit/893366eb14081aee0c3d5903998c2db5a64f1add))
+* **git:** close the gaps the commit-window stack's review found ([#469](https://github.com/ConfigButler/gitops-reverser/issues/469)) ([cb11e93](https://github.com/ConfigButler/gitops-reverser/commit/cb11e93b9f3f4742a750d5dfb66998c4787a402b))
+* **git:** close the gaps the second review of concurrent windows found ([#470](https://github.com/ConfigButler/gitops-reverser/issues/470)) ([2822cce](https://github.com/ConfigButler/gitops-reverser/commit/2822cce590c9d6a24dbd6cbf29ffa9009f6ca7ac))
+* **git:** keep a withheld apply's values out of the next edit ([#466](https://github.com/ConfigButler/gitops-reverser/issues/466)) ([0346df2](https://github.com/ConfigButler/gitops-reverser/commit/0346df228addf95d50e2b3b60dc69ccc796c5626))
+* **git:** keep the namespace policy when an encrypted file is updated ([#471](https://github.com/ConfigButler/gitops-reverser/issues/471)) ([f48cba0](https://github.com/ConfigButler/gitops-reverser/commit/f48cba0b2f292fe8c51b651870d457aa37f2ff5c))
+
+
+### Documentation
+
+* drop shipped and superseded design pages, fix stale labels and dangling citations ([#479](https://github.com/ConfigButler/gitops-reverser/issues/479)) ([7327a00](https://github.com/ConfigButler/gitops-reverser/commit/7327a00c098f027c2812af111c9223e178745b9f))
+* record the misconceptions we corrected, remove superseded docs, and design concurrent author windows ([#462](https://github.com/ConfigButler/gitops-reverser/issues/462)) ([61aceee](https://github.com/ConfigButler/gitops-reverser/commit/61aceeeffc0958498a77e571a47a74db68bfe8c0))
+
 ## [0.55.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.54.0...v0.55.0) (2026-10-27)
 
 
