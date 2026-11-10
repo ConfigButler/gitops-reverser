@@ -145,7 +145,9 @@ type PullReport struct {
 	HEAD            BranchInfo
 	IncomingChanges bool // SHA changed, requiring resource-level reconcile
 	// ParentBranch is the branch checked out instead, when the target branch is absent: the parent
-	// it would be created from. HEAD.Sha is then the parent's commit. Empty otherwise.
+	// it would be created from. HEAD.Sha is then the parent's commit. In an empty repository HEAD is
+	// unborn, HEAD.Sha is empty, and ParentBranch is the branch the remote's HEAD names when the
+	// server reports it (see unbornHead). Empty otherwise.
 	ParentBranch string
 }
 

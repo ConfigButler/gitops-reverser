@@ -135,15 +135,16 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   `GitTarget`, plus the durable queue, plus whether a replica warms its fact index before starting a
   watch it took over. Redis becomes required in this mode.
   [ha-gittarget-distribution-plan.md](future/ha-gittarget-distribution-plan.md).
-- [ ] **Learn an empty repository's default branch, and simplify around it.** The pinned go-git
-  (`v6.0.0-beta.1`) now keeps what protocol v2 `ls-refs` reports about an unborn `HEAD`
-  (`transport.RemoteRefs.Unborn`); at alpha.5 it was discarded, which is why status reports
-  `unknown` and the code carries `ParentUnborn`, `ErrDefaultBranchUnresolved` and the
-  `branch_worker_empty_repo_test.go` pins. Check whether `Remote.List` exposes it or only the
-  transport session does, read it in `refresh.go` and `git_smart_fetch.go`, and remove what it makes
-  unnecessary. Which branch a first commit may create stays a separate policy decision
-  ([gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md); its §4 and
-  the go-git entry in [misconceptions.md](misconceptions.md) need updating with it).
+- [ ] **Decide which branch a first commit may create in an empty repository.** Status now names an
+  empty repository's default branch when a protocol v2 server reports it (`unbornHead` in
+  `internal/git/git_smart_fetch.go`); behavior is unchanged. The policy choices are in
+  [gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md) §3.
+  `ParentUnborn` and `ErrDefaultBranchUnresolved` stay whatever is chosen: the first is a state the
+  repository is in, the second a repository with commits whose `HEAD` dangles.
+- [ ] **Drop `unbornHead` once go-git reports an empty repository's unborn HEAD.** Upstream main
+  (`d6fa0275`) adds `LsRefsOutput.UnbornHead` but `GetRemoteRefs` still returns
+  `ErrEmptyRemoteRepository` before building `RemoteRefs`; an upstream PR returning the name there
+  (or on the error) would let `listRemoteRefs` go back to `Remote.List`.
 - [ ] **The branch claim is first-proven-wins** (`internal/git/branch_owner.go`). Anyone who can
   create a `GitProvider` and a `GitBranch` with a credential that passes the push-session proof can
   claim a branch no older `GitBranch` holds; on Gitea and Forgejo a read-only credential passes it

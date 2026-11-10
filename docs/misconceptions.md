@@ -254,8 +254,10 @@ Two habits caused more of these than any single gap in knowledge. They are liste
 - **A head-of-cycle fetch with `Force: true` cleans a worktree a failed write left dirty.** Only for
   modified tracked files; new files and directories survive a hard reset. Fixed in #382 (9535d6a8).
 - **go-git cannot learn an empty repository's default branch.** GitHub advertises it over protocol
-  v2 (`unborn`), and go-git asks and then discards the reply. Status reports "unknown"; guessing
-  `main` was rejected
+  v2 (`unborn`). go-git v6.0.0-beta.1 still discards the reply inside `GetRemoteRefs`, so
+  `Remote.List` cannot return it, but its public `transport.Commander` can ask `ls-refs` again on
+  the same session. `unbornHead` in `internal/git/git_smart_fetch.go` does that, and status names the
+  branch for `Unborn`. Over v0 the server does not say, and nothing is guessed
   ([gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md)).
 - **A receive-pack probe proves push access.** On Gitea any valid user with read access gets 200, so
   it proves only a valid credential (#429).

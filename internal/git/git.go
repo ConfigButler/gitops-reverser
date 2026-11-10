@@ -20,7 +20,6 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-git/go-git/v6/plumbing/format/index"
-	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -32,11 +31,6 @@ import (
 	"github.com/ConfigButler/gitops-reverser/internal/types"
 )
 
-var (
-	ErrRemoteRefNotFound          = errors.New("remote ref not found")
-	ErrRemoteRefNotFoundEmptyRepo = errors.New("remote ref not found (empty repo)")
-)
-
 // CheckRepo performs lightweight connectivity checks and gathers repository metadata.
 func CheckRepo(ctx context.Context, repoURL string, auth []gitclient.Option) (*RepoInfo, error) {
 	logger := log.FromContext(ctx)
@@ -44,27 +38,17 @@ func CheckRepo(ctx context.Context, repoURL string, auth []gitclient.Option) (*R
 
 	// Use a ref listing for a lightweight connectivity check, bounded like every call to a Git
 	// server (network_bound.go): a controller's reconcile has no deadline of its own.
-	remote := git.NewRemote(nil, &config.RemoteConfig{
-		Name: "origin",
-		URLs: []string{repoURL},
-	})
-
-	callCtx, cancel := boundGitCall(ctx)
-	defer cancel()
-	refs, err := remote.ListContext(callCtx, &git.ListOptions{
-		ClientOptions: boundToContext(callCtx, auth),
-	})
-	err = boundedCallError(callCtx, err)
+	refs, unborn, err := listRemoteRefs(ctx, repoURL, auth)
 	if err != nil {
-		// Check if this is an empty repository error
-		if errors.Is(err, transport.ErrEmptyRemoteRepository) {
-			logger.Info("Repository is empty", "url", repoURL)
-			return &RepoInfo{
-				DefaultBranch:     nil, // No way to know what the default branch is until it's there
-				RemoteBranchCount: 0,
-			}, nil
+		return nil, err
+	}
+	if len(refs) == 0 {
+		logger.Info("Repository is empty", "url", repoURL, "unbornHead", unborn.Short())
+		info := &RepoInfo{}
+		if unborn != "" { // only a server that reports it says what the default branch is
+			info.DefaultBranch = &BranchInfo{ShortName: unborn.Short(), Unborn: true}
 		}
-		return nil, fmt.Errorf("failed to list remote references: %w", err)
+		return info, nil
 	}
 
 	repoInfo := &RepoInfo{}
@@ -398,7 +382,7 @@ func syncToRemoteFrom(
 		return nil, fmt.Errorf("unexpected fail to read HEAD: %w", err)
 	}
 
-	availableBranch, err := SmartFetchFrom(ctx, repo, branch, parent, auth)
+	availableBranch, unborn, err := smartFetch(ctx, repo, branch, parent, auth)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch: %w", err)
 	}
@@ -423,7 +407,9 @@ func syncToRemoteFrom(
 		return nil, fmt.Errorf("failed to create root branch: %w", err)
 	}
 
-	return createPullReport(branch.Short(), currentHash, plumbing.ZeroHash, false, true), nil
+	report := createPullReport(branch.Short(), currentHash, plumbing.ZeroHash, false, true)
+	report.ParentBranch = unborn.Short()
+	return report, nil
 }
 
 // makeHeadUnborn is called when there are no remote branches to base upon, all is cleared and new commits are created as orphaned branch.

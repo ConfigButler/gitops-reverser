@@ -9,7 +9,6 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
-	"github.com/go-git/go-git/v6/config"
 	"github.com/go-git/go-git/v6/plumbing"
 	gitclient "github.com/go-git/go-git/v6/plumbing/client"
 
@@ -300,7 +299,8 @@ func (w *BranchWorker) recordAdvertisement(advertisement remoteAdvertisement, pa
 			w.recordMissingParent("", advertisement.parentBranch)
 			return true
 		}
-		w.recordAbsentBranch("", "", ObservedByFetch) // an empty repository: no parent at all
+		// An empty repository: no parent at all, and the branch its HEAD names when it said.
+		w.recordAbsentBranch(advertisement.parentBranch, "", ObservedByFetch)
 		return false
 	}
 	w.recordAbsentBranch(advertisement.parentBranch, advertisement.parent.String(), ObservedByFetch)
@@ -436,7 +436,8 @@ type remoteAdvertisement struct {
 	// branch, or the remote's default branch when none is configured. Zero when the remote does
 	// not carry it, which includes an empty repository.
 	parent plumbing.Hash
-	// parentBranch is that parent's short name; empty when the remote's HEAD names no branch.
+	// parentBranch is that parent's short name; empty when the remote's HEAD names no branch. In an
+	// empty repository it is the branch HEAD names, when the server reports it: see unbornHead.
 	parentBranch string
 	// empty records an advertisement with no hash refs at all: see advertisesNoRefs.
 	empty bool
@@ -445,7 +446,7 @@ type remoteAdvertisement struct {
 // advertiseRemoteBranch asks the remote where a branch and its parent are, and transfers nothing
 // else. An empty parentBranch means the branch the remote's HEAD names.
 //
-// It is built on a storage-less remote, the way CheckRepo is, so it needs no clone on disk. Zero
+// It reads the advertisement the way CheckRepo does, so it needs no clone on disk. Zero
 // means the advertisement did not carry the branch, which includes an empty repository — an
 // observation rather than an error: a branch does not exist without a commit.
 func advertiseRemoteBranch(
@@ -455,14 +456,13 @@ func advertiseRemoteBranch(
 	parentBranch string,
 	auth []gitclient.Option,
 ) (remoteAdvertisement, error) {
-	remote := gogit.NewRemote(nil, &config.RemoteConfig{Name: "origin", URLs: []string{remoteURL}})
-	refs, err := listRemoteRefs(ctx, remote, auth)
+	refs, unborn, err := listRemoteRefs(ctx, remoteURL, auth)
 	if err != nil {
 		return remoteAdvertisement{}, err
 	}
 	empty := advertisesNoRefs(refs)
 	hashes := make(map[plumbing.ReferenceName]plumbing.Hash)
-	var defaultBranch plumbing.ReferenceName
+	defaultBranch := unborn
 	for _, ref := range refs {
 		switch {
 		case ref.Type() == plumbing.HashReference:

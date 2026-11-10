@@ -1,6 +1,6 @@
 # GitTarget parent branch: an empty repository's default branch
 
-> **design**: deferred; not part of #407. The experiment in §2 is done, nothing else is built.
+> **design**: evidence built (§4, 2026-11-10); the policy in §3 is deferred. Not part of #407.
 > Dated 2026-10-01.
 >
 > Related: [`gittarget-parent-branch.md`](gittarget-parent-branch.md), the feature as built;
@@ -43,8 +43,9 @@ git -c protocol.version=2 ls-remote --symref https://github.com/ConfigButler/emp
   answers `unborn HEAD symref-target:refs/heads/trunk`.
 - Protocol v0 reports nothing.
 
-**go-git asks the question, then throws the answer away.** At v6.0.0-alpha.5, and unchanged on
-upstream main at `fc18716c`:
+**go-git asks the question, then throws the answer away.** At v6.0.0-alpha.5, still at
+v6.0.0-beta.1 and on upstream main at `12b788e4` (line numbers below are alpha.5's; §4 has the
+workaround):
 
 - It speaks protocol v2 by default, and sends `unborn` when the server advertises
   `ls-refs=unborn` (`internal/transport/v2.go`, `lsRefsSupportsUnborn`).
@@ -123,30 +124,44 @@ explicit bootstrap form is wanted, it gets its own design.
 
 ## 4. Getting the go-git change
 
-1. **Upstream first.** Open a go-git issue and a PR with §7: the error type, both paths, and tests
-   against a v2 `git http-backend` and over `file://`. It is additive and backward-compatible for
-   every `errors.Is` caller. An upstream PR may prefer to expose the unborn target on the
-   `Remote.List` result rather than only through the error; settle the shape with the
-   maintainers.
-2. **Our side waits for a go-git release that carries it.** Until then nothing changes.
-3. **Fallback, if upstream stalls:** a temporary `replace` to a fork tag, only with the user's
-   agreement. Do not hand-roll a v2 `ls-refs` client in this repository.
+**Built without a go-git change, on v6.0.0-beta.1** (the latest release as of 2026-11-10). beta.1
+still discards the answer: `GetRemoteRefs` returns `ErrEmptyRemoteRepository` for an empty
+repository before it builds the `RemoteRefs` whose `Unborn` field would carry it, so `Remote.List`
+cannot expose it. Upstream main (`d6fa0275`) adds `LsRefsOutput.UnbornHead` but returns the same
+error. What beta.1 does make public is enough:
 
-## 5. Steps once go-git carries it
+- `listRemoteRefs` opens the upload-pack session itself (`gitclient.New(...).Handshake`) instead
+  of calling `Remote.List`, and returns the same refs (peeled ones left out, as `Remote.List`
+  does by default).
+- On `ErrEmptyRemoteRepository`, `unbornHead` asks `ls-refs` again on that session through go-git's
+  public `transport.Commander`, with `packp.LsRefsArgs{Symrefs, Unborn}`, and only when the server
+  offers `ls-refs=unborn`. It is not a hand-rolled client: go-git encodes the request and decodes the
+  reply. A v0/v1 session is not asked, and a reply that carries any hash ref is discarded (the
+  repository stopped being empty in between).
+- Cost: one more upload-pack POST, only for an empty repository over v2. The v0 harness and the
+  request ledger are unchanged.
+
+Delete `unbornHead` once a go-git release returns the name for an empty repository; the §7 patch
+is still the shape to propose upstream.
+
+## 5. Steps
 
 1. **Verify the GitHub claim** in §1 on a *throwaway* repository, never on `ConfigButler/empty.git`:
-   does pushing a non-default branch first make it the default? Record the answer in §1.
-2. **Harness.** Add a v2 variant of `startRealGitServer` that keeps `Git-Protocol`. Leave the
-   ADO/v0 server and the ledger rows untouched.
-3. **Discovery.** `CheckRepo`, `listRemoteRefs` and `SmartFetchFrom` read the unborn target with
-   `errors.As`. `CheckRepo` returns `DefaultBranch{ShortName: X, Unborn: true}`; the observation
-   carries `ParentBranch=X` for `Unborn`. Update the doc comments that say "empty when Unborn"
-   (`remote_observation.go`, `api/v1alpha3/gittarget_types.go`, `configuration.md`).
-4. **Tests.** On the v2 harness with a bare repository made by `init -b trunk`, status reports
-   `trunk`; on the v0 harness it reports an empty branch. Behavior is unchanged in both. The
-   ledger is unchanged: the target rides on the `ls-refs` call discovery already makes.
-5. **Live test.** `TestCheckRepo_PublicConnectivityEmpty` expects `main` / `Unborn`.
-6. **Then the policy decision in §3**, as its own change with an UPGRADING note.
+   does pushing a non-default branch first make it the default? Not done; it matters only to §3.
+2. **Harness.** Done: `adoSimulator.protocolV2` keeps `Git-Protocol`, off by default, so the
+   ADO/v0 server and the ledger rows are untouched.
+3. **Discovery.** Done: `CheckRepo` returns `DefaultBranch{ShortName: X, Unborn: true}`;
+   `PullReport.ParentBranch` and the refresh advertisement carry X, and the observation is
+   `{state: Unborn, branch: X}`. A push cannot see `HEAD`, so its observation keeps the name the
+   last discovery read. `recordAbsentBranch` now decides `Unborn` by the absent parent commit, not
+   the absent name.
+4. **Tests.** Done (`internal/git/unborn_head_test.go`): a bare repository made by `init -b trunk`
+   reports `trunk` over v2 and no name over v0; behavior is unchanged in both. Over v2 a dangling
+   `HEAD` in a repository with commits is named too.
+5. **Live test.** Done: `TestCheckRepo_PublicConnectivityEmpty` expects `main` / `Unborn`.
+6. **Then the policy decision in §3**, as its own change with an UPGRADING note. Whatever is chosen,
+   `ParentUnborn` and `ErrDefaultBranchUnresolved` stay: the first is the state an empty repository
+   is in, the second a repository with commits whose `HEAD` names no branch it carries.
 
 ## 6. Out of scope
 

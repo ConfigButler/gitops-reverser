@@ -1714,7 +1714,9 @@ status:
   created from, observed together with the branch's absence. `state` is `Found` (the first commit
   builds on `commit`, the parent's tip), `Missing` (the parent is not on the remote either; the
   `GitBranch` reports `ParentBranchNotFound` and nothing is written) or `Unborn` (an empty repository, with
-  no refs at all, and no parent configured; the first commit starts the branch with no history). See
+  no refs at all, and no parent configured; the first commit starts the branch with no history). For
+  `Unborn`, `branch` is the branch the empty repository's `HEAD` names, which only a server speaking
+  Git protocol v2 reports (GitHub does); it is empty when the server does not say. See
   [starting the write branch from another branch](#starting-the-write-branch-from-another-branch-specparentbranch).
 
 `kubectl get gitbranch` shows `commit` in the `Commit` column, and `-o wide` shows

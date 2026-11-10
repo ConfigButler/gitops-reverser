@@ -3179,10 +3179,11 @@ func (w *BranchWorker) LastRemoteObservation() (RemoteObservation, bool) {
 // guess there is how a stale revision reaches status.
 //
 // An empty revision is a branch the remote does not carry, observed without a parent to name: an
-// empty repository, which leaves the first commit unborn.
+// empty repository, which leaves the first commit unborn. Only a push observes it this way, and a
+// push advertisement carries no HEAD, so the branch HEAD names is the one the last discovery read.
 func (w *BranchWorker) recordRemoteObservation(revision string, by ObservationSource) {
 	if revision == "" {
-		w.recordAbsentBranch("", "", by)
+		w.recordAbsentBranch(w.lastUnbornHead(), "", by)
 		return
 	}
 	w.publishObservation(RemoteObservation{Commit: revision, At: time.Now(), By: by, Repo: w.repo})
@@ -3200,16 +3201,27 @@ func (w *BranchWorker) recordMissingParent(requested, branch string) {
 }
 
 // recordAbsentBranch records that the write branch is absent, and where the parent it would be
-// created from is. An empty parent is an empty repository, which has none.
+// created from is. No parent commit is an empty repository, which has no parent; parentBranch is
+// then the branch its HEAD names, or empty when the server did not say.
 func (w *BranchWorker) recordAbsentBranch(parentBranch, parentCommit string, by ObservationSource) {
 	state := ParentFound
-	if parentBranch == "" {
-		state, parentCommit = ParentUnborn, ""
+	if parentCommit == "" {
+		state = ParentUnborn
 	}
 	w.publishObservation(RemoteObservation{
 		At: time.Now(), By: by, Repo: w.repo,
 		ParentState: state, ParentBranch: parentBranch, ParentCommit: parentCommit,
 	})
+}
+
+// lastUnbornHead is the branch an empty repository's HEAD named at the last observation, when that
+// observation was of an empty repository.
+func (w *BranchWorker) lastUnbornHead() string {
+	last := w.lastObservation.Load()
+	if last == nil || last.ParentState != ParentUnborn {
+		return ""
+	}
+	return last.ParentBranch
 }
 
 func (w *BranchWorker) publishObservation(observed RemoteObservation) {

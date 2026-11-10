@@ -186,8 +186,9 @@ type GitBranchParentStatus struct {
 	State GitBranchParentState `json:"state"`
 
 	// Branch is the parent branch: spec.parentBranch, or the remote's default
-	// branch when that is omitted. Empty when state is "Unborn", and when the
-	// remote names no default branch.
+	// branch when that is omitted. When state is "Unborn" it is the branch the
+	// empty repository's HEAD names, which only a server speaking Git protocol
+	// v2 reports. Empty when the remote names no default branch.
 	// +optional
 	Branch string `json:"branch,omitempty"`
 
