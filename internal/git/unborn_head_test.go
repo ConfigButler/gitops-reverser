@@ -78,7 +78,8 @@ func TestListRemoteRefs_ARepositoryWithCommitsHasNoUnbornHeadOverV2(t *testing.T
 	repoDir := filepath.Join(projectRoot, "repo.git")
 	createBareRepo(t, repoDir)
 	main := simulateClientCommitOnDisk(t, repoDir, "main", "README.md", "x\n")
-	gitIn(t, repoDir, "tag", "-a", "-m", "annotated", "v1", main.String())
+	gitIn(t, repoDir, "-c", "user.name=Outside", "-c", "user.email=o@example.com",
+		"tag", "-a", "-m", "annotated", "v1", main.String())
 	sim := startRealGitServer(t, projectRoot, repoDir)
 	sim.protocolV2.Store(true)
 
