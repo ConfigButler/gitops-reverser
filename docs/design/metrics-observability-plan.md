@@ -513,7 +513,7 @@ the same reason. The doc comment now says so, so a timestamp well in the past re
 as "measuring stopped".
 
 The field is also **renamed** `observedTime` → `lastChangedTime`, since renamed again to
-`lastChangedAt` by [`vocabulary-cleanup.md`](vocabulary-cleanup.md). It behaved this way as soon as the
+`lastChangedAt` by the vocabulary cleanup (#397). It behaved this way as soon as the
 restamping stopped, but the old name invited clients to read it as a freshness signal, and a
 behavioral change under an unchanged name is the kind a consumer discovers in production. The
 rename makes the break visible. `retainedDocuments`, `mode`, and the whole of `status.streams` are

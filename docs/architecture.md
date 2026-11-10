@@ -1664,8 +1664,7 @@ Every `GitTarget` on the branch reports the outage from one worker report
 held save says the same in its `WaitingForPush` message, and the `git_retained_*`,
 `git_intake_paused` and `git_next_retry_timestamp_seconds` metrics describe the backlog. What this
 recovers, and what watch history and a restart cannot, is the
-[recovery contract](design/gittarget-branch-worker-pending-writes.md#recovery-contract); the
-[event pipeline overview](design/event-pipeline-overview.md) draws it.
+[recovery contract](design/gittarget-branch-worker-pending-writes.md#recovery-contract).
 
 ### Durability of the write queue (planned)
 

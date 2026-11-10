@@ -2,7 +2,8 @@
 
 > **design** — the single statement of the boundary. Index: [`../../INDEX.md`](../../INDEX.md)
 >
-> Status: the front door for the **target** boundary. Captured 2026-07-11.
+> Status: the front door for the **target** boundary. Captured 2026-07-11, rows checked against
+> the code on 2026-11-10.
 > This page combines shipped behaviour with the design that must precede the rest
 > of the boundary. Rows marked **planned** state the intended contract, not
 > implemented behaviour; other rows describe the current runtime. If a claim here
@@ -78,7 +79,7 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 | Construct | Verdict | Why |
 |---|---|---|
 | kustomize `resources`, `namespace`, `images`, `replicas` | **Editable** | invertible; `images`/`replicas` edit-through is shipped |
-| kustomize base + un-fancy overlays | **Editable, narrow** | render-root scoping reads `../../base` as read-only context and writes only inside the overlay; the base is never written. It edits existing overlay-local documents and declared image/replica entries, and **authors a new `images:`/`replicas:` entry** when a base-supplied image/replica is changed in one environment. `scan-repo` still reports these as `overlay-fan-out-unsupported` — the discovery-side flip is a follow-up |
+| kustomize base + un-fancy overlays | **Editable, narrow** | render-root scoping reads `../../base` as read-only context and writes only inside the overlay; the base is never written. It edits existing overlay-local documents and declared image/replica entries, and **authors a new `images:`/`replicas:` entry** when a base-supplied image/replica is changed in one environment. `scan-repo` accepts them too; `overlay-fan-out-unsupported` is retired |
 | New object in an external-base overlay | **Editable** | placed as an overlay-local file and registered in the overlay's own `resources:` entry (never the base's), verified by re-render before the commit; proven by `TestPlacement_ExternalBaseOverlay_NewObject`. A new object a folder `images:`/`replicas:` entry would override is refused loudly by the oracle, not committed |
 | Change a base-supplied image/replica in one overlay | **Editable** | the writer authors a new `images:`/`replicas:` entry in the overlay's own kustomization (the base stays read-only), verified by re-render; proven by `TestOverlayAuthors_ImageEntry_ForBaseSuppliedImage` / `..._ReplicaEntry_ForBaseSuppliedCount` |
 | Delete a base-inherited object in one overlay | **Editable** | the writer authors a `$patch: delete` (patch file plus `patches:` entry) in the overlay, verified by re-render that the object leaves the render; the base is untouched. Proven by `TestOverlayAuthors_DeletePatch_ForInheritedObject`. A patch that fails to match is refused by the oracle, not committed |
@@ -91,15 +92,16 @@ templates, and multi-input ResourceSet templates alike. It is specified once, in
 | kustomize `helmCharts:` (inflation) | **Refused** | we never render a chart |
 | A Helm chart (`Chart.yaml` + `templates/` + `values.yaml` + `crds/`) | **Planned: skipped as a unit** | this needs chart-folder detection; today `scan-repo` can report an incidental `crds/` directory as accepted |
 | Helm knobs on a `HelmRelease` / `Application` (chart version, inline values, parameters) | **Editable** | the Helm surface people actually use — see below |
-| Free-standing Helm values file (`values/production.yaml`) | **Refused today** | not KRM; a `ValuesFile` projection is proposed |
+| Helm values file named by a `HelmRelease` (`spec.chart.spec.valuesFiles`) or an Argo CD `Application` (`helm.valueFiles`) | **Read-only context** | retained, never written, never a reason to refuse the folder; editing it is the planned `ValuesFile` projection ([values-file-projection.md](values-file-projection.md), Move 2) |
+| Free-standing Helm values file no release names | **Refused** | `non-krm-yaml`: not KRM, and nothing in the folder names it |
 | CI-rendered `rendered/` output | **Refused** | the next render destroys the edit |
 
 ## Machine-written Git, and secrets
 
 | Construct | Verdict | Why |
 |---|---|---|
-| A path written by Flux `ImageUpdateAutomation` | **Refused** | a bot commits here; `$imagepolicy` comments are load-bearing |
-| `.argocd-source*.yaml` (Argo CD Image Updater) | **Refused / read-only** | written by a bot, and it outranks the config a reader would inspect |
+| A path written by Flux `ImageUpdateAutomation` | **Planned: refused** | a bot commits here; `$imagepolicy` comments are load-bearing. Nothing detects it today |
+| `.argocd-source*.yaml` (Argo CD Image Updater) | **Planned: read-only** | written by a bot, and it outranks the config a reader would inspect. Nothing detects it today |
 | SOPS `Secret` | **Write-only** | not schema-conformant; the `mac` binds the whole document |
 | `SealedSecret` | **Editable** | ordinary KRM; each value sealed independently |
 | `ExternalSecret` | **Editable** | ordinary KRM; the value simply lives elsewhere |
@@ -118,11 +120,10 @@ documents landed. What stays
 refused, permanently and correctly, is **chart inflation**: we never render
 `templates/`, and we never learn what a value means.
 
-The one genuine gap is the **free-standing values file**, which is not KRM and so
-has no object for a user to edit. The proposed fix reuses the
-[`EncryptedSecret`](write-only-encrypted-secrets.md) trick — project it into a kind
-we can store — and is argued in
-[expansion-boundary-and-corpus-organisation.md](expansion-boundary-and-corpus-organisation.md).
+The one genuine gap is the **values file**, which is not KRM and so has no object for
+a user to edit. A values file a release names is already read-only context, so it no
+longer refuses the folder. Making it editable means projecting it into a kind we can
+store; that is Move 2 of [values-file-projection.md](values-file-projection.md).
 
 ## What we will not do
 
@@ -153,6 +154,6 @@ we can store — and is argued in
 | [resource-capability-model.md](resource-capability-model.md) | what may I do to *this document* (schema conformance, visibility, write unit) |
 | [write-only-encrypted-secrets.md](write-only-encrypted-secrets.md) | SOPS: describe the ciphertext, never read it |
 | [sealed-secrets-and-external-secrets.md](sealed-secrets-and-external-secrets.md) | why neither needs a new kind, and the derived-object gate |
-| [Git write preflight](../git-write-preflight.md) | what happens to an edit with no legal destination |
+| [Git write preflight](../git-write-preflight.md) | proposal, not built: what happens to an edit with no legal destination |
 | [repo-discovery-and-onboarding-scan.md](repo-discovery-and-onboarding-scan.md) | reporting all of this over a whole repository |
 | [`test/fixtures/gitops-layouts/`](../../../test/fixtures/gitops-layouts/) | the corpus of real-world shapes every verdict is checked against |

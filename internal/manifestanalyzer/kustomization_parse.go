@@ -17,7 +17,6 @@ import (
 // reflecting over that type's fields, which makes the check exhaustive by construction: a field
 // the operator has never heard of lands outside supportedKustomizationFields and refuses the
 // folder rather than being silently tolerated.
-// See docs/design/support-boundary/kustomize-support-boundary.md §7.
 
 // supportedKustomizationFields names the struct fields of kustypes.Kustomization
 // that the operator models. Every other field, present and non-zero, refuses the

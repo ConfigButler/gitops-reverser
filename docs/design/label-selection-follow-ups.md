@@ -1,7 +1,7 @@
 # Label selection: follow-ups
 
 > **design**: open. Nothing here blocks label selection from shipping. Item 1 is resolved.
-> Index: [`../INDEX.md`](../INDEX.md). Parent: [`watches-labels-simplification.md`](watches-labels-simplification.md).
+> Index: [`../INDEX.md`](../INDEX.md). Contract: [selecting objects by label](../configuration.md#selecting-objects-by-label-rulesobjectselector).
 > Checked: 2026-09-29, against `feat/watch-object-selector` (PR #399).
 
 The label-selection branch went through several review rounds before merge. Most findings were

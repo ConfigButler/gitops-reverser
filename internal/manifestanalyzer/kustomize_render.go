@@ -22,8 +22,6 @@ import (
 // re-implementing its transformers. It is the ground truth the projection is
 // checked against: what we believe a folder renders to becomes what the library
 // Flux renders with says it renders to.
-//
-// See docs/design/support-boundary/kustomize-support-boundary.md §7.
 
 // The provenance kustomize emits when buildMetadata asks for it. These are the
 // reason we need not walk the resources graph ourselves:

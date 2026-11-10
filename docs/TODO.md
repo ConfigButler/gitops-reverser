@@ -135,6 +135,27 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   `GitTarget`, plus the durable queue, plus whether a replica warms its fact index before starting a
   watch it took over. Redis becomes required in this mode.
   [ha-gittarget-distribution-plan.md](future/ha-gittarget-distribution-plan.md).
+- [ ] **Learn an empty repository's default branch, and simplify around it.** The pinned go-git
+  (`v6.0.0-beta.1`) now keeps what protocol v2 `ls-refs` reports about an unborn `HEAD`
+  (`transport.RemoteRefs.Unborn`); at alpha.5 it was discarded, which is why status reports
+  `unknown` and the code carries `ParentUnborn`, `ErrDefaultBranchUnresolved` and the
+  `branch_worker_empty_repo_test.go` pins. Check whether `Remote.List` exposes it or only the
+  transport session does, read it in `refresh.go` and `git_smart_fetch.go`, and remove what it makes
+  unnecessary. Which branch a first commit may create stays a separate policy decision
+  ([gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md); its §4 and
+  the go-git entry in [misconceptions.md](misconceptions.md) need updating with it).
+- [ ] **The branch claim is first-proven-wins** (`internal/git/branch_owner.go`). Anyone who can
+  create a `GitProvider` and a `GitBranch` with a credential that passes the push-session proof can
+  claim a branch no older `GitBranch` holds; on Gitea and Forgejo a read-only credential passes it
+  (AGit). An older `GitBranch` takes the branch from a live holder once it proves itself, and the
+  claim is not persisted. Only a per-repository authority closes this (an object per repository URL,
+  or a cluster rule naming the one provider a repository's branches may be claimed through).
+- [ ] **Alias detection.** `repourl.Normalize` cannot unify Gitea's SSH on `:2222` beside HTTPS, a
+  separate SSH hostname, a vanity domain or a renamed repository, so two spellings get two claims
+  and two workers on one branch, undetected. Design: warn when a commit pushed under one key shows up
+  under the other. Also the HA plan's HA-0 question.
+- [ ] Accepted for now: no rate bound on push deliveries. Folding bounds the queue, not the rate, so
+  a `GitReceiver` token holder can keep a worker reading; a per-worker cooldown would bound it.
 - [ ] Re-assess unifying the pending-write kinds
   (grouped window, resync and request record, since #450 removed the atomic kind). Deferred.
 - [ ] Improve queue and worker observability, with more high-load tests.
@@ -217,19 +238,21 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   [git-write-preflight.md](design/git-write-preflight.md) (superseded by the red-status plan),
   [gittarget-red-status-plan.md](design/gittarget-red-status-plan.md) (steps 5 and 6
   built), [target-watch-plan.md](design/target-watch-plan.md) (queue depth is 1000, not 100),
-  and the go-git version in [azure-devops-multi-ack.md](design/azure-devops-multi-ack.md) and
-  [gittarget-parent-empty-repository.md](design/gittarget-parent-empty-repository.md).
-- [ ] **Wrong claims in design bodies**: [support-contract.md](design/support-boundary/support-contract.md)
-  calls overlays, values files and ImageUpdateAutomation paths refused;
+  and the go-git version in [azure-devops-multi-ack.md](design/azure-devops-multi-ack.md).
+- [ ] **Wrong claims in design bodies**:
   [acceptance-precision.md](design/support-boundary/acceptance-precision.md) says everything is
   open; [admission-consent.md](design/support-boundary/admission-consent.md) says the preflight
   "fails closed" (it was decided fail-open, and is not built);
   [multi-source-audit-ingress-hardening.md](design/multi-source-audit-ingress-hardening.md) says the
-  server checks the named provider exists; [event-pipeline-overview.md](design/event-pipeline-overview.md)
-  has no applier-claim stage.
+  server checks the named provider exists.
 - [ ] **`(GVR, scope)` is still in [architecture.md](architecture.md)** (nine times);
   [definitions.md](definitions.md) says "resource collection" and retires the old spelling. A
   mechanical reword, as its own docs PR.
+- [ ] **Write down API Priority and Fairness for the operator's load**: the inflight ceiling, which
+  built-in priority level our watches and audit webhook land in, whether a dedicated
+  `FlowSchema`/`PriorityLevelConfiguration` helps, and what to observe. An earlier facts page was
+  removed because it recommended `distinguisherMethod: ByResource`, which does not exist
+  (`ByUser` and `ByNamespace` only). Measure before writing it.
 - [ ] Settle two words: "replay" in [applier-echoes.md](design/applier-echoes.md) departure 11
   (definitions.md says "initial events"), and "sweep" against "prune" for the act of removing.
 

@@ -2061,7 +2061,8 @@ func (w *BranchWorker) ensureBaseForCycle(provider *configv1alpha3.GitProvider, 
 
 	// Resolve credentials only on the branch that touches the remote. A cycle planning on a
 	// trusted base never reads the credentials Secret at all, which is a saved API GET per cycle
-	// now that the Secret cache is disabled. See docs/rbac.md §5.
+	// now that the Secret cache is disabled. See docs/rbac.md, "The operator does not read
+	// Secrets wholesale".
 	auth, err := getAuthFromSecret(w.ctx, w.Client, provider, w.sshHostKeys, w.credentialPolicy)
 	if err != nil {
 		return fmt.Errorf("resolve auth: %w", err)

@@ -3,7 +3,7 @@
 > Status: proposal — a strategy review with a decided Helm standpoint and worked
 > configuration examples. Nothing here binds until scheduled.
 > Date: 2026-08-27.
-> Companions: [`config-surface-for-a-structured-repository.md`](config-surface-for-a-structured-repository.md)
+> Companions: `config-surface-for-a-structured-repository.md` (removed)
 > (the field-level review this extends),
 > [`../layout/model.md`](../layout/model.md) and
 > `../design/gittarget-api-wave.md` (removed) (the API work this
@@ -158,7 +158,7 @@ against what actually exists.
 ## Where the configuration surface should go — by example
 
 The one-sentence defect stands as stated in the
-[config-surface review](config-surface-for-a-structured-repository.md): `spec.path` is one
+config-surface review (removed): `spec.path` is one
 string while the folder has structure, and the API offers no way to declare expectations,
 see what was understood, or look before writing. The layout model and the API wave are the
 fix. The examples below show the surface the two directions actually need — and that it is

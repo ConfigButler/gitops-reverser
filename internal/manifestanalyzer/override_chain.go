@@ -21,8 +21,6 @@ import (
 // What the annotation does NOT say is which images: ENTRY supplied a value — kustomize
 // keeps no field-level provenance at all — so the projection still has to derive the
 // supplier itself. See overrides_projection.go.
-//
-// See docs/design/support-boundary/kustomize-support-boundary.md §7.
 
 // reasonRenderFailed marks a render root kustomize could not build. The folder is
 // refused: if the build fails, Flux cannot deploy it either.

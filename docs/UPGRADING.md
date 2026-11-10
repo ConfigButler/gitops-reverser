@@ -992,8 +992,7 @@ Plan descriptions in those logs drop the operation suffix: a collection renders 
 
 Every change here is a name, and the controllers decide nothing differently; the exceptions are the
 moved throttle above and the two removed flags at the end. The rules the names now follow are in
-[`definitions.md`](definitions.md), and the plan is
-[`design/vocabulary-cleanup.md`](design/vocabulary-cleanup.md).
+[`definitions.md`](definitions.md).
 
 ### Before you upgrade
 

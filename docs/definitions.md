@@ -12,9 +12,7 @@ This page completes a set of four rulebooks, and each owns one surface:
 | [`spec/status-conditions-guide.md`](spec/status-conditions-guide.md) | conditions and reasons: the kstatus trio, polarity, the generic reason vocabulary |
 | this page | concepts, and the API names that carry them: kinds, fields, blocks, timestamps, enum values, printer columns |
 
-It binds. A name in the code that contradicts a rule here is a defect, not a variation, and the
-cleanup that produced this page is tracked in
-[`design/vocabulary-cleanup.md`](design/vocabulary-cleanup.md).
+It binds. A name in the code that contradicts a rule here is a defect, not a variation.
 
 ## Who we borrow from, and for what
 
