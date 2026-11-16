@@ -1,6 +1,6 @@
 # Mutation-capture lab image. Built by `task lab-build-image` and run on the lab's
 # own cluster; it is never part of the product image or the Helm chart.
-FROM golang:1.27.3 AS builder
+FROM golang:1.27.4 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH

@@ -8,7 +8,7 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.1": {},
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1.10.2": {},
     "ghcr.io/devcontainers/features/common-utils:2.7.1": {
       "userUid": "automatic",
       "userGid": "automatic",
