@@ -15,7 +15,7 @@ KUBE_APISERVER_MAX_MUTATING_REQUESTS_INFLIGHT="${KUBE_APISERVER_MAX_MUTATING_REQ
 # a node that _webhook-tls-ready's `docker restart` of the server never touches. 0 is still
 # accepted for a single-node cluster, which leaves the server untainted.
 K3D_AGENT_COUNT="${K3D_AGENT_COUNT:-1}"
-K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.37.1-k3s1}"
+K3S_IMAGE="${K3S_IMAGE:-rancher/k3s:v1.37.2-k3s1}"
 # false leaves the kubeconfig's current context where it was, so a second cluster (the
 # mutation-capture lab) can be created without moving kubectl, or an e2e run, onto it.
 K3D_SWITCH_CONTEXT="${K3D_SWITCH_CONTEXT:-true}"
