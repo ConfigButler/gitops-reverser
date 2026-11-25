@@ -2,8 +2,8 @@
 
 The open work, in one list. Each item is one or two lines with a code pointer or the design page
 that argues it. Ranked within each group, most urgent first. **Before the next release** marks what
-should land before the next tag is cut (the last release is v0.55.0). Checked against `main` at
-`1bc97904` on 2026-10-24.
+should land before the next tag is cut (the last release is v0.56.0). Checked against `main` at
+`a13c23d9` on 2026-11-25.
 
 ## Before the next release
 
@@ -112,14 +112,6 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   the wall clock, so the model sends each late write inside it). Two guards no input reaches are pinned by unit
   tests instead: the outage ending when its writes settle with no push, and an attach that closes a
   later window in the same pass.
-- [ ] `expireWaitingCommitRequests` ranges over a map, so empty commits for saves that expire in
-  the same pass land in random order; sort by `seq` (`internal/git/commit_request_attach_loop.go`).
-- [ ] `buildRequestRecordWrite` keeps only the username (`UserInfo{Username: pcr.author}`); carry the
-  full `UserInfo` so a record commit has the same author identity as a window commit.
-- [ ] A record commit skips `requestTemplate`, though its doc comment says it is phrased like every
-  other commit; fix the code or the comment.
-- [ ] Nits: a doubled doc comment on `commitWindowFor`; "close-delay" in the test names in
-  `internal/controller/commitrequest_kstatus_test.go`.
 - [ ] **Parent observation, step 1**: keep parent availability and its timestamp after the write
   branch exists, from existing advertisements, with no extra connections.
   [gittarget-parent-observation.md](design/gittarget-parent-observation.md#implementation-and-validation).
@@ -153,7 +145,7 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
 - [ ] Accepted for now: no rate bound on push deliveries. Folding bounds the queue, not the rate, so
   a `GitReceiver` token holder can keep a worker reading; a per-worker cooldown would bound it.
 - [ ] Re-assess unifying the pending-write kinds
-  (grouped window, resync and request record, since #450 removed the atomic kind). Deferred.
+  (grouped window, resync and empty commit, since #450 removed the atomic kind). Deferred.
 - [ ] Improve queue and worker observability, with more high-load tests.
 
 ## Watch plane
@@ -208,19 +200,21 @@ Their argument for each is in [gitops-api-open-asks.md](future/gitops-api-open-a
   Address before the next feature that widens commit-message, snapshot or write-window behavior.
 - [ ] **Run image-refresh only when its inputs change**, a path filter in `ci.yml`; it removes a
   14–18 minute leg from most PRs. [e2e-suite-trim.md](design/e2e-suite-trim.md).
-- [ ] **F-f: E6 can leak its editing goroutine**: `close(stop)` runs only after the `Eventually`
-  succeeds. Use `DeferCleanup` (`test/e2e/bi_directional_echoes_e2e_test.go`).
 - [ ] The e2e detail gaps and redundancy tables in [e2e-suite-trim.md](design/e2e-suite-trim.md):
   four specs that look tested and are not, then the moves and merges.
 - [ ] `SetDefaultEventuallyTimeout` is global and set in 17 e2e files, so the last `Describe` body
-  built wins; use per-spec timeouts (`Eventually(...).WithTimeout`).
-- [ ] e2e for the commit-window stack: two authors editing disjoint files at once, then a
-  `path_conflict`; E5 extended to the withheld-field carry; a restart of a source cluster's
-  controller with a save in flight; `catchUp: AfterPush` at shutdown.
+  built wins; use per-spec timeouts (`Eventually(...).WithTimeout`). Moving each call into a
+  `BeforeEach` is not enough: Ginkgo runs top-level containers in random order, so a spec that sets
+  none would inherit whichever container ran before it, and a `BeforeAll` runs before its own
+  container's `BeforeEach`. Needs a full e2e run to verify.
+- [ ] e2e for the commit-window stack: E5 extended to the withheld-field carry; a restart of a
+  source cluster's controller with a save in flight; `catchUp: AfterPush` at shutdown. (Two and
+  three authors at once and a `path_conflict` are covered since #478.)
 - [ ] e2e Test A: a delete missed while the controller is scaled to 0; then Tests B and C.
   [e2e-coverage-gaps-and-improvements-plan.md](design/e2e-coverage-gaps-and-improvements-plan.md).
-- [ ] Re-enable `goconst` with a path-scoped exclusion (`test/`, `internal/git/commit.go`) instead
-  of the repo-wide disable in [.golangci.yml](../.golangci.yml).
+- [ ] Enable `goconst`. It is not in the `enable` list of [.golangci.yml](../.golangci.yml) (only a
+  `_test.go` exclusion names it), so it never runs; enable it with a path-scoped exclusion (`test/`,
+  `internal/git/commit.go`).
 - [ ] Release-image reuse PRs 2, 3 and 5 ([release-image-reuse-plan.md](design/release-image-reuse-plan.md)).
 - [ ] Metrics Phase 5: dashboard JSON, recording and alert rules
   ([metrics-observability-plan.md](design/metrics-observability-plan.md) §7).

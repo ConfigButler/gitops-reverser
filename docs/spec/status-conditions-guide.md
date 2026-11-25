@@ -359,7 +359,7 @@ Canonical reads:
 - failed: `Ready=False`, `Stalled=True`, reason `FinalizeFailed`, `NotAllowed`, `GitTargetNotFound` or
   `SaveInProgress` → kstatus Failed
 
-`status.author` empty means no audit fact named the creator, or attribution is off: the request
+`status.author` omitted means no audit fact named the creator, or attribution is off: the request
 claims no actor and can attach only to an unnamed window. That does not itself determine the Git
 author: the attached watch window is configured-author (the committer) when watch attribution is
 disabled, or explicitly unresolved when watch attribution ran but could not name an actor.

@@ -728,7 +728,7 @@ func (w *BranchWorker) EnqueueAttach(req *AttachCommitRequest) {
 		w.pendingResyncsMu.Unlock()
 		w.Log.Info("CommitRequest attach enqueued",
 			"request", req.Namespace+"/"+req.Name,
-			"author", req.Author,
+			"author", req.Author.Username,
 			"target", req.GitTargetNamespace+"/"+req.GitTargetName,
 			"attach", string(req.Attach),
 			"messageOverride", req.Message != "")
@@ -3140,9 +3140,7 @@ func (w *BranchWorker) getGitProvider(ctx context.Context) (*configv1alpha3.GitP
 	return &provider, nil
 }
 
-// commitWindowFor returns the commit-window duration for ONE GitTarget.
-//
-// commitWindowFor resolves a GitTarget's commit window timers.
+// commitWindowFor resolves ONE GitTarget's commit window timers.
 //
 // The window is a GitTarget field but this worker serves every target sharing a (provider,
 // branch), so resolving per target is what makes the field mean what it says. Affordable because a

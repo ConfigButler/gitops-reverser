@@ -24,7 +24,7 @@ spec:
     - jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
-    - jsonPath: .status.author
+    - jsonPath: .status.author.username
       name: Author
       type: string
     - jsonPath: .status.commit
@@ -60,7 +60,7 @@ spec:
           spec is immutable, and status.commit reports the commit once it is on the
           remote.
 
-          Schema revision 1, compatible from revision 1.
+          Schema revision 2, compatible from revision 2.
         properties:
           apiVersion:
             description: |-
@@ -251,10 +251,29 @@ spec:
               author:
                 description: |-
                   Author is who created this request, as the audit events of the cluster
-                  it was created on name them. Empty when they name nobody, or when author
-                  attribution is off: then the request saves only writes that name nobody
-                  either.
-                type: string
+                  it was created on name them. Omitted when they name nobody, or when
+                  author attribution is off: then the request saves only writes that name
+                  nobody either.
+                properties:
+                  email:
+                    description: |-
+                      Email is the address the login carried, such as the OIDC email claim.
+                      Omitted, a commit gets an address made from the username.
+                    type: string
+                  name:
+                    description: |-
+                      Name is the display name the login carried, such as the OIDC name
+                      claim. Omitted, a commit names the author by username.
+                    type: string
+                  username:
+                    description: |-
+                      Username is the Kubernetes username. The request saves only writes
+                      whose author has this username.
+                    minLength: 1
+                    type: string
+                required:
+                - username
+                type: object
               branch:
                 description: Branch is the branch the commit is made on. Set once
                   the request ends.

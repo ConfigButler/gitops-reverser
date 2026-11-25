@@ -169,7 +169,7 @@ route, so the fact follower reads those audit facts at all.
 | Outcome | The request |
 |---|---|
 | attribution is off | names no author, and nothing waits for one |
-| a fact names the creator | names them, in `status.author` |
+| a fact names the creator | names them, in `status.author` (`username`, and the `name` and `email` the login carried) |
 | no fact, on a provider whose `AuditFactsReceived` is not `True` | names no author: the cluster sends no audit |
 | no fact, on a provider that has received facts | `Ready=True`, reason `AuthorUnresolved`: its fact went missing, so it saves nothing rather than take the window that should stay unattributed |
 

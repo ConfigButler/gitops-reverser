@@ -274,10 +274,10 @@ const (
 	// content-derived mark-and-sweep against the worktree (upsert every desired
 	// resource, drop every watched managed document the snapshot did not contain).
 	PendingWriteResync PendingWriteKind = "resync"
-	// PendingWriteRequestRecord carries no content. It records a CommitRequest's message
+	// PendingWriteEmptyCommit carries no content. It records a CommitRequest's message
 	// in an empty commit when the request ran out of time to attach, and asked for that with
 	// whenNothingToCommit: CommitEmpty. It is not a window: only writes open windows.
-	PendingWriteRequestRecord PendingWriteKind = "request_record"
+	PendingWriteEmptyCommit PendingWriteKind = "empty_commit"
 )
 
 type pendingTargetKey struct {
@@ -381,7 +381,7 @@ type PendingWrite struct {
 	// CommitRequest attached to it asked for whenNothingToCommit: CommitEmpty. A suspended target
 	// still writes nothing.
 	AllowEmpty bool
-	// RequestAuthor and RequestAttribution author a PendingWriteRequestRecord, which has no
+	// RequestAuthor and RequestAttribution author a PendingWriteEmptyCommit, which has no
 	// events to take an author from: they are the request submitter's, matched the same way a
 	// window's author is.
 	RequestAuthor      UserInfo

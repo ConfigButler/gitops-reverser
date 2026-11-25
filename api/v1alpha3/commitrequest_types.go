@@ -177,6 +177,26 @@ type CommitRequestWindow struct {
 	MaxDuration *metav1.Duration `json:"maxDuration,omitempty"`
 }
 
+// CommitRequestAuthor is who created a CommitRequest. A commit the request
+// makes on its own, with nothing else in it, is authored by this person.
+type CommitRequestAuthor struct {
+	// Username is the Kubernetes username. The request saves only writes
+	// whose author has this username.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	Username string `json:"username"`
+
+	// Name is the display name the login carried, such as the OIDC name
+	// claim. Omitted, a commit names the author by username.
+	// +optional
+	Name string `json:"name,omitempty"`
+
+	// Email is the address the login carried, such as the OIDC email claim.
+	// Omitted, a commit gets an address made from the username.
+	// +optional
+	Email string `json:"email,omitempty"`
+}
+
 // CommitRequestStatus defines the observed state of CommitRequest. Progress
 // and outcome are reported entirely through conditions (kstatus-compatible),
 // so the object carries no lifecycle phase string:
@@ -198,11 +218,11 @@ type CommitRequestStatus struct {
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
 	// Author is who created this request, as the audit events of the cluster
-	// it was created on name them. Empty when they name nobody, or when author
-	// attribution is off: then the request saves only writes that name nobody
-	// either.
+	// it was created on name them. Omitted when they name nobody, or when
+	// author attribution is off: then the request saves only writes that name
+	// nobody either.
 	// +optional
-	Author string `json:"author,omitempty"`
+	Author *CommitRequestAuthor `json:"author,omitempty"`
 
 	// Conditions are the latest observations of this CommitRequest's state.
 	// Reconciling and Stalled follow kstatus.
@@ -274,7 +294,7 @@ type CommitRequestStatus struct {
 // +kubebuilder:printcolumn:name="GitTarget",type=string,JSONPath=`.spec.gitTargetRef.name`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`
-// +kubebuilder:printcolumn:name="Author",type=string,JSONPath=`.status.author`
+// +kubebuilder:printcolumn:name="Author",type=string,JSONPath=`.status.author.username`
 // +kubebuilder:printcolumn:name="Commit",type=string,JSONPath=`.status.commit`
 // +kubebuilder:printcolumn:name="Pushed",type=string,JSONPath=`.status.conditions[?(@.type=="Pushed")].status`,priority=1
 // +kubebuilder:printcolumn:name="Applied",type=string,JSONPath=`.status.conditions[?(@.type=="Applied")].status`,priority=1
@@ -289,7 +309,7 @@ type CommitRequestStatus struct {
 // spec is immutable, and status.commit reports the commit once it is on the
 // remote.
 //
-// Schema revision 1, compatible from revision 1.
+// Schema revision 2, compatible from revision 2.
 type CommitRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -331,8 +351,8 @@ func (s *CommitRequest) GitTargetKey() types.NamespacedName {
 // schema this operator was built with, and the oldest revision it can serve: the last line of the
 // kind's description.
 const (
-	CommitRequestSchemaRevision = 1
-	CommitRequestSchemaFloor    = 1
+	CommitRequestSchemaRevision = 2
+	CommitRequestSchemaFloor    = 2
 )
 
 func init() {

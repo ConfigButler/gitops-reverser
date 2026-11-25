@@ -423,8 +423,9 @@ fields:
   default) and `maxDuration` (default `2s`). A request never opens a window; only writes do.
 - `spec.whenNothingToCommit`: `Resolve` (default) or `CommitEmpty`, which records the message in an
   empty commit when the request ends with nothing to commit.
-- `status.author`: the creator, as the request's audit event names them; empty when it names nobody,
-  and then the request can attach only to an unnamed window.
+- `status.author`: the creator, as the request's audit event names them: `username`, and the `name`
+  and `email` the login carried, if any. Omitted when it names nobody, and then the request can
+  attach only to an unnamed window.
 - `status.conditions`: kstatus-compatible. **Ready** is the summary (Unknown while the save runs, True
   once the request reached a terminal outcome that is not an error: a pushed commit, or a benign
   no-commit); **Reconciling**/**Stalled** are the kstatus progress/blocked pair. **Pushed** reports

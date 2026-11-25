@@ -171,7 +171,7 @@ func restoreWorktree(repo *gogit.Repository, start plumbing.Hash) error {
 // counts the same writes (checkoutApplied), so the two can never disagree.
 func (p PendingWrite) retained() bool {
 	switch {
-	case p.Kind == PendingWriteRequestRecord || p.CommitRequest != nil:
+	case p.Kind == PendingWriteEmptyCommit || p.CommitRequest != nil:
 		return true
 	case p.Kind == PendingWriteResync:
 		return p.resyncActions == nil || !p.resyncActions.empty()
@@ -229,10 +229,11 @@ func (p PendingWrite) resolveMessage() messageResolution {
 	switch {
 	case p.Kind == PendingWriteResync:
 		return messageResolutionPreRendered
-	// Framing is bound to the GROUPED kind, not merely to "carries a message". A CommitRequest
-	// attaches its message to an open live window, which finalizes as PendingWriteCommit, so that
-	// is the only write requestTemplate describes.
-	case p.Kind == PendingWriteCommit &&
+	// Framing is bound to the kinds a CommitRequest's message produces, not merely to "carries a
+	// message": the window it attached to, which finalizes as PendingWriteCommit, and the empty
+	// commit of a request no window reached. Both are "a commit whose CommitRequest supplied a
+	// message", which is what requestTemplate frames; a resync's message is never the requester's.
+	case (p.Kind == PendingWriteCommit || p.Kind == PendingWriteEmptyCommit) &&
 		p.CommitMessage != "" &&
 		p.CommitConfig.Message.RequestTemplate != "":
 		return messageResolutionRequestTemplate
@@ -356,8 +357,8 @@ func (w *BranchWorker) executePendingWrite(
 	pendingWrite *PendingWrite,
 ) (int, plumbing.Hash, messageResolution, error) {
 	switch pendingWrite.Kind {
-	case PendingWriteRequestRecord:
-		return w.executeRequestRecord(ctx, worktree, *pendingWrite)
+	case PendingWriteEmptyCommit:
+		return w.executeEmptyCommit(ctx, worktree, *pendingWrite)
 	case PendingWriteResync:
 		// Resync writes never carry a CommitRequest, so their commit hash is unused;
 		// report ZeroHash to keep the per-write SHA bookkeeping uniform.
@@ -529,9 +530,9 @@ func (w *BranchWorker) planPendingWriteEvents(
 	return anyChanges, changedBy, nil
 }
 
-// executeRequestRecord commits a CommitRequest's message with an untouched tree: the record a
-// request that ran out of time to attach leaves when it asked for whenNothingToCommit: CommitEmpty.
-func (w *BranchWorker) executeRequestRecord(
+// executeEmptyCommit commits a CommitRequest's message with an untouched tree: what a request that
+// ran out of time to attach leaves when it asked for whenNothingToCommit: CommitEmpty.
+func (w *BranchWorker) executeEmptyCommit(
 	ctx context.Context,
 	worktree *gogit.Worktree,
 	pendingWrite PendingWrite,
@@ -544,7 +545,7 @@ func (w *BranchWorker) executeRequestRecord(
 	hash, err := worktree.Commit(message, options)
 	if err != nil {
 		return 0, plumbing.ZeroHash, messageResolutionUnsupported,
-			fmt.Errorf("failed to create request record commit: %w", err)
+			fmt.Errorf("failed to create the empty commit: %w", err)
 	}
 	log.FromContext(ctx).Info("Empty commit created to record a CommitRequest that found nothing to commit",
 		"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName,
@@ -555,7 +556,7 @@ func (w *BranchWorker) executeRequestRecord(
 // mayCommitEmpty reports whether this write is allowed to produce an empty commit, and so whether
 // its commit is worth inspecting for one.
 func (p PendingWrite) mayCommitEmpty() bool {
-	return p.Kind == PendingWriteRequestRecord || p.AllowEmpty
+	return p.Kind == PendingWriteEmptyCommit || p.AllowEmpty
 }
 
 // isEmptyCommit reports whether a commit changed no file: its tree is its first parent's. A zero

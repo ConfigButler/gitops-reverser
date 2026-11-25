@@ -37,7 +37,7 @@ func saveAttach(gitTargetName, gitTargetNamespace string) git.AttachCommitReques
 		Namespace:          gitTargetNamespace,
 		Name:               "save",
 		UID:                "uid-save",
-		Author:             "alice",
+		Author:             git.UserInfo{Username: "alice"},
 		GitTargetName:      gitTargetName,
 		GitTargetNamespace: gitTargetNamespace,
 	}

@@ -260,7 +260,9 @@ func TestWindowAdmission_ShutdownDecidesTheWritesAlreadyQueued(t *testing.T) {
 		return event
 	}
 	require.True(t, f.worker.Enqueue(queued("alice", "x", "x3")))
-	f.worker.EnqueueAttach(&AttachCommitRequest{Namespace: "default", Name: "save", Author: "carol"})
+	f.worker.EnqueueAttach(
+		&AttachCommitRequest{Namespace: "default", Name: "save", Author: UserInfo{Username: "carol"}},
+	)
 	require.True(t, f.worker.Enqueue(queued("bob", "z", "z2")))
 
 	f.loop.handleShutdown()
@@ -650,7 +652,7 @@ func TestWindowAdmission_AWindowAnAttachClosedTakesNoRequest(t *testing.T) {
 	waiting := func(author string, seq uint64) *pendingCommitRequest {
 		return &pendingCommitRequest{
 			id:     commitRequestID{Namespace: "default", Name: "save-" + author, UID: "uid-" + author},
-			author: author, gitTargetName: echoTarget, gitTargetNamespace: "default", seq: seq,
+			author: UserInfo{Username: author}, gitTargetName: echoTarget, gitTargetNamespace: "default", seq: seq,
 			message: "feat: " + author, maxDuration: time.Hour, attachDeadline: f.worker.now().Add(time.Minute),
 		}
 	}

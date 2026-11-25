@@ -251,7 +251,7 @@ func TestHandleShutdown_DrainsBufferedAttach(t *testing.T) {
 	require.NoError(t, err)
 
 	w := newMetricsTestWorker()
-	w.EnqueueAttach(&AttachCommitRequest{Namespace: "default", Name: "save", Author: "alice"})
+	w.EnqueueAttach(&AttachCommitRequest{Namespace: "default", Name: "save", Author: UserInfo{Username: "alice"}})
 	require.Equal(t, int64(1), w.inflightItems.Load())
 
 	loop := newBranchWorkerEventLoop(w, time.Second)

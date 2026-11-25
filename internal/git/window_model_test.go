@@ -1462,7 +1462,7 @@ func (r *windowModelRun) save() {
 	name := "save-" + strconv.Itoa(r.saves)
 	req := &AttachCommitRequest{
 		Namespace: "default", Name: name, UID: "uid-" + name,
-		Author: author, GitTargetName: echoTarget, GitTargetNamespace: "default",
+		Author: UserInfo{Username: author}, GitTargetName: echoTarget, GitTargetNamespace: "default",
 		Message: fmt.Sprintf("feat: %s by %s", name, author),
 		Attach:  configv1alpha3.AttachCurrentOrNext,
 	}
@@ -1479,7 +1479,7 @@ func (r *windowModelRun) save() {
 
 // register sends the save req, which names the run's next save.
 func (r *windowModelRun) register(req *AttachCommitRequest) {
-	name, author := req.Name, req.Author
+	name, author := req.Name, req.Author.Username
 	r.notef("%s registers %s attach=%s attachTimeout=%s maxDuration=%s idle=%v", author, name, req.Attach,
 		req.AttachTimeout, req.MaxDuration, req.IdleTimeout)
 	s := &modelSave{name: name, author: author, message: req.Message, next: req.Attach == configv1alpha3.AttachNext,
@@ -1542,7 +1542,7 @@ func (r *windowModelRun) restructure() {
 	r.saves++
 	r.register(&AttachCommitRequest{
 		Namespace: "default", Name: "save-" + strconv.Itoa(r.saves), UID: "uid-save-" + strconv.Itoa(r.saves),
-		Author: "carol", GitTargetName: echoTarget, GitTargetNamespace: "default",
+		Author: UserInfo{Username: "carol"}, GitTargetName: echoTarget, GitTargetNamespace: "default",
 		Message: "feat: carol's save", Attach: configv1alpha3.AttachCurrentOrNext, AttachTimeout: 20 * time.Second,
 		MaxDuration: 40 * time.Second,
 	})

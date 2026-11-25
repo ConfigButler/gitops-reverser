@@ -170,7 +170,7 @@ func TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *tes
 		"an unresolved window carries no author; the sentinel is applied at the write path")
 
 	request := &pendingCommitRequest{
-		author:             "", // an unnamed CommitRequest claims no actor
+		author:             UserInfo{Username: ""}, // an unnamed CommitRequest claims no actor
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
@@ -181,7 +181,7 @@ func TestPendingCommitRequest_UnresolvedRequestAttachesToUnresolvedWindow(t *tes
 	// The default deployment: command-author capture is off, so the request says "not
 	// attempted" while the window says "unresolved". Neither names an actor, so they match.
 	notAttempted := &pendingCommitRequest{
-		author:             "",
+		author:             UserInfo{Username: ""},
 		attribution:        AttributionNotAttempted,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
@@ -195,7 +195,7 @@ func TestPendingCommitRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 	resolvedWindow := newOpenWindow(attributedEvent("jane@acme.com", AttributionResolved), nil)
 
 	unresolvedRequest := &pendingCommitRequest{
-		author:             "",
+		author:             UserInfo{Username: ""},
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
@@ -204,7 +204,7 @@ func TestPendingCommitRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 		"an unattributed request must not claim a named actor's window")
 
 	resolvedRequest := &pendingCommitRequest{
-		author:             "jane@acme.com",
+		author:             UserInfo{Username: "jane@acme.com"},
 		attribution:        AttributionResolved,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
@@ -212,7 +212,7 @@ func TestPendingCommitRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 	assert.True(t, resolvedRequest.matchesWindow(resolvedWindow))
 
 	otherActor := &pendingCommitRequest{
-		author:             "bob@acme.com",
+		author:             UserInfo{Username: "bob@acme.com"},
 		attribution:        AttributionResolved,
 		gitTargetName:      "target",
 		gitTargetNamespace: "default",
@@ -224,7 +224,7 @@ func TestPendingCommitRequest_DoesNotCrossAttributionOutcomes(t *testing.T) {
 func TestPendingCommitRequest_StillScopedToOneGitTarget(t *testing.T) {
 	window := newOpenWindow(attributedEvent("", AttributionUnresolved), nil)
 	request := &pendingCommitRequest{
-		author:             "",
+		author:             UserInfo{Username: ""},
 		attribution:        AttributionUnresolved,
 		gitTargetName:      "other-target",
 		gitTargetNamespace: "default",

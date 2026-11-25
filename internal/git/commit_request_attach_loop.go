@@ -3,9 +3,11 @@
 package git
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ConfigButler/gitops-reverser/api/v1alpha3"
@@ -224,14 +226,14 @@ func (l *branchWorkerEventLoop) handleAttachCommitRequest(req *AttachCommitReque
 		l.w.recordCommitRequestOutcome(id, FinalizeResult{Branch: l.w.Branch, Outcome: FinalizeSaveInProgress})
 		l.w.Log.Info("CommitRequest refused: an earlier save of the same author on the GitTarget is in progress",
 			"request", id.Namespace+"/"+id.Name, "earlier", earlier.id.Namespace+"/"+earlier.id.Name,
-			"author", req.Author, "target", req.GitTargetNamespace+"/"+req.GitTargetName)
+			"author", req.Author.Username, "target", req.GitTargetNamespace+"/"+req.GitTargetName)
 		return
 	}
 	l.pendingCRs[id] = pcr
 	l.w.setCommitRequestPhase(id, PhaseWaitingForWindow)
 	l.w.Log.Info("CommitRequest registered with worker",
 		"request", id.Namespace+"/"+id.Name,
-		"author", req.Author,
+		"author", req.Author.Username,
 		"target", req.GitTargetNamespace+"/"+req.GitTargetName,
 		"attach", string(req.Attach),
 		"attachTimeout", req.AttachTimeout.String())
@@ -335,7 +337,7 @@ func (l *branchWorkerEventLoop) noteForeignWindow() {
 		pcr.sawForeignWindow = true
 		l.w.Log.Info("CommitRequest is waiting on a window that belongs to someone else",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name,
-			"requestAuthor", pcr.author,
+			"requestAuthor", pcr.author.Username,
 			"requestTarget", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
 			"windowAuthor", foreign.Author,
 			"windowTarget", foreign.GitTargetNamespace+"/"+foreign.GitTarget)
@@ -387,7 +389,7 @@ func (l *branchWorkerEventLoop) attachToWindow(window *openWindow, pcr *pendingC
 	l.w.setCommitRequestPhase(id, PhaseCollectingWindow)
 	l.w.Log.Info("CommitRequest attached to open window",
 		"request", id.Namespace+"/"+id.Name,
-		"author", pcr.author,
+		"author", pcr.author.Username,
 		"target", pcr.gitTargetNamespace+"/"+pcr.gitTargetName,
 		"maxDuration", pcr.maxDuration.String())
 	l.closeOrArmWindow()
@@ -395,63 +397,69 @@ func (l *branchWorkerEventLoop) attachToWindow(window *openWindow, pcr *pendingC
 
 // expireWaitingCommitRequests resolves every request whose attach deadline passed while it was
 // still waiting. An attached request is not here: its window's timers close it, and whichever path
-// closes the window resolves it.
+// closes the window resolves it. Requests expiring in the same pass are handled in registration
+// order, so their empty commits land in Git in the order the saves were made.
 func (l *branchWorkerEventLoop) expireWaitingCommitRequests() {
 	now := l.w.now()
-	for id, pcr := range l.pendingCRs {
-		if pcr.attached || pcr.attachDeadline.After(now) {
-			continue
+	var expired []*pendingCommitRequest
+	for _, pcr := range l.pendingCRs {
+		if !pcr.attached && !pcr.attachDeadline.After(now) {
+			expired = append(expired, pcr)
 		}
+	}
+	slices.SortFunc(expired, func(a, b *pendingCommitRequest) int { return cmp.Compare(a.seq, b.seq) })
+	for _, pcr := range expired {
+		id := pcr.id
 		// Which of the two refusals this is depends on whether anything was open that this
 		// request could not have: see pendingCommitRequest.expiryOutcome.
 		outcome := pcr.expiryOutcome()
 		if outcome == FinalizeNoOpenWindow {
 			// NoWindow says the save saw no writes. On a target that refuses them that is not the
-			// cause, and with CommitEmpty the record would say so in Git: see write_gate.go.
+			// cause, and with CommitEmpty the empty commit would say so in Git: see write_gate.go.
 			if err := l.w.requestWriteRefusal(l.w.ctx, pcr); err != nil {
 				l.resolveCommitRequest(id, FinalizeResult{Err: err})
 				continue
 			}
 		}
 		if outcome == FinalizeNoOpenWindow && pcr.commitEmpty {
-			recorded, err := l.recordCommitRequest(pcr)
+			decided, err := l.decideEmptyCommit(pcr)
 			if err != nil {
 				// The request asked for its message to be recorded and it was not: a failure, not
 				// a benign NoWindow that would report Ready=True for a save that left no trace.
 				l.resolveCommitRequest(id, FinalizeResult{Err: err})
 				continue
 			}
-			if recorded {
-				continue // it now rides the record write, and the push resolves it
+			if decided {
+				continue // it now rides the empty commit, and the push resolves it
 			}
 		}
 		l.resolveCommitRequest(id, FinalizeResult{Outcome: outcome})
 	}
 }
 
-// recordCommitRequest decides an empty commit recording a request's message, for a request that ran
-// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason no record can
-// be made is returned, including a write gate (an empty commit is a write too), so the request fails
-// instead of reporting a save it did not make. Once decided, the request rides the record write
-// like an attached request rides its window: a remote that cannot be reached holds it, and only a
-// failure of the commit itself fails it.
-func (l *branchWorkerEventLoop) recordCommitRequest(pcr *pendingCommitRequest) (bool, error) {
-	pendingWrite, err := l.w.buildRequestRecordWrite(l.w.ctx, pcr)
+// decideEmptyCommit decides an empty commit recording a request's message, for a request that ran
+// out of time to attach and asked for whenNothingToCommit: CommitEmpty. Every reason the empty
+// commit cannot be made is returned, including a write gate (an empty commit is a write too), so
+// the request fails instead of reporting a save it did not make. Once decided, the request rides
+// the empty commit like an attached request rides its window: a remote that cannot be reached holds
+// it, and only a failure of the commit itself fails it.
+func (l *branchWorkerEventLoop) decideEmptyCommit(pcr *pendingCommitRequest) (bool, error) {
+	pendingWrite, err := l.w.buildEmptyCommitWrite(l.w.ctx, pcr)
 	if err != nil {
 		l.w.Log.Error(err, "Cannot build the empty commit recording a CommitRequest",
 			"request", pcr.id.Namespace+"/"+pcr.id.Name)
 		return false, fmt.Errorf("record the message in an empty commit: %w", err)
 	}
-	// A record whose commit fails for good resolves the request itself, so either way the request
+	// An empty commit that fails for good resolves the request itself, so either way the request
 	// is no longer the caller's to resolve.
 	l.decide(*pendingWrite)
 	return true, nil
 }
 
-// buildRequestRecordWrite assembles the record commit's write, phrased and signed like every other
+// buildEmptyCommitWrite assembles the record commit's write, phrased and signed like every other
 // commit the target makes and authored by the request's submitter. A target that refuses writes
 // gets none, and the refusal is returned (see write_gate.go).
-func (w *BranchWorker) buildRequestRecordWrite(
+func (w *BranchWorker) buildEmptyCommitWrite(
 	ctx context.Context,
 	pcr *pendingCommitRequest,
 ) (*PendingWrite, error) {
@@ -472,7 +480,7 @@ func (w *BranchWorker) buildRequestRecordWrite(
 	}
 	id := pcr.id
 	return &PendingWrite{
-		Kind:          PendingWriteRequestRecord,
+		Kind:          PendingWriteEmptyCommit,
 		CommitMessage: pcr.message,
 		CommitConfig: ResolveCommitConfig(provider.Spec.Commit).
 			WithTargetMessage(metadata.CommitMessage),
@@ -482,7 +490,7 @@ func (w *BranchWorker) buildRequestRecordWrite(
 		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
 			{Name: pcr.gitTargetName, Namespace: pcr.gitTargetNamespace}: metadata,
 		},
-		RequestAuthor:      UserInfo{Username: pcr.author},
+		RequestAuthor:      pcr.author,
 		RequestAttribution: pcr.attribution,
 		CommitRequest:      &id,
 	}, nil

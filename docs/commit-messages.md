@@ -15,7 +15,7 @@ message only on some branch passes validation and falls back at commit time.
 
 | Input, in precedence order | Message source |
 |---|---|
-| Attached [save request](configuration.md#commitrequest) **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage` |
+| [Save request](configuration.md#commitrequest) message, on its window or its empty commit, **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage`; an empty commit lists no resources |
 | Non-empty literal override, including an attached [save request](configuration.md#commitrequest) | Exact supplied text |
 | Live window of any size | `liveTemplate` |
 | Atomic snapshot or resync | `reconcileTemplate` |
@@ -77,8 +77,9 @@ spec:
         {{end -}}
 ```
 
-It renders only for a window a save request attached to; every other window is unaffected. Omit it
-and request messages are committed verbatim, exactly as before.
+It renders only for a commit a save request gave its message: the window the request attached to,
+or the empty commit of a request no window reached in time. Every other window is unaffected. Omit
+it and request messages are committed verbatim, exactly as before.
 
 The request is **never** parsed as a template. Its message arrives as `.RequestMessage` and is
 committed unaltered, so a save-button user supplies the content while the operator owns the

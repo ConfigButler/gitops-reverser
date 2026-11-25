@@ -44,7 +44,7 @@ func attachReq(author string, d time.Duration) *AttachCommitRequest {
 		Namespace:          "default",
 		Name:               crName,
 		UID:                "uid-" + crName,
-		Author:             author,
+		Author:             UserInfo{Username: author},
 		GitTargetName:      crTarget,
 		GitTargetNamespace: "default",
 		Attach:             configv1alpha3.AttachCurrentOrNext,
@@ -493,7 +493,7 @@ func TestAttach_ASecondSaveOfTheSameAuthorIsRefusedWhileTheFirstIsInProgress(t *
 		serviceAttach(loop, attachReq("alice", 60*time.Second))
 
 		bob := second()
-		bob.Author = "bob"
+		bob.Author = UserInfo{Username: "bob"}
 		serviceAttach(loop, bob)
 
 		_, resolved := secondOutcome(t, worker)
@@ -921,7 +921,7 @@ func TestMatchesWindow_AcrossIndependentlyConfiguredSubsystems(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &pendingCommitRequest{
-				author:             tc.reqAuth,
+				author:             UserInfo{Username: tc.reqAuth},
 				attribution:        tc.request,
 				gitTargetName:      crTarget,
 				gitTargetNamespace: "default",

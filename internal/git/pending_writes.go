@@ -250,7 +250,7 @@ func (p PendingWrite) Author() string {
 // writes, including any OIDC display name and email. Empty writes have no
 // per-user author and return the zero value.
 func (p PendingWrite) AuthorUserInfo() UserInfo {
-	if p.Kind == PendingWriteRequestRecord {
+	if p.Kind == PendingWriteEmptyCommit {
 		return p.RequestAuthor
 	}
 	if len(p.Events) == 0 {
@@ -303,7 +303,7 @@ const (
 // mirrors AuthorUserInfo: the window is single-author, so the first event's outcome describes
 // the whole write. Empty writes never attempt attribution.
 func (p PendingWrite) AttributionOutcome() AttributionOutcome {
-	if p.Kind == PendingWriteRequestRecord {
+	if p.Kind == PendingWriteEmptyCommit {
 		return p.RequestAttribution
 	}
 	if len(p.Events) == 0 {
@@ -312,10 +312,10 @@ func (p PendingWrite) AttributionOutcome() AttributionOutcome {
 	return p.Events[0].Attribution
 }
 
-// nothingToCommitOutcome is the cause an empty commit records: a request record says no window
-// arrived in time, and an empty grouped window says what arrived already matched Git.
+// nothingToCommitOutcome is the cause an empty commit records: a PendingWriteEmptyCommit says no
+// window arrived in time, and an empty grouped window says what arrived already matched Git.
 func (p PendingWrite) nothingToCommitOutcome() FinalizeOutcome {
-	if p.Kind == PendingWriteRequestRecord {
+	if p.Kind == PendingWriteEmptyCommit {
 		return FinalizeNoOpenWindow
 	}
 	return FinalizeAlreadyPresent
@@ -354,8 +354,10 @@ func (p PendingWrite) Target() ResolvedTargetMetadata {
 	return ResolvedTargetMetadata{Name: name, Namespace: namespace}
 }
 
+// targetIdentity names the GitTarget a write is for. A resync and an empty commit carry no event to
+// take it from, so they name it explicitly.
 func (p PendingWrite) targetIdentity() (string, string) {
-	if p.Kind == PendingWriteResync {
+	if p.Kind == PendingWriteResync || p.Kind == PendingWriteEmptyCommit {
 		return p.GitTargetName, p.GitTargetNamespace
 	}
 	if len(p.Events) == 0 {

@@ -14,8 +14,8 @@ import (
 // Ready=True with nothing written. That holds whichever path ends the request and whatever its
 // whenNothingToCommit says:
 //
-//   - a request no window reached (expireWaitingCommitRequests, before the record it may make);
-//   - the record itself (buildRequestRecordWrite);
+//   - a request no window reached (expireWaitingCommitRequests, before the empty commit it may make);
+//   - that empty commit itself (buildEmptyCommitWrite);
 //   - a window a request is attached to (finalizeWindow before it builds the write,
 //     and gateBuiltWindow after, right before the commit). A render-fidelity refusal seen at
 //     either look stops the whole window; suspension fails only the request, and the write still

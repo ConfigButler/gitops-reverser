@@ -117,7 +117,7 @@ var _ = Describe("Save Request", Label("commit-request", "audit-consumer"), Orde
 			// audit event, and it is the author of the edit's window, which it saved.
 			By("verifying the CommitRequest's author came from audit and authored the commit")
 			Eventually(func(g Gomega) {
-				author := commitRequestField(g, testNs, commitRequestName, "{.status.author}")
+				author := commitRequestField(g, testNs, commitRequestName, "{.status.author.username}")
 				g.Expect(author).NotTo(BeEmpty(), "the request's author is found from its audit event")
 				commitAuthor, logErr := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%an")
 				g.Expect(logErr).NotTo(HaveOccurred())
@@ -456,7 +456,7 @@ spec:
 				fmt.Sprintf("%s/%s/configmaps/app-flags.yaml", basePath, testNs),
 			), "the commit changes the two ConfigMaps and nothing else: the CommitRequest is never mirrored")
 			if !configuredAuthorModeEnabled() {
-				author := commitRequestField(Default, testNs, requestName, "{.status.author}")
+				author := commitRequestField(Default, testNs, requestName, "{.status.author.username}")
 				commitAuthor, err := gitRun(repo.CheckoutDir, "log", "-1", "--pretty=%an", reportedSHA)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(author).NotTo(BeEmpty())
@@ -564,7 +564,7 @@ spec:
 				By("checking every commit that holds the folder")
 				author := ""
 				if !configuredAuthorModeEnabled() {
-					author = commitRequestField(Default, p.ns, requestName, "{.status.author}")
+					author = commitRequestField(Default, p.ns, requestName, "{.status.author.username}")
 				}
 				for _, sha := range saved {
 					paths, err := gitRun(

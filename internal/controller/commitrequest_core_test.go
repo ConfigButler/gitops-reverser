@@ -51,7 +51,18 @@ func (f *fakeAuthors) lookups() int {
 
 // jane is an author the audit facts name.
 func jane() *fakeAuthors {
-	return &fakeAuthors{user: git.UserInfo{Username: "jane@example.com"}, outcome: git.AttributionResolved}
+	return &fakeAuthors{user: janeUser, outcome: git.AttributionResolved}
+}
+
+// janeUser is jane as her audit events name her: the login carries a display name and an email, so a
+// test sees whether the whole identity, not only the username, reaches the worker.
+var janeUser = git.UserInfo{Username: "jane@example.com", DisplayName: "Jane Doe", Email: "jane.doe@example.com"}
+
+// janeStatus is status.author as the claim records janeUser.
+func janeStatus() *configv1alpha3.CommitRequestAuthor {
+	return &configv1alpha3.CommitRequestAuthor{
+		Username: "jane@example.com", Name: "Jane Doe", Email: "jane.doe@example.com",
+	}
 }
 
 // controlPath is the control-cluster path over c.
@@ -337,14 +348,14 @@ func TestCommitRequestCore_AConflictAfterTheOutcomeReappliesIt(t *testing.T) {
 // without looking the author up again: the claim moved the resourceVersion the fact was keyed by.
 func TestCommitRequestCore_ARestartResumesAClaimedSave(t *testing.T) {
 	cr := withInProgress(newCommitRequest("save"))
-	cr.Status.Author = "jane@example.com"
+	cr.Status.Author = janeStatus()
 	c := newCommitRequestClient(t, nil, cr)
 	authors := jane()
 	f := committed()
 	serveStep(t, &commitRequestCore{reader: c, finalizer: f, authors: authors}, controlPath(c), "save")
 
 	require.Len(t, f.calls, 1)
-	assert.Equal(t, "jane@example.com", f.calls[0].Author)
+	assert.Equal(t, janeUser, f.calls[0].Author, "the recorded author, name and email included")
 	assert.Equal(t, git.AttributionResolved, f.calls[0].Attribution)
 	assert.Zero(t, authors.lookups(), "the recorded author is used")
 	assert.Equal(t, crReasonCommitted, commitRequestReady(t, c, "save").Reason)
@@ -367,7 +378,7 @@ func TestCommitRequestCore_TheAuthorComesFromAuditAndIsClaimedFirst(t *testing.T
 	path := controlPath(c)
 	path.store = authorCheckingStore{typedCommitRequestStore: typedCommitRequestStore{reader: c, writer: c},
 		onWrite: func(cr *configv1alpha3.CommitRequest) {
-			if len(f.calls) == 0 && cr.Status.Author == "jane@example.com" {
+			if len(f.calls) == 0 && cr.Status.Author != nil && *cr.Status.Author == *janeStatus() {
 				claimedFirst = true
 			}
 		}}
@@ -384,8 +395,8 @@ func TestCommitRequestCore_TheAuthorComesFromAuditAndIsClaimedFirst(t *testing.T
 	assert.Equal(t, 1, streams.Len(), "the stream of commitrequests on the route is followed")
 	assert.True(t, claimedFirst, "the author is written before the attach")
 	require.Len(t, f.calls, 1)
-	assert.Equal(t, "jane@example.com", f.calls[0].Author)
-	assert.Equal(t, "jane@example.com", fetchCommitRequest(t, c, "save").Status.Author)
+	assert.Equal(t, janeUser, f.calls[0].Author, "the attach carries the whole identity")
+	assert.Equal(t, janeStatus(), fetchCommitRequest(t, c, "save").Status.Author)
 }
 
 // authorCheckingStore calls onWrite with each status it writes.
@@ -410,8 +421,8 @@ func TestCommitRequestCore_ADelayedAuditFactStillNamesTheAuthor(t *testing.T) {
 	serveStep(t, &commitRequestCore{reader: c, finalizer: f, authors: authors}, controlPath(c), "save")
 
 	require.Len(t, f.calls, 1)
-	assert.Equal(t, "jane@example.com", f.calls[0].Author)
-	assert.Equal(t, "jane@example.com", fetchCommitRequest(t, c, "save").Status.Author)
+	assert.Equal(t, janeUser, f.calls[0].Author, "the attach carries the whole identity")
+	assert.Equal(t, janeStatus(), fetchCommitRequest(t, c, "save").Status.Author)
 }
 
 // A request no audit fact names is refused on a provider that has received facts, since its fact went
@@ -442,7 +453,7 @@ func TestCommitRequestCore_ARequestNoFactNames(t *testing.T) {
 		serveStep(t, &commitRequestCore{reader: c, finalizer: f, authors: unnamed}, controlPath(c), "save")
 
 		require.Len(t, f.calls, 1)
-		assert.Empty(t, f.calls[0].Author)
+		assert.Empty(t, f.calls[0].Author.Username)
 		assert.Equal(t, git.AttributionUnresolved, f.calls[0].Attribution)
 	})
 }

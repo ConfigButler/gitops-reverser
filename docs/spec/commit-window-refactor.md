@@ -139,7 +139,7 @@ between:
 - `PendingWriteAtomic` represents one caller-defined atomic write.
 - `PendingWriteResync` represents one GitTarget's snapshot, applied by
   mark-and-sweep.
-- `PendingWriteRequestRecord` records a `CommitRequest`'s message in an empty
+- `PendingWriteEmptyCommit` records a `CommitRequest`'s message in an empty
   commit when no window reached the request and it asked for
   `whenNothingToCommit: CommitEmpty`.
 

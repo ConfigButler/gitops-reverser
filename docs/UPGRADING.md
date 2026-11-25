@@ -7,6 +7,39 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## A `CommitRequest`'s `status.author` is an object
+
+`status.author` names the request's creator as `username`, plus the `name` and `email` their login
+carried (an OIDC name and email claim), when the audit event has them:
+
+```yaml
+status:
+  author:
+    username: oidc:alice
+    name: Alice Jansen
+    email: alice@corp.example
+```
+
+It was the username alone. Read `.status.author.username` where you read `.status.author`; the
+`Author` column of `kubectl get commitrequests` already does. With the name and email kept, an empty
+commit (`whenNothingToCommit: CommitEmpty`, when no write reached the save in time) is authored as
+`Alice Jansen <alice@corp.example>`, like the person's other commits, instead of by username. Its
+message is also framed by the target's `requestTemplate`, as every other save's is.
+
+A stored `CommitRequest` whose `status.author` is still a string cannot be read by this release, and
+one such object stops every `CommitRequest` on that cluster from being served, not only itself.
+Finished requests stay for 48 hours, so there usually are some. Before upgrading, let the saves in
+progress finish, then delete every `CommitRequest` on the cluster GitOps Reverser runs in and on
+each source cluster that serves them (`spec.commitRequests` on its `KubeProvider`):
+
+```bash
+kubectl delete commitrequests --all --all-namespaces
+```
+
+The `CommitRequest` CRD is at schema revision 2. On each such source cluster, apply this release's
+`commitrequest-crd.yaml` too: a revision 1 CRD rejects the new `status.author`, so a request there
+is never claimed.
+
 ## An empty repository gets its default branch first
 
 In an empty repository with `spec.parentBranch` omitted, a `GitBranch` whose `spec.branch` is not

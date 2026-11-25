@@ -20,6 +20,7 @@ import (
 // the new hash here.
 var commitRequestSchemaHashes = map[int]string{
 	1: "395df39c86bc4c0350eb2c476dd0ae02db2a7513f03962103416123b0cbb5476",
+	2: "41060fecb5109059cb04f03124c60d3166a1b3e8b55ee225382a556087a2f5fc",
 }
 
 // commitRequestRevisionLine is the last line of the kind's description.
