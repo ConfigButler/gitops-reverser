@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.57.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.56.0...v0.57.0) (2026-11-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **commitrequest:** CommitRequest status.author is an object with username, name and email instead of a string, at schema revision 2. Delete every CommitRequest before upgrading, on the control cluster and on source clusters that serve them, and apply commitrequest-crd.yaml on those source clusters: one stored request with a string author stops every CommitRequest on its cluster from being served. See docs/UPGRADING.md.
+
+### Bug Fixes
+
+* **commitrequest:** author an empty commit like the saver's other commits, and close small TODO items ([#485](https://github.com/ConfigButler/gitops-reverser/issues/485)) ([8cd7061](https://github.com/ConfigButler/gitops-reverser/commit/8cd7061717687d98e816716c361d5767d4167342))
+
 ## [0.56.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.55.0...v0.56.0) (2026-11-10)
 
 
