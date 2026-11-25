@@ -252,8 +252,9 @@ func TestFramedRequestMessage_FramesTheEmptyCommitToo(t *testing.T) {
 	empty := PendingWrite{
 		Kind:          PendingWriteEmptyCommit,
 		CommitMessage: "chore: checkpoint",
-		CommitConfig:  requestConfig("{{.RequestMessage}}\n\nSaved by {{.Author}}"),
+		CommitConfig:  requestConfig("{{.RequestMessage}}\n\nSaved by {{.Author}} in {{.GitTarget}}"),
 		RequestAuthor: UserInfo{Username: "alice"},
+		GitTargetName: "platform", GitTargetNamespace: "default",
 		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
 			{Name: "platform", Namespace: "default"}: {Name: "platform", Namespace: "default"},
 		},
@@ -263,7 +264,8 @@ func TestFramedRequestMessage_FramesTheEmptyCommitToo(t *testing.T) {
 	message, _, resolution, err := empty.commitMetadata()
 	require.NoError(t, err)
 	assert.Equal(t, messageResolutionRequestTemplate, resolution)
-	assert.Equal(t, "chore: checkpoint\n\nSaved by alice", message)
+	assert.Equal(t, "chore: checkpoint\n\nSaved by alice in platform", message,
+		"the empty commit names its GitTarget, though it has no event to take it from")
 
 	unframed := empty
 	unframed.CommitConfig = ResolveCommitConfig(nil)

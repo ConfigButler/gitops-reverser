@@ -77,8 +77,9 @@ spec:
         {{end -}}
 ```
 
-It renders only for a window a save request attached to; every other window is unaffected. Omit it
-and request messages are committed verbatim, exactly as before.
+It renders only for a commit a save request gave its message: the window the request attached to,
+or the empty commit of a request no window reached in time. Every other window is unaffected. Omit
+it and request messages are committed verbatim, exactly as before.
 
 The request is **never** parsed as a template. Its message arrives as `.RequestMessage` and is
 committed unaltered, so a save-button user supplies the content while the operator owns the

@@ -354,8 +354,10 @@ func (p PendingWrite) Target() ResolvedTargetMetadata {
 	return ResolvedTargetMetadata{Name: name, Namespace: namespace}
 }
 
+// targetIdentity names the GitTarget a write is for. A resync and an empty commit carry no event to
+// take it from, so they name it explicitly.
 func (p PendingWrite) targetIdentity() (string, string) {
-	if p.Kind == PendingWriteResync {
+	if p.Kind == PendingWriteResync || p.Kind == PendingWriteEmptyCommit {
 		return p.GitTargetName, p.GitTargetNamespace
 	}
 	if len(p.Events) == 0 {
