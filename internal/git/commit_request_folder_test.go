@@ -95,7 +95,7 @@ func (r *saveRun) register(name, message string) {
 func saveRequest(name, message string) *AttachCommitRequest {
 	return &AttachCommitRequest{
 		Namespace: "default", Name: name, UID: "uid-" + name,
-		Author: "alice", GitTargetName: crTarget, GitTargetNamespace: "default",
+		Author: UserInfo{Username: "alice"}, GitTargetName: crTarget, GitTargetNamespace: "default",
 		Message:       message,
 		Attach:        configv1alpha3.AttachCurrentOrNext,
 		AttachTimeout: 5 * time.Second,

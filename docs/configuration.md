@@ -1487,10 +1487,11 @@ ever update.
 #### Commit message templates
 
 Three templates decide how a commit is phrased: `liveTemplate` for a live window,
-`reconcileTemplate` for an atomic snapshot or resync, and `requestTemplate` for a window a
-[save request](#commitrequest) attached to. Each is a Go template over a documented context,
-checked when the target reconciles rather than at commit time, and each has a built-in default, so a
-target that sets none still writes useful messages.
+`reconcileTemplate` for an atomic snapshot or resync, and `requestTemplate` for a commit a
+[save request](#commitrequest) gave its message: the window it attached to, or its empty commit.
+Each is a Go template over a documented context, checked when the target reconciles rather than at
+commit time, and each has a built-in default, so a target that sets none still writes useful
+messages.
 
 ```yaml
 spec:
@@ -3258,7 +3259,9 @@ A request no grant admits fails before it attaches: `Ready=False`, `Stalled=True
 A request's author is found from its own audit event, on the cluster it was created on, the same
 way an edit's author is: from the same index, with the same `--author-attribution-grace`. So a save
 attaches only to its creator's windows, by the ordinary author rule, and `status.author` names the
-creator. The author is recorded in the request's first status write, before it attaches. Create a
+creator: `username`, plus the `name` and `email` the login carried (an OIDC name and email claim),
+when it carried them. The author is recorded in the request's first status write, before it
+attaches. Create a
 request on a source cluster as JSON: `kubectl` and browsers send JSON, and an API server that drops
 the audit event of a YAML body loses the save's author without an error.
 
@@ -3286,8 +3289,9 @@ namespace decides only whether a grant admits it.
 reason, without changing Git.
 
 - `Resolve` (the default) finishes without a commit.
-- `CommitEmpty` records `spec.message` in an empty commit, authored like any other commit by the
-  request's submitter. It requires `spec.message`.
+- `CommitEmpty` records `spec.message` in an empty commit, authored by the request's submitter
+  with the same name and email as their other commits, and framed by `requestTemplate` like any
+  other save. It requires `spec.message`.
 
 | Outcome | `Resolve` | `CommitEmpty` |
 |---|---|---|

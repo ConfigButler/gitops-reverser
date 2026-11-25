@@ -867,7 +867,7 @@ spec:
 				g.Expect(saveField(g, `{.status.conditions[?(@.type=="Ready")].reason}`)).To(Equal("Committed"))
 				commit = saveField(g, "{.status.commit}")
 				g.Expect(commit).NotTo(BeEmpty())
-				g.Expect(saveField(g, "{.status.author}")).To(BeEmpty(), "kcp sends no audit facts")
+				g.Expect(saveField(g, "{.status.author.username}")).To(BeEmpty(), "kcp sends no audit facts")
 				g.Expect(saveField(g, `{.metadata.annotations.configbutler\.ai/delete-after}`)).NotTo(BeEmpty(),
 					"ReconcileAndDeleteFinished stamps a finished request for deletion")
 			}, 2*time.Minute, 2*time.Second).Should(Succeed())

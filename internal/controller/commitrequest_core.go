@@ -367,7 +367,7 @@ func (c *commitRequestCore) claim(
 		return commitRequestRequeueNow, err
 	}
 	p.log.Info("CommitRequest claimed", "name", client.ObjectKeyFromObject(cr),
-		"gitTarget", client.ObjectKeyFromObject(target), "author", author)
+		"gitTarget", client.ObjectKeyFromObject(target), "author", author.Username)
 	return c.drive(ctx, p, cr, target, provider)
 }
 
@@ -385,9 +385,9 @@ func (c *commitRequestCore) claim(
 // rather than take the unnamed window. A provider that cannot be read then is an error, retried.
 func (c *commitRequestCore) creator(
 	ctx context.Context, cr *configbutleraiv1alpha3.CommitRequest, provider *configbutleraiv1alpha3.KubeProvider,
-) (string, bool, error) {
+) (git.UserInfo, bool, error) {
 	if c.authors == nil {
-		return "", false, nil
+		return git.UserInfo{}, false, nil
 	}
 	c.streams.ensure(provider.AuditRoute())
 	user, outcome := c.authors.ResolveAuthor(ctx, watch.AuthorQuery{
@@ -400,26 +400,30 @@ func (c *commitRequestCore) creator(
 		Creation:     true,
 	})
 	if outcome.NamesActor() {
-		return user.Username, false, nil
+		return user, false, nil
 	}
 	if outcome == git.AttributionNotAttempted {
-		return "", false, nil
+		return git.UserInfo{}, false, nil
 	}
 	var current configbutleraiv1alpha3.KubeProvider
 	if err := c.reader.Get(ctx, provider.Key(), &current); err != nil {
-		return "", false, fmt.Errorf("read KubeProvider %s after the author wait: %w", provider.Key(), err)
+		return git.UserInfo{}, false, fmt.Errorf("read KubeProvider %s after the author wait: %w", provider.Key(), err)
 	}
-	return "", apimeta.IsStatusConditionTrue(current.Status.Conditions, KubeProviderConditionAuditFactsReceived), nil
+	return git.UserInfo{}, apimeta.IsStatusConditionTrue(
+		current.Status.Conditions,
+		KubeProviderConditionAuditFactsReceived,
+	), nil
 }
 
 // writeClaim writes the first status of a request: its author, the GitTarget that admitted it, and
 // Ready=Unknown. A conflict reads the request again, and the claim is written onto it only while it is
 // still unclaimed; otherwise claimed=false, and the next step decides from what is there.
 func (c *commitRequestCore) writeClaim(
-	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest, author, targetUID string,
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest, author git.UserInfo,
+	targetUID string,
 ) (bool, error) {
 	for attempt := 1; ; attempt++ {
-		cr.Status.Author = author
+		cr.Status.Author = commitRequestAuthor(author)
 		cr.Status.GitTargetUID = targetUID
 		markCommitRequestProgressing(cr, "", "")
 		err := p.store.updateStatus(ctx, cr)
@@ -435,6 +439,26 @@ func (c *commitRequestCore) writeClaim(
 		}
 		*cr = *fresh
 	}
+}
+
+// commitRequestAuthor is the status.author that records user: nil when attribution named nobody.
+// The UID is left out; nothing the worker does with a request's author reads it.
+func commitRequestAuthor(user git.UserInfo) *configbutleraiv1alpha3.CommitRequestAuthor {
+	if user.Username == "" {
+		return nil
+	}
+	return &configbutleraiv1alpha3.CommitRequestAuthor{
+		Username: user.Username, Name: user.DisplayName, Email: user.Email,
+	}
+}
+
+// requestAuthorUserInfo is the identity status.author records, as ResolveAuthor returned it, so a
+// commit the request makes on its own is signed as that person's other commits are.
+func requestAuthorUserInfo(author *configbutleraiv1alpha3.CommitRequestAuthor) git.UserInfo {
+	if author == nil {
+		return git.UserInfo{}
+	}
+	return git.UserInfo{Username: author.Username, DisplayName: author.Name, Email: author.Email}
 }
 
 // reread reads cr again; same is false when it is gone or was replaced by another request of its name.
@@ -453,7 +477,7 @@ func (c *commitRequestCore) attachFor(cr *configbutleraiv1alpha3.CommitRequest) 
 	window := resolveRequestWindow(cr.Spec)
 	attribution := git.AttributionNotAttempted
 	switch {
-	case cr.Status.Author != "":
+	case cr.Status.Author != nil:
 		attribution = git.AttributionResolved
 	case c.authors != nil:
 		attribution = git.AttributionUnresolved
@@ -463,7 +487,7 @@ func (c *commitRequestCore) attachFor(cr *configbutleraiv1alpha3.CommitRequest) 
 		Namespace:          cr.Namespace,
 		Name:               cr.Name,
 		UID:                string(cr.UID),
-		Author:             cr.Status.Author,
+		Author:             requestAuthorUserInfo(cr.Status.Author),
 		Attribution:        attribution,
 		GitTargetName:      key.Name,
 		GitTargetNamespace: key.Namespace,

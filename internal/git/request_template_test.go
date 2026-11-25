@@ -244,9 +244,35 @@ func TestNewRequestTemplateProbe_IsFreshEachTime(t *testing.T) {
 	assert.NotEmpty(t, first)
 }
 
-// requestTemplate describes the commit a CommitRequest's message produces, and a CommitRequest
-// attaches to a live window, which finalizes as PendingWriteCommit. A resync arrives pre-rendered
-// and is never framed, whatever requestTemplate says.
+// The empty commit of a request no window reached is a commit its CommitRequest supplied the
+// message for, so the target's requestTemplate frames it as it frames the window commit: one
+// wording for a save, whether or not anything was written in time. With nothing written it lists
+// no resources.
+func TestFramedRequestMessage_FramesTheEmptyCommitToo(t *testing.T) {
+	empty := PendingWrite{
+		Kind:          PendingWriteEmptyCommit,
+		CommitMessage: "chore: checkpoint",
+		CommitConfig:  requestConfig("{{.RequestMessage}}\n\nSaved by {{.Author}}"),
+		RequestAuthor: UserInfo{Username: "alice"},
+		Targets: map[pendingTargetKey]ResolvedTargetMetadata{
+			{Name: "platform", Namespace: "default"}: {Name: "platform", Namespace: "default"},
+		},
+	}
+	require.Equal(t, messageResolutionRequestTemplate, empty.resolveMessage())
+
+	message, _, resolution, err := empty.commitMetadata()
+	require.NoError(t, err)
+	assert.Equal(t, messageResolutionRequestTemplate, resolution)
+	assert.Equal(t, "chore: checkpoint\n\nSaved by alice", message)
+
+	unframed := empty
+	unframed.CommitConfig = ResolveCommitConfig(nil)
+	assert.Equal(t, messageResolutionRequest, unframed.resolveMessage(),
+		"without a requestTemplate the message is committed as written")
+}
+
+// requestTemplate describes the commit a CommitRequest's message produces. A resync arrives
+// pre-rendered and is never framed, whatever requestTemplate says.
 func TestResolveMessage_AResyncIsNeverFramed(t *testing.T) {
 	resync := requestWrite("pre-rendered", requestConfig(requestBodyTemplate))
 	resync.Kind = PendingWriteResync

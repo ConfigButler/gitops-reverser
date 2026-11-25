@@ -15,7 +15,7 @@ message only on some branch passes validation and falls back at commit time.
 
 | Input, in precedence order | Message source |
 |---|---|
-| Attached [save request](configuration.md#commitrequest) **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage` |
+| [Save request](configuration.md#commitrequest) message, on its window or its empty commit, **and** `requestTemplate` set | `requestTemplate`, with the request's message as `.RequestMessage`; an empty commit lists no resources |
 | Non-empty literal override, including an attached [save request](configuration.md#commitrequest) | Exact supplied text |
 | Live window of any size | `liveTemplate` |
 | Atomic snapshot or resync | `reconcileTemplate` |

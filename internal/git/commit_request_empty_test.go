@@ -69,7 +69,44 @@ func TestCommitEmpty_NoWindowBeforeTheTimeoutRecordsTheMessage(t *testing.T) {
 
 	commit, err := serverRepo.CommitObject(plumbing.NewHash(res.Commit))
 	require.NoError(t, err)
-	assert.Equal(t, "alice", commit.Author.Name, "the record is authored by the request's submitter")
+	assert.Equal(t, "alice", commit.Author.Name, "the empty commit is authored by the request's submitter")
+}
+
+// An empty commit has no write to take its author from, so it takes the request's: the identity
+// ResolveAuthor gave for the request, name and email included. A person's empty commit and their
+// window commit must then carry the same Git author.
+func TestCommitEmpty_IsAuthoredAsTheSubmittersWindowCommits(t *testing.T) {
+	worker, serverRepo, _ := setupCommitPushSplitWorker(t)
+	createPlainGitTarget(t, worker, "team-a", "team-a")
+	loop := newBranchWorkerEventLoop(worker, time.Hour)
+	defer loop.stopTimers()
+	alice := UserInfo{Username: "oidc:alice", DisplayName: "Alice Jansen", Email: "alice@corp.example"}
+
+	event := configMapTargetEvent("existing", alice.Username, "team-a")
+	event.UserInfo = alice
+	loop.handleQueueItem(WorkItem{Request: &WriteRequest{Events: []Event{event}}})
+	require.True(t, loop.finalizeOpenWindow())
+	loop.pushPending()
+
+	req := commitEmptyReq(alice.Username, "save: nothing changed")
+	req.Author = alice
+	serviceAttach(loop, req)
+	forceDue(loop)
+	loop.endWake(0)
+	loop.pushPending()
+
+	res, ok := outcome(t, worker)
+	require.True(t, ok)
+	require.NoError(t, res.Err)
+	requirePushedEmptyCommit(t, serverRepo, res, "save: nothing changed")
+	emptyCommit, err := serverRepo.CommitObject(plumbing.NewHash(res.Commit))
+	require.NoError(t, err)
+	windowCommit, err := emptyCommit.Parent(0)
+	require.NoError(t, err)
+	assert.Equal(t, "Alice Jansen", emptyCommit.Author.Name, "the display name, not the username")
+	assert.Equal(t, "alice@corp.example", emptyCommit.Author.Email, "the email the login carried")
+	assert.Equal(t, windowCommit.Author.Name, emptyCommit.Author.Name, "the same author as her window commit")
+	assert.Equal(t, windowCommit.Author.Email, emptyCommit.Author.Email, "the same email as her window commit")
 }
 
 func TestCommitEmpty_AWindowThatChangedNothingRecordsTheMessage(t *testing.T) {
@@ -475,4 +512,34 @@ func TestCommitEmpty_ABufferFlushStillServesTheWaitingSaves(t *testing.T) {
 		assert.Empty(t, res.Commit)
 		assert.Len(t, loop.pendingWrites, 1, "no record was made while alice's work was in flight")
 	})
+}
+
+// Saves whose attach deadlines pass in the same wake leave their empty commits in the order the
+// saves were registered, not in the pending set's map order. A small map iterates as a rotation of
+// its slots, so one round matches registration order often by chance; twenty rounds do not.
+func TestCommitEmpty_SavesExpiringTogetherCommitInRegistrationOrder(t *testing.T) {
+	authors := []string{"alice", "bob", "carol", "dave", "erin"}
+	for range 20 {
+		worker, _, _ := setupCommitPushSplitWorker(t)
+		createPlainGitTarget(t, worker, "team-a", "team-a")
+		loop := newBranchWorkerEventLoop(worker, time.Hour)
+		holdPushes(loop) // keep the decided writes in view
+
+		for _, author := range authors {
+			req := commitEmptyReq(author, "save: by "+author)
+			req.Name, req.UID = "save-"+author, "uid-save-"+author
+			serviceAttach(loop, req)
+		}
+		past := time.Now().Add(-time.Millisecond)
+		for _, pcr := range loop.pendingCRs {
+			pcr.attachDeadline = past
+		}
+		loop.expireWaitingCommitRequests()
+		loop.stopTimers()
+
+		require.Len(t, loop.pendingWrites, len(authors), "one empty commit per save")
+		for i, author := range authors {
+			require.Equal(t, "save: by "+author, loop.pendingWrites[i].CommitMessage, "decided in registration order")
+		}
+	}
 }

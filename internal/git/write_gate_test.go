@@ -354,7 +354,7 @@ func TestWriteGate_AWindowMismatchIsStillAMismatch(t *testing.T) {
 	worker, _, loop := seededLoop(t)
 	suspendTarget(t, worker)
 	req := requestFor("save", "team-a", true)
-	req.Author = "bob"
+	req.Author = UserInfo{Username: "bob"}
 
 	serviceAttach(loop, req)
 	writeTo(loop, "alices-edit")

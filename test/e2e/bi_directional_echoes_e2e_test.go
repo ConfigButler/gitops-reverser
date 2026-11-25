@@ -292,6 +292,13 @@ func echoScenarios(run func() *echoRun) {
 		By("editing an object every second while a Git-side push to another one waits")
 		stop := make(chan struct{})
 		var wg sync.WaitGroup
+		// Stopped once, either below or by the cleanup, so a failed Eventually does not leave the
+		// editor running into the next spec.
+		stopEditing := sync.OnceFunc(func() {
+			close(stop)
+			wg.Wait()
+		})
+		DeferCleanup(stopEditing)
 		last := "b0"
 		wg.Go(func() {
 			defer GinkgoRecover()
@@ -311,8 +318,7 @@ func echoScenarios(run func() *echoRun) {
 			live, _ := r.liveValue(g, "busy-push")
 			g.Expect(live).To(Equal("p1"), "the push is applied while edits keep arriving")
 		}, timingReceiverBudget, time.Second).Should(Succeed())
-		close(stop)
-		wg.Wait()
+		stopEditing()
 
 		r.eventuallyEverywhere("busy", last, echoApplyBudget)
 		r.consistentlyEverywhere("busy", last)

@@ -108,7 +108,7 @@ func (c *commitRequestCore) decide(
 		"ready", commitRequestConditionStatus(current, ConditionTypeReady),
 		"reason", readyReason,
 		"message", readyMessage,
-		"author", current.Status.Author,
+		"author", requestAuthorUserInfo(current.Status.Author).Username,
 		"branch", current.Status.Branch,
 		"commit", current.Status.Commit,
 		"gitTarget", current.GitTargetKey().String(),

@@ -24,9 +24,9 @@ func TestCommitRequestKstatusContract(t *testing.T) {
 		wantMsg    string
 	}{
 		{
-			name: "in the close-delay wait",
+			name: "waiting for a window",
 			conds: []map[string]interface{}{
-				conditionMap(ConditionTypeReady, "False", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
+				conditionMap(ConditionTypeReady, "Unknown", string(git.PhaseWaitingForWindow), waitingForWindowMessage),
 				conditionMap(
 					ConditionTypeReconciling,
 					"True",

@@ -14,8 +14,8 @@ import (
 // This file is the branch worker's ordered pending writes, and the one driver that turns them into
 // commits and publications. See docs/design/gittarget-branch-worker-pending-writes.md.
 //
-// Every write the loop makes, whatever produced it (a closed window, a resync, a save's empty
-// record), takes one path:
+// Every write the loop makes, whatever produced it (a closed window, a resync, the empty commit of
+// a save no window reached), takes one path:
 //
 //   - decide appends it to the pending writes. The write gates and building the write have passed, so the
 //     decision stands from here on. Deciding does nothing else: no commit, no push, no settlement.
@@ -62,7 +62,7 @@ var errAdmissionClosed = fmt.Errorf(
 // pendingWriteOverheadBytes is what every retained item is charged beyond its payload: each event a
 // window or a write keeps (its identity, author, path), and a write that keeps none (its target
 // metadata, commit configuration, signer, the save it carries). Without it an item with no payload,
-// a delete or a save's empty record, cost nothing to keep, and a branch
+// a delete or a save's empty commit, cost nothing to keep, and a branch
 // whose remote was down admitted them for as long as the outage lasted.
 const pendingWriteOverheadBytes = 1024
 
@@ -430,7 +430,7 @@ func (l *branchWorkerEventLoop) settleDropped(pendingWrite PendingWrite, err err
 		}
 		l.w.Log.Error(err, "Resync commit failed after its caller was answered; dropping it",
 			"resources", len(req.Desired))
-	case pendingWrite.Kind == PendingWriteRequestRecord:
+	case pendingWrite.Kind == PendingWriteEmptyCommit:
 		l.w.Log.Error(err, "The empty commit recording a CommitRequest failed",
 			"gitTarget", pendingWrite.GitTargetNamespace+"/"+pendingWrite.GitTargetName)
 		l.failDecidedRequest(pendingWrite, fmt.Errorf("record the message in an empty commit: %w", err))

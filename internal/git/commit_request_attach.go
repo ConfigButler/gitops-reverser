@@ -122,11 +122,11 @@ type AttachCommitRequest struct {
 	Name      string
 	UID       string
 
-	// Author is the effective user that requested the finalize, captured from
-	// validating admission. Only a window whose author
-	// matches is attached; this binds "the open window" to "the requesting
-	// author's open window".
-	Author string
+	// Author is who created the request, as its own audit event names them: the identity
+	// ResolveAuthor returns for every write, so an empty commit is signed exactly as a window
+	// commit of the same person is. Only a window whose author has the same Username is
+	// attached; this binds "the open window" to "the requesting author's open window".
+	Author UserInfo
 	// Attribution is the outcome of attributing THIS CommitRequest, from the command-authorship
 	// path. It is matched alongside Author rather than inferred from it, because an empty Author
 	// alone cannot say whether an actor was sought: it is both "attribution is off" and
@@ -178,7 +178,7 @@ func (a AttachCommitRequest) id() commitRequestID {
 // window's timers close it, or committed locally and awaiting the push that settles it.
 type pendingCommitRequest struct {
 	id                 commitRequestID
-	author             string
+	author             UserInfo
 	attribution        AttributionOutcome
 	gitTargetName      string
 	gitTargetNamespace string
@@ -263,14 +263,14 @@ func (p *pendingCommitRequest) matchesWindow(w *openWindow) bool {
 	if p.gitTargetName != w.GitTarget || p.gitTargetNamespace != w.GitTargetNamespace {
 		return false
 	}
-	return p.author == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor()
+	return p.author.Username == w.Author && p.attribution.NamesActor() == w.Attribution.NamesActor()
 }
 
 // sameSaver reports whether two requests would save one window: the same GitTarget and the same
 // author, by the comparison matchesWindow makes.
 func (p *pendingCommitRequest) sameSaver(other *pendingCommitRequest) bool {
 	return p.gitTargetName == other.gitTargetName && p.gitTargetNamespace == other.gitTargetNamespace &&
-		p.author == other.author && p.attribution.NamesActor() == other.attribution.NamesActor()
+		p.author.Username == other.author.Username && p.attribution.NamesActor() == other.attribution.NamesActor()
 }
 
 // commitRequestOutcomeEntry is a resolved outcome retained for the controller to

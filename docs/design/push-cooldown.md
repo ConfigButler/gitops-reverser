@@ -106,7 +106,7 @@ when it cannot sit beside them:
 | Overlapping footprints | `path-conflict` |
 | The retained-byte budget | `buffer-limit` |
 | `commit.window.idleTimeout: 0s` | every event commits on arrival |
-| Resync snapshots and request records | they commit outside the windows |
+| Resync snapshots and the empty commits of saves no window reached | they commit outside the windows |
 
 Several `GitTarget`s sharing a branch is the multi-tenant shape, and there every switch between
 targets is a close:

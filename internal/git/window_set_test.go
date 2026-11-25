@@ -62,8 +62,16 @@ func TestCommitWindows_ASetSaysWhichWindowAWriteOrARequestBelongsTo(t *testing.T
 	assert.Nil(t, set.forWrite(bob))
 	assert.Equal(t, []*openWindow{window}, set.others(set.forWrite(bob)))
 
-	aliceSave := &pendingCommitRequest{author: "alice", gitTargetName: "team-a", gitTargetNamespace: "default"}
-	bobSave := &pendingCommitRequest{author: "bob", gitTargetName: "team-a", gitTargetNamespace: "default"}
+	aliceSave := &pendingCommitRequest{
+		author:             UserInfo{Username: "alice"},
+		gitTargetName:      "team-a",
+		gitTargetNamespace: "default",
+	}
+	bobSave := &pendingCommitRequest{
+		author:             UserInfo{Username: "bob"},
+		gitTargetName:      "team-a",
+		gitTargetNamespace: "default",
+	}
 	assert.Same(t, window, set.forRequest(aliceSave))
 	assert.Nil(t, set.foreignTo(aliceSave))
 	assert.Nil(t, set.forRequest(bobSave))
@@ -72,7 +80,11 @@ func TestCommitWindows_ASetSaysWhichWindowAWriteOrARequestBelongsTo(t *testing.T
 	bobs := set.open(bob, nil, time.Now())
 	assert.Same(t, bobs, set.forRequest(bobSave))
 	assert.Nil(t, set.foreignTo(bobSave), "a window of the request's own author is open: nobody stands in its way")
-	carolSave := &pendingCommitRequest{author: "carol", gitTargetName: "team-a", gitTargetNamespace: "default"}
+	carolSave := &pendingCommitRequest{
+		author:             UserInfo{Username: "carol"},
+		gitTargetName:      "team-a",
+		gitTargetNamespace: "default",
+	}
 	assert.Same(t, window, set.foreignTo(carolSave), "the oldest window it cannot attach to")
 
 	id := commitRequestID{Namespace: "default", Name: "save", UID: "uid-save"}
