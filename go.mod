@@ -6,7 +6,7 @@ require (
 	filippo.io/age v1.3.2
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/cespare/xxhash/v2 v2.3.0
-	github.com/fluxcd/pkg/apis/meta v1.38.0
+	github.com/fluxcd/pkg/apis/meta v1.39.0
 	github.com/go-git/go-billy/v6 v6.0.0-beta.1
 	github.com/go-git/go-git/v6 v6.0.0-beta.1
 	github.com/go-logr/logr v1.4.4
@@ -112,7 +112,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp v0.0.0-20260820142414-ca536658362e // indirect
 	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/oauth2 v0.38.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect

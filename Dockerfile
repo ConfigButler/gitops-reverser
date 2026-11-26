@@ -94,7 +94,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:debug@sha256:ebd32759877244c6e72c1610b6fb1cd1004625cc575361ee2ae0b79df9eb3893
+FROM gcr.io/distroless/static:debug@sha256:a97e59debfbb00f104068c1de7d9c6d4163abc117d437d97797ba31b14e9ce9f
 WORKDIR /
 COPY --from=builder /workspaces/manager .
 COPY --from=sops-builder /out/sops /usr/local/bin/sops
