@@ -52,8 +52,9 @@ configure routes:
   with a certificate the host trusts.
 - Admin rights on the repository (or the organization) to add a webhook.
 
-The examples use GitHub, a provider for `git@github.com:acme/platform.git` in namespace `team-a`, and
-the chart installed as `gitops-reverser` in namespace `gitops-reverser`.
+The examples use GitHub and continue from [the Flux](bi-directional-flux.md) or
+[Argo CD setup](bi-directional-argocd.md): the `GitBranch` `platform-main` in namespace `team-a`, and
+the chart installed as `gitops-reverser` in namespace `gitops-reverser`. Use your own names.
 
 ## 1. Turn on the receiver listener
 
@@ -152,9 +153,15 @@ every repository at once) and fill in:
 | --- | --- |
 | Payload URL | `https://hooks.example.com` followed by the receiver's path |
 | Content type | `application/json` (`application/x-www-form-urlencoded` also works) |
-| Secret | The token from step 3 |
+| Secret | The token from step 3 (see below) |
 | Which events | Just the `push` event |
 | Active | Checked |
+
+Read the token back from the Secret to paste it:
+
+```bash
+kubectl -n team-a get secret platform-receiver -o jsonpath='{.data.token}' | base64 -d; echo
+```
 
 GitHub sends a `ping` when you save. The receiver answers `202` and ignores it, so a green check
 next to the ping in **Recent Deliveries** proves that the route and the secret both work.
@@ -190,13 +197,13 @@ it, or commit through the host's web editor.
 2. **GitOps Reverser received it.** The `GitBranch` records when a delivery last reached it:
 
    ```bash
-   kubectl -n team-a get gitbranch main -o jsonpath='{.status.lastPushNoticeAt}{"\n"}'
+   kubectl -n team-a get gitbranch platform-main -o jsonpath='{.status.lastPushNoticeAt}{"\n"}'
    ```
 
 3. **It saw the new commit.** The `GitBranch`'s `COMMIT` column shows the commit you pushed:
 
    ```bash
-   kubectl -n team-a get gitbranch main
+   kubectl -n team-a get gitbranch platform-main
    ```
 
 4. **The applier applied it.** The applier claim's `OPERATION` column moves through `Requested` and

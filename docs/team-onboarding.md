@@ -49,9 +49,10 @@ The examples use these names:
 
 ## 1. Platform: connect the repository
 
-Skip this step if a `GitProvider` for the repository exists; add the grant from step 3 to it
-instead. Otherwise create the credential Secret as in the [quick start](quickstart.md) or the
-[GitHub guide](github-setup-guide.md), in `platform`, and a `GitProvider` beside it:
+Skip this step if a `GitProvider` for the repository exists: add the `allowedGitBranches` grant
+below to it, and use its name wherever this guide says `platform-repo`. Otherwise create the
+credential Secret as in the [quick start](quickstart.md) or the [GitHub guide](github-setup-guide.md),
+in `platform`, and a `GitProvider` beside it:
 
 ```yaml
 apiVersion: configbutler.ai/v1alpha3

@@ -339,11 +339,11 @@ host-side configuration and the capability as a whole. Not "push notification" o
 **Push event.** The Git host's own name for what a push webhook reports: one push, naming a
 repository, a branch, and the commit it moved to. GitHub, GitLab and Gitea all call it that.
 
-**Delivery.** One request a push webhook sends to a receiver, carrying one push event. Its signature
-is checked before its body is read, and a verified delivery is only a hint (see **Receiver**).
-`receiver_deliveries_total` counts deliveries by `outcome`, and `GitBranch.status.lastPushNoticeAt`
-records when one last reached the branch. The **audit webhook** sends requests too; call those
-audit requests, so "delivery" stays with the push webhook.
+**Delivery.** One request a push webhook sends to a receiver, carrying one push event. It is
+verified before its body is parsed, and a verified delivery is only a hint (see **Receiver**).
+`gitopsreverser_receiver_deliveries_total` counts deliveries by `outcome`, and
+`GitBranch.status.lastPushNoticeAt` records when one last reached the branch. The **audit webhook**
+sends requests too; call those audit requests, so "delivery" stays with the push webhook.
 
 ## Attribution
 
@@ -369,8 +369,8 @@ a provider there carries it, otherwise the namespace of the oldest provider carr
 elsewhere that carries it is not used (`AuditRouteConflict`), so no namespace reads another's facts.
 
 **Audit webhook.** The kube-apiserver's audit webhook backend, configured to post audit events to the
-operator's audit listener. It authenticates with a client certificate, where a push webhook signs
-its body, which is why the two never share a listener. A bare "webhook" is ambiguous wherever both
+operator's audit listener. It authenticates with a client certificate, where a push webhook proves
+itself with a shared token, which is why the two never share a listener. A bare "webhook" is ambiguous wherever both
 could be meant: say which.
 
 **Named endpoint, bare endpoint.** The two paths the audit listener serves. A **named endpoint**,
