@@ -44,7 +44,7 @@ type inFlightKey struct {
 	request  types.NamespacedName
 }
 
-// inFlightRequest is how to take a step of a remembered request, and which request of its name it is.
+// inFlightRequest is how to take a step of a remembered request, and its UID.
 type inFlightRequest struct {
 	core *commitRequestCore
 	path commitRequestPath
@@ -69,7 +69,7 @@ func (f *CommitRequestsInFlight) track(
 		inFlightRequest{core: c, path: p, uid: cr.UID}
 }
 
-// forget drops the request of key's name, read as gone or finished from where that name is stored now.
+// forget drops a request that finished, or is gone, as read fresh by its name.
 func (f *CommitRequestsInFlight) forget(p commitRequestPath, key types.NamespacedName) {
 	if f == nil {
 		return
@@ -79,9 +79,8 @@ func (f *CommitRequestsInFlight) forget(p commitRequestPath, key types.Namespace
 	delete(f.requests, inFlightKey{provider: p.provider, request: key})
 }
 
-// forgetObject drops cr, finished or being deleted, but only while what is remembered under its name is
-// cr itself: cr may be an object a list or watch event delivered after the request was replaced by
-// another of its name, which this process may have attached since.
+// forgetObject drops cr, which finished, only if the request remembered under its name has cr's UID: an
+// old delivered object must not drop a newer request that reuses the name.
 func (f *CommitRequestsInFlight) forgetObject(p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest) {
 	if f == nil {
 		return

@@ -126,30 +126,33 @@ func (c *commitRequestCore) serve(
 		}
 		return 0, client.IgnoreNotFound(err)
 	}
-	return c.serveStored(ctx, p, cr)
-}
-
-// serveStored takes one step for cr, as it was read from p's store: by a get, or by the list or watch
-// event that delivered it, where the caller knows the step is safe on an object that may have changed
-// since (servableAsDelivered). Every write is conditional on cr.ResourceVersion, so such a step fails
-// with a conflict and the next one reads the request again.
-func (c *commitRequestCore) serveStored(
-	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
-) (time.Duration, error) {
 	if !cr.DeletionTimestamp.IsZero() {
-		c.inFlight.forgetObject(p, cr)
+		c.inFlight.forget(p, key)
 		return 0, nil
 	}
 	if commitRequestIsTerminal(cr) {
-		c.inFlight.forgetObject(p, cr)
+		c.inFlight.forget(p, key)
 		return c.serveFinished(ctx, p, cr)
 	}
 	if c.finalizer == nil {
-		p.log.V(1).Info("CommitRequest finalize disabled: no Finalizer configured",
-			"name", client.ObjectKeyFromObject(cr))
+		p.log.V(1).Info("CommitRequest finalize disabled: no Finalizer configured", "name", key)
 		return 0, nil
 	}
 	return c.serveOpen(ctx, p, cr)
+}
+
+// serveDelivered is serve for a request a list or watch event delivered, which may be older than the
+// stored one. A finished request is served from it: it never reopens, and each write or delete of one
+// is conditional on its resourceVersion, so a relist reads no finished request again. Any other is
+// read fresh first, because its step may attach it to a worker before any conditional write.
+func (c *commitRequestCore) serveDelivered(
+	ctx context.Context, p commitRequestPath, delivered *configbutleraiv1alpha3.CommitRequest,
+) (time.Duration, error) {
+	if !commitRequestIsTerminal(delivered) || !delivered.DeletionTimestamp.IsZero() {
+		return c.serve(ctx, p, client.ObjectKeyFromObject(delivered))
+	}
+	c.inFlight.forgetObject(p, delivered)
+	return c.serveFinished(ctx, p, delivered)
 }
 
 // serveOpen is the step of a request whose save has not ended: it waits for its GitTarget, leaves it

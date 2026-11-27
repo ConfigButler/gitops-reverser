@@ -596,12 +596,8 @@ func (s *CommitRequestServer) session(
 }
 
 // consider serves a request no goroutine serves yet: it takes steps until the core has nothing due
-// before the next relist looks at the request again.
-//
-// A finished or unclaimed request takes its first step from u, the object the list or watch event just
-// delivered, not from a get of it: a relist would otherwise get every stored request again, finished
-// ones included, through the source cluster's rate-limited client, and a request created meanwhile
-// would wait behind them all for its claim. See servableAsDelivered for why only those two.
+// before the next relist looks at the request again. The first step starts from u, the object the
+// list or watch event delivered (serveDelivered); every later step reads the request fresh.
 func (s *CommitRequestServer) consider(
 	ctx context.Context,
 	watcher *commitRequestWatcher,
@@ -614,7 +610,7 @@ func (s *CommitRequestServer) consider(
 		return
 	}
 	key := k8stypes.NamespacedName{Namespace: u.GetNamespace(), Name: u.GetName()}
-	step := stepsOf(s.core(), watcher.path, key, u)
+	core := s.core()
 	wait := s.after
 	if wait == nil {
 		wait = time.After
@@ -623,56 +619,41 @@ func (s *CommitRequestServer) consider(
 		defer watcher.serving.Delete(u.GetUID())
 		woken, stop := s.Wakes.watch(u.GetUID())
 		defer stop()
-		for ctx.Err() == nil {
-			after, err := step(ctx)
+		// nextStepDue waits for the step a result asks for, and reports false when none is due.
+		nextStepDue := func(after time.Duration, err error) bool {
 			if err != nil {
 				watcher.path.log.V(1).Info("A CommitRequest step failed; will retry", "commitRequest", key,
 					"err", err.Error())
 				after = commitRequestPollInterval
 			}
 			if after == 0 || after >= commitRequestRelist {
-				return
+				return false
 			}
 			select {
 			case <-ctx.Done():
 			case <-wait(after):
 			case <-woken:
 			}
+			return ctx.Err() == nil
+		}
+
+		after, err := serveDeliveredObject(ctx, core, watcher.path, u)
+		for nextStepDue(after, err) {
+			after, err = core.serve(ctx, watcher.path, key)
 		}
 	}()
 }
 
-// stepsOf takes the steps of the request key, which u delivered: the first from u itself where
-// servableAsDelivered allows it, and every other from the request as it is stored then.
-func stepsOf(
-	core *commitRequestCore, path commitRequestPath, key k8stypes.NamespacedName, u *unstructured.Unstructured,
-) func(context.Context) (time.Duration, error) {
+// serveDeliveredObject takes the first step for u. An object that cannot be read as a CommitRequest
+// fails the step, and the next one reads the request fresh.
+func serveDeliveredObject(
+	ctx context.Context, core *commitRequestCore, p commitRequestPath, u *unstructured.Unstructured,
+) (time.Duration, error) {
 	delivered, err := commitRequestFromUnstructured(u)
-	if err != nil || !servableAsDelivered(delivered) {
-		delivered = nil // the first step gets it, and reports what cannot be read
+	if err != nil {
+		return 0, err
 	}
-	return func(ctx context.Context) (time.Duration, error) {
-		if cr := delivered; cr != nil {
-			delivered = nil
-			return core.serveStored(ctx, path, cr)
-		}
-		return core.serve(ctx, path, key)
-	}
-}
-
-// servableAsDelivered reports whether a step may be decided from cr as a list or watch event delivered
-// it, which may be older than the stored request: an event can arrive after the goroutine that made the
-// write took its later steps and ended. That is safe where every step only reads, or writes
-// conditionally, before anything else:
-//
-//   - A finished request never opens again, and each write and the delete of one is conditional.
-//   - An unclaimed request, with no status at all, is claimed by a conditional write before it is
-//     attached, and a conflict then leaves it to whoever wrote first.
-//
-// A claimed request is attached to its worker, or withdrawn from it, as its step's first act, so it is
-// read again first: an old object would attach one whose save has already ended.
-func servableAsDelivered(cr *configbutleraiv1alpha3.CommitRequest) bool {
-	return commitRequestIsTerminal(cr) || len(cr.Status.Conditions) == 0
+	return core.serveDelivered(ctx, p, delivered)
 }
 
 func (s *CommitRequestServer) core() *commitRequestCore {

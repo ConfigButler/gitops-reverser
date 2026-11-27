@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/util/flowcontrol"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
@@ -542,8 +544,8 @@ func TestCommitRequestServer_AWatchClosedAtOnceWaitsBeforeListingAgain(t *testin
 	}
 }
 
-// finishedSourceCommitRequest is a request on a source cluster whose save ended and that waits out a
-// delete-after time far away, as every request a provider keeps for its TTL does.
+// finishedSourceCommitRequest is a request on a source cluster whose save ended, kept until a
+// delete-after time far away.
 func finishedSourceCommitRequest(name string) *unstructured.Unstructured {
 	u := sourceCommitRequest(name)
 	u.SetAnnotations(map[string]string{
@@ -556,14 +558,47 @@ func finishedSourceCommitRequest(name string) *unstructured.Unstructured {
 	return u
 }
 
-// A list serves each request it returns from the listed object, not from a get of it: through a
-// rate-limited client, a get of every stored request would queue a request created during the relist
-// behind them all, so its claim waited in proportion to how many requests the namespace keeps. Here
-// each get holds the client's later calls behind it, as client-side throttling does, and the new one is
-// still served within a bound no number of finished requests reaches.
-func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheStoredOnes(t *testing.T) {
+// throttledGets is a source cluster's client whose gets wait for a token-bucket rate limiter, as every
+// call of a real client does, outside the fake's own lock, so a list and watch never wait behind them.
+type throttledGets struct {
+	dynamic.Interface
+
+	limiter flowcontrol.RateLimiter
+}
+
+func (c throttledGets) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	return throttledResource{NamespaceableResourceInterface: c.Interface.Resource(gvr), limiter: c.limiter}
+}
+
+type throttledResource struct {
+	dynamic.NamespaceableResourceInterface
+
+	limiter flowcontrol.RateLimiter
+}
+
+func (r throttledResource) Namespace(namespace string) dynamic.ResourceInterface {
+	return throttledNamespace{ResourceInterface: r.NamespaceableResourceInterface.Namespace(namespace),
+		limiter: r.limiter}
+}
+
+type throttledNamespace struct {
+	dynamic.ResourceInterface
+
+	limiter flowcontrol.RateLimiter
+}
+
+func (r throttledNamespace) Get(
+	ctx context.Context, name string, options metav1.GetOptions, subresources ...string,
+) (*unstructured.Unstructured, error) {
+	r.limiter.Accept()
+	return r.ResourceInterface.Get(ctx, name, options, subresources...)
+}
+
+// A relist serves each finished request from the listed object. Before, it got every one again through
+// the source cluster's rate-limited client, and a request created meanwhile waited behind them all for
+// its claim: here 40 finished requests at 10 gets a second would hold it about four seconds.
+func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheFinishedOnes(t *testing.T) {
 	const finished = 40
-	const throttle = 100 * time.Millisecond // finished * throttle is four seconds of queue
 	provider := kubeconfigProvider("edge", true)
 	provider.Spec.CommitRequests = configv1alpha3.CommitRequestsReconcileAndDeleteFinished
 	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
@@ -571,20 +606,17 @@ func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheStoredOnes(t
 	stored := make([]runtime.Object, 0, finished)
 	finishedNames := map[string]bool{}
 	for i := range finished {
-		name := "finished-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		name := fmt.Sprintf("finished-%02d", i)
 		finishedNames[name] = true
 		stored = append(stored, finishedSourceCommitRequest(name))
 	}
 	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, stored...)
-	// The fake client takes one action at a time, so each get holds every later call of this client
-	// behind it, as a rate limiter does.
 	var finishedGets atomic.Int32
 	source.PrependReactor("get", "commitrequests", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		if finishedNames[action.(clienttesting.GetAction).GetName()] {
 			finishedGets.Add(1)
 		}
-		time.Sleep(throttle)
 		return false, nil, nil
 	})
 	watching := make(chan struct{})
@@ -595,31 +627,33 @@ func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheStoredOnes(t
 	})
 	s := &CommitRequestServer{
 		Client: c, Finalizer: committed(), TTL: time.Hour, Log: logr.Discard(),
-		Clusters: fakeClusters{dynamic: source, discovery: fakeDiscovery(nil,
-			commitRequestResources("configbutler.ai/v1alpha3", "commitrequests"))},
+		Clusters: fakeClusters{
+			dynamic:   throttledGets{Interface: source, limiter: flowcontrol.NewTokenBucketRateLimiter(10, 1)},
+			discovery: fakeDiscovery(nil, commitRequestResources("configbutler.ai/v1alpha3", "commitrequests")),
+		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.syncProviders(ctx)
 	select {
-	case <-watching:
+	case <-watching: // the list has been served, and any gets of it are queued
 	case <-time.After(5 * time.Second):
 		t.Fatal("the session never watched")
 	}
 
-	// Created by someone else, on the cluster, not through the server's own throttled client.
+	created := time.Now()
 	require.NoError(t, source.Tracker().Create(gvr, sourceCommitRequest("new"), "default"))
-	require.Eventually(t, func() bool {
-		u, getErr := source.Tracker().Get(gvr, "default", "new")
-		if getErr != nil {
+	claimed := func() bool {
+		u, err := source.Tracker().Get(gvr, "default", "new")
+		if err != nil {
 			return false
 		}
-		cr, convErr := commitRequestFromUnstructured(u.(*unstructured.Unstructured))
-		if convErr != nil {
-			return false
-		}
-		return apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady) != nil // the claim
-	}, 2*time.Second, 20*time.Millisecond, "the new request is claimed without waiting behind the stored ones")
+		cr, err := commitRequestFromUnstructured(u.(*unstructured.Unstructured))
+		return err == nil && apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady) != nil
+	}
+	assert.Eventually(t, claimed, 2*time.Second, 20*time.Millisecond,
+		"the new request is claimed without waiting behind the finished ones")
+	t.Logf("claimed %s after it was created", time.Since(created).Round(10*time.Millisecond))
 	assert.Zero(t, finishedGets.Load(), "no finished request is read again after the list returned it")
 }
 

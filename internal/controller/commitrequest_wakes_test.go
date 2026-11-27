@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -142,10 +143,10 @@ func serveSave(t *testing.T, woken bool) *servedSave {
 	watcher := &commitRequestWatcher{
 		provider: types.NamespacedName{Namespace: "default", Name: "edge"}, path: watcherPath(c, "edge", false),
 	}
-	var stored configv1alpha3.CommitRequest
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cr), &stored))
-	u, err := commitRequestToUnstructured(&stored) // the object the list or watch event delivers
-	require.NoError(t, err)
+	u := &unstructured.Unstructured{}
+	u.SetNamespace("default")
+	u.SetName("save")
+	u.SetUID(cr.UID)
 	server.consider(ctx, watcher, u)
 
 	s := &servedSave{t: t, c: c, cr: cr, worker: worker, timers: timers}
