@@ -7,6 +7,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,12 +15,14 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	k8swatch "k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/dynamic"
@@ -249,13 +252,13 @@ func (r *rotatingClusters) SourceDiscovery(context.Context, string) (discovery.D
 	return r.discovery, r.credential, nil
 }
 
-// sourceCommitRequest is a CommitRequest as it is stored on a source cluster.
-func sourceCommitRequest(namespace, name string) *unstructured.Unstructured {
+// sourceCommitRequest is a CommitRequest as it is stored on a source cluster, in namespace default.
+func sourceCommitRequest(name string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "configbutler.ai/v1alpha3",
 		"kind":       "CommitRequest",
 		"metadata": map[string]any{
-			"namespace": namespace, "name": name, "uid": "uid-" + name, "resourceVersion": "1",
+			"namespace": "default", "name": name, "uid": "uid-" + name, "resourceVersion": "1",
 			"creationTimestamp": time.Now().UTC().Format(time.RFC3339),
 		},
 		"spec": map[string]any{
@@ -276,7 +279,7 @@ func TestCommitRequestServer_ServesARequestOnASourceCluster(t *testing.T) {
 	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
 	gvr := commitRequestGVR()
 	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
-		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, sourceCommitRequest("default", "save"))
+		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, sourceCommitRequest("save"))
 	f := committed()
 	s := &CommitRequestServer{
 		Client: c, Finalizer: f, TTL: time.Hour, Log: logr.Discard(),
@@ -330,7 +333,7 @@ func TestCommitRequestServer_ARotatedCredentialMovesTheWatcher(t *testing.T) {
 	listKinds := map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}
 	before := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
 	after := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds,
-		sourceCommitRequest("default", "save"))
+		sourceCommitRequest("save"))
 	clusters := &rotatingClusters{
 		discovery:  fakeDiscovery(nil, commitRequestResources("configbutler.ai/v1alpha3", "commitrequests")),
 		credential: "v1",
@@ -413,4 +416,114 @@ func TestCommitRequestServer_StepsShareTheFactStreams(t *testing.T) {
 	wg.Wait()
 	first := s.core().streams
 	assert.Same(t, first, s.core().streams, "every step shares one set of streams")
+}
+
+// commitRequestWatchEnds are the ways a watch of a source cluster's CommitRequests ends without failing:
+// cleanly, as every one does after commitRequestRelist, and with 410 Gone.
+var commitRequestWatchEnds = []struct {
+	name string
+	end  func(*k8swatch.FakeWatcher)
+}{
+	{name: "clean end", end: func(w *k8swatch.FakeWatcher) { w.Stop() }},
+	{name: "410 Gone", end: func(w *k8swatch.FakeWatcher) {
+		w.Error(&apierrors.NewResourceExpired("too old resource version").ErrStatus)
+	}},
+}
+
+// countCommitRequestLists counts the Lists of CommitRequests on source.
+func countCommitRequestLists(source *dynamicfake.FakeDynamicClient) *atomic.Int32 {
+	var lists atomic.Int32
+	source.PrependReactor("list", "commitrequests", func(clienttesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		return false, nil, nil
+	})
+	return &lists
+}
+
+// A watch that ends without failing lists again at once, rather than leave the namespace unwatched for
+// commitRequestReconnect: a request created right after the end is served well within that wait.
+func TestCommitRequestServer_AWatchThatEndsListsAgainAtOnce(t *testing.T) {
+	for _, tc := range commitRequestWatchEnds {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := kubeconfigProvider("edge", true)
+			c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
+			gvr := commitRequestGVR()
+			source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+				map[schema.GroupVersionResource]string{gvr: "CommitRequestList"})
+			lists := countCommitRequestLists(source)
+			first := k8swatch.NewFake()
+			var watches atomic.Int32
+			source.PrependWatchReactor("commitrequests",
+				func(clienttesting.Action) (bool, k8swatch.Interface, error) {
+					if watches.Add(1) == 1 {
+						return true, first, nil
+					}
+					return false, nil, nil
+				})
+			s := &CommitRequestServer{
+				Client: c, Finalizer: committed(), Log: logr.Discard(),
+				Clusters: fakeClusters{dynamic: source, discovery: fakeDiscovery(nil,
+					commitRequestResources("configbutler.ai/v1alpha3", "commitrequests"))},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			s.syncProviders(ctx)
+			require.Eventually(t, func() bool { return watches.Load() == 1 }, 5*time.Second, 10*time.Millisecond,
+				"the first session watches")
+			time.Sleep(commitRequestShortWatch) // the watch has run long enough to count as a whole one
+
+			tc.end(first)
+			request := sourceCommitRequest("relisted")
+			request.SetResourceVersion("")
+			_, err := source.Resource(gvr).Namespace("default").Create(ctx, request, metav1.CreateOptions{})
+			require.NoError(t, err)
+
+			require.Eventually(t, func() bool {
+				u, getErr := source.Resource(gvr).Namespace("default").Get(ctx, "relisted", metav1.GetOptions{})
+				if getErr != nil {
+					return false
+				}
+				cr, convErr := commitRequestFromUnstructured(u)
+				if convErr != nil {
+					return false
+				}
+				ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady)
+				return ready != nil && ready.Reason == crReasonCommitted
+			}, commitRequestReconnect/2, 20*time.Millisecond,
+				"a request created as the watch ends is served without waiting commitRequestReconnect")
+			assert.GreaterOrEqual(t, lists.Load(), int32(2), "the namespace was listed again")
+		})
+	}
+}
+
+// A watch a server closes at once, cleanly or with 410 Gone, waits commitRequestReconnect before listing
+// again, so such a server is not listed in a loop.
+func TestCommitRequestServer_AWatchClosedAtOnceWaitsBeforeListingAgain(t *testing.T) {
+	for _, tc := range commitRequestWatchEnds {
+		t.Run(tc.name, func(t *testing.T) {
+			source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+				map[schema.GroupVersionResource]string{commitRequestGVR(): "CommitRequestList"})
+			lists := countCommitRequestLists(source)
+			source.PrependWatchReactor("commitrequests",
+				func(clienttesting.Action) (bool, k8swatch.Interface, error) {
+					w := k8swatch.NewFakeWithChanSize(1, false)
+					tc.end(w)
+					return true, w, nil
+				})
+			s := &CommitRequestServer{Log: logr.Discard()}
+			watcher := &commitRequestWatcher{forbidden: map[string]bool{}, undeletable: map[string]bool{}}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s.watchNamespace(ctx, logr.Discard(), watcher, source.Resource(commitRequestGVR()), "default")
+			}()
+
+			require.Eventually(t, func() bool { return lists.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
+			time.Sleep(2 * commitRequestShortWatch)
+			assert.Equal(t, int32(1), lists.Load(), "no second list before commitRequestReconnect")
+			cancel()
+			<-done
+		})
+	}
 }
