@@ -9,7 +9,7 @@ The guide has two parts, and you can stop after the first:
 - **Mirror a workspace** ([step 1](#1-connect-each-workspace)). Each workspace is reached through
   its own `KubeProvider`, like any other remote cluster. Nothing about it is kcp-specific, and every
   commit is authored by the configured committer.
-- **Name each change's author** ([steps 2–4](#2-turn-on-the-shared-audit-endpoint)). This is where
+- **Name each change's author** ([steps 2–4](#2-turn-on-the-bare-endpoint)). This is where
   kcp differs from an ordinary cluster: one kcp shard sends the audit events of all its workspaces
   in a single stream, so GitOps Reverser has to tell from each event which workspace it came from.
 
@@ -24,7 +24,7 @@ The guide has two parts, and you can stop after the first:
 
 For commit authors you also need:
 
-- Attribution enabled, with a place to keep author facts until the matching change arrives:
+- Author attribution enabled, with a place to keep author facts until the matching change arrives:
   Redis/Valkey, or `memory` for a single replica. See
   [step 1 of the attribution guide](attribution-setup-guide.md#1-enable-the-receiver).
 - Access to the audit configuration of every kcp shard: the kcp-operator's `RootShard` and `Shard`
@@ -39,9 +39,8 @@ For commit authors you also need:
   readable and is what `kubectl ws` navigates. This guide uses the logical cluster name everywhere.
 - **Audit route:** the label GitOps Reverser files each author fact under. A `KubeProvider` reads
   the facts of exactly one route, its `spec.attribution.auditRoute`.
-- **Shared audit endpoint:** `/audit-webhook` with no route in the path. It reads each event's
-  route from an annotation on the event, so one stream can carry many workspaces. The
-  configuration reference calls it the bare endpoint. The ordinary,
+- **Bare endpoint:** `/audit-webhook` with no route in the path. It reads each event's route from
+  an annotation on the event, so one shared audit stream can carry many workspaces. The ordinary,
   **named** endpoint `/audit-webhook/<route>` files every event it receives under that one route.
 
 ## How the pieces fit
@@ -50,7 +49,7 @@ For commit authors you also need:
 flowchart LR
   user["Workspace user<br/>kubectl apply"] --> fp["kcp front-proxy"]
   fp --> shard["kcp shard<br/>serves many workspaces"]
-  shard -- "one audit stream<br/>each event tagged kcp.io/cluster" --> bare["GitOps Reverser<br/>shared /audit-webhook"]
+  shard -- "one audit stream<br/>each event tagged kcp.io/cluster" --> bare["GitOps Reverser<br/>bare /audit-webhook"]
   kp["KubeProvider shop-workspace<br/>auditRoute: 2nhnb6jpthl8l7z5"] -- "watch via<br/>/clusters/2nhnb6jpthl8l7z5" --> fp
   bare -- "fact filed under<br/>route 2nhnb6jpthl8l7z5" --> join["join: watch event + audit fact"]
   kp --> join
@@ -63,7 +62,7 @@ GitOps Reverser names an author by joining two streams that arrive separately:
 2. The **audit fact**: who made the change, built from the shard's audit event.
 
 The kcp shard tags every audit event with the logical cluster name of the workspace it served, in
-the `kcp.io/cluster` annotation. The shared endpoint files each event under that name as its
+the `kcp.io/cluster` annotation. The bare endpoint files each event under that name as its
 route. So the join works exactly when a workspace's `KubeProvider` carries that workspace's
 logical cluster name as its `spec.attribution.auditRoute`.
 
@@ -136,7 +135,7 @@ shapes.
 
 kcp also accepts the path in the URL (`/clusters/root:shop`), and mirroring works either way. Using
 the logical cluster name in both the URL and `auditRoute` leaves one value to check. Setting
-`auditRoute` now costs nothing while attribution is off, and saves a second edit later.
+`auditRoute` now costs nothing while author attribution is off, and saves a second edit later.
 
 The kubeconfig must embed its credentials. One that runs an exec plugin, skips TLS verification, or
 names a file is refused, as described under [`KubeProvider`](configuration.md#kubeprovider).
@@ -190,9 +189,9 @@ Three things differ from a cluster with its own API server:
 Mirroring works at this point, and every commit is authored by the configured committer. If that is
 all you need, you are done. The next steps add the commit author.
 
-## 2. Turn on the shared audit endpoint
+## 2. Turn on the bare endpoint
 
-Set the annotation key in the chart values, together with attribution:
+Set the annotation key in the chart values, together with author attribution:
 
 ```yaml
 attribution:
@@ -201,7 +200,7 @@ attribution:
 ```
 
 The chart passes it to the operator as
-`--author-attribution-audit-route-annotation-key=kcp.io/cluster`. That turns on the shared
+`--author-attribution-audit-route-annotation-key=kcp.io/cluster`. That turns on the bare
 `/audit-webhook` endpoint, which reads each event's route from its `kcp.io/cluster` annotation. One
 batch from a shard can therefore hold events for many workspaces, and each is filed under its own
 route.
@@ -209,7 +208,7 @@ route.
 If you also attribute changes made in the control cluster itself, keep its API server on its named
 route, `/audit-webhook/<release namespace>.local`, as in the
 [attribution guide](attribution-setup-guide.md#2-configure-delivery-on-every-api-server). Its
-events carry no `kcp.io/cluster` annotation, and the shared endpoint drops an event without one
+events carry no `kcp.io/cluster` annotation, and the bare endpoint drops an event without one
 instead of guessing a route.
 
 ## 3. Deliver every shard's audit stream
@@ -219,7 +218,7 @@ Every shard sends its own stream, so configure each one: the `RootShard` and eve
 Build the webhook kubeconfig as in the
 [attribution guide](attribution-setup-guide.md#2-configure-delivery-on-every-api-server), with
 mutual TLS, `tls-server-name`, and an address the shard can reach. The Service name below works
-when the shard runs in the control cluster. End the `server` URL at the shared endpoint, with no
+when the shard runs in the control cluster. End the `server` URL at the bare endpoint, with no
 route after it:
 
 ```yaml
@@ -304,8 +303,8 @@ Start from the provider's `AuditFactsReceived` reason, then the audit metrics de
 | `AuditFactsReceived=Unknown`, reason `RouteUnused` | Audit arrives, and none of it names this provider's route. Usually `spec.attribution.auditRoute` differs from the workspace's `spec.cluster` | Compare the `ROUTE` column with `kubectl get workspace <name> -o jsonpath='{.spec.cluster}'` in the parent workspace |
 | `AuditFactsReceived=Unknown`, reason `NoAuditDelivery` | No audit request has reached the operator on any route | Check the shard's `spec.audit.webhook`, its Secret, and network reach to port 9444 |
 | A steady rate of `audit_events_total{audit_route="unrecognized"}` | Events name a logical cluster no `KubeProvider` carries | Harmless for a workspace you do not mirror. Otherwise a mistyped `auditRoute` |
-| A rising rate of `audit_events_total{outcome="missing_cluster_annotation"}` | Something posts to the shared endpoint without the annotation | Usually the control cluster's API server pointed at `/audit-webhook`. Give it its named route |
-| The shard's webhook gets HTTP 400 | The shared endpoint is off: `attribution.auditRouteAnnotationKey` is unset | Set it ([step 2](#2-turn-on-the-shared-audit-endpoint)) |
+| A rising rate of `audit_events_total{outcome="missing_cluster_annotation"}` | Something posts to the bare endpoint without the annotation | Usually the control cluster's API server pointed at `/audit-webhook`. Give it its named route |
+| The shard's webhook gets HTTP 400 | The bare endpoint is off: `attribution.auditRouteAnnotationKey` is unset | Set it ([step 2](#2-turn-on-the-bare-endpoint)) |
 | `Stalled=True`, reason `AuditRouteConflict` | A provider in another namespace already holds this logical cluster name | Keep one workspace's providers in one namespace |
 
 ## How kcp tags the shared audit stream
@@ -372,7 +371,7 @@ known to be bookkeeping.
 
 ## The trust boundary
 
-The shared endpoint trusts the shard. Audit ingress checks the client certificate against the
+The bare endpoint trusts the shard. Audit ingress checks the client certificate against the
 shared audit CA, and any sender holding that credential can submit facts under any route. That is
 the [shared audit-ingress trust model](../SECURITY.md#shared-audit-ingress-trust-model): suitable
 when one privileged control plane, here kcp, serves every participating source and protects the
@@ -396,7 +395,7 @@ shard stream and the same route as the user's other changes.
 
 - [`KubeProvider`](configuration.md#kubeprovider): credentials, grants, and the audit route.
 - [Route a shared audit stream by event annotation](configuration.md#route-a-shared-audit-stream-by-event-annotation):
-  the rejection rules of the shared endpoint.
+  the rejection rules of the bare endpoint.
 - [Attribute commits to Kubernetes users](attribution-setup-guide.md): the receiver, the webhook
   kubeconfig, and the audit policy.
 - [Interpreting metrics](interpreting-metrics.md): `audit_events_total` and its `audit_route` label.

@@ -181,7 +181,7 @@ selectable transport, Redis Streams by default and an in-process ring with
 Redis as the shared store across replicas.
 
 **Audit is an optional attribution lookup.** When attribution is enabled, kube-apiserver posts audit
-events to `/audit-webhook/<audit-route>` (or a configured annotation-routed shared endpoint). The route
+events to `/audit-webhook/<audit-route>` (or the bare endpoint, routed by an event annotation). The route
 is `KubeProvider.spec.attribution.auditRoute`, which defaults to `<namespace>.<name>`.
 The operator appends a minimal fact to that route's per-type fact stream; every process watching the
 type follows that stream into a bounded, TTL'd in-process index, and a watch event joins against the
@@ -2004,7 +2004,7 @@ Current limitations:
   over it is not mirrored, and the next apply restores it; until then the cluster runs the older
   value. See [the apply window](design/apply-trigger.md#the-apply-window).
 - **Audit ingress uses a shared-CA trust boundary.** Named `/audit-webhook/<audit-route>` routes and the
-  annotation-routed shared endpoint both require a client certificate signed by the audit CA, but that
+  annotation-routed bare endpoint both require a client certificate signed by the audit CA, but that
   certificate is not bound to one audit route. This is an accepted privileged-control-plane assumption, not
   tenant isolation; see [SECURITY.md](../SECURITY.md#shared-audit-ingress-trust-model).
 - **`deletecollection`** is reconciled by the watch (each item arrives as its own `DELETED`, or the

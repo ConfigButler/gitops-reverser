@@ -25,14 +25,14 @@ GitOps Reverser writes? If yes, follow the bi-directional path even when the imm
 to record cluster changes. An existing deployment loop needs coordination regardless of whether
 anyone plans to edit Git manually.
 
-**Capture cluster state in Git.** This path reaches a verified commit without an applier claim or
-a Git push webhook. Describe it as capturing selected cluster state: batching and restart recovery
+**Mirror cluster state into Git.** This path reaches a verified commit without an applier claim or
+a Git push webhook. Describe it as mirroring selected cluster state: batching and restart recovery
 mean Git history is not a complete record of every event.
 
 - **Install GitOps Reverser.** For a cluster administrator: prerequisites, credentials, permissions,
-  installation, a first captured change, verification, and cleanup. Keep the default path usable
+  installation, a first mirrored change, verification, and cleanup. Keep the default path usable
   without audit attribution.
-- **Start capturing a team's resources.** For a platform administrator or team owner: choose the
+- **Start mirroring a team's resources.** For a platform administrator or team owner: choose the
   source cluster, namespaces, resource selection, repository, branch, and folder. Cover adopting
   an existing repository through a scratch branch, supported layouts, deletion policy, and
   cross-namespace access.
@@ -49,7 +49,7 @@ steps above.
   Explain who controls applying the folder and what happens when the operator is unavailable.
 - **React promptly to Git pushes.** Configure the Git host's push webhook and a `GitReceiver`.
   See the dedicated scope below.
-- **Verify both directions.** Capture a Kubernetes edit, then push a Git edit and verify the
+- **Verify both directions.** Mirror a Kubernetes edit, then push a Git edit and verify the
   coordinated apply.
 
 Installation happens at the platform level; onboarding repeats for each team or destination. Keep
@@ -121,13 +121,14 @@ even where source material does. Proposed guides are named by task, not by filen
 | `docs/README.md` | Documentation landing page | Exists: organized around the four categories; link each new guide as it lands |
 | Root `README.md` | Homepage | Exists: reuse the product explanation and demo |
 | `alternatives.md` | Homepage: is this right for me? | Exists: link from adoption guidance |
-| `quickstart.md` | Get started: capture | Exists: verify a first commit without an applier claim or push webhook |
-| Team onboarding | Get started: capture | Missing: extract selection, sharing, and repository adoption from `configuration.md` and the root README; ask whether an applier deploys the folder |
-| `github-setup-guide.md` | Get started: Git host | Exists: link to push-notification setup |
-| `azure-devops-getting-started.md` | Get started: Git host | Exists: state the push-notification limit described below |
+| `quickstart.md` | Get started: mirror | Exists: verify a first commit without an applier claim or push webhook |
+| `team-onboarding.md` | Get started: mirror | Exists: grants, branch, folder, selection, scratch-branch adoption, deletion policy; asks whether an applier deploys the folder |
+| `github-setup-guide.md` | Get started: Git host | Exists: link to the push webhook guide |
+| `push-webhook.md` | Get started: coordination | Exists: receiver listener, route, `GitReceiver`, GitHub webhook, verification, rotation, and the Azure DevOps limit |
+| `azure-devops-getting-started.md` | Get started: Git host | Exists: state the push webhook limit described below |
 | `attribution-setup-guide.md` | Get started: record who | Exists: keep its outcome and eligibility opening |
 | `audit-setup/cluster/readme.md` | Get started: record who | Exists: publish as the k3s example the attribution guide links |
-| `bi-directional.md` | Get started: coordination overview | Needs split: keep the setup decision and common behavior; extract receiver setup into the push-notification guide and the everyday Git edit into Make changes |
+| `bi-directional.md` | Get started: coordination overview | Needs split: keep the setup decision and common behavior; extract receiver setup into the push webhook guide and the everyday Git edit into Make changes |
 | `bi-directional-flux.md`, `bi-directional-argocd.md` | Get started: applier setup | Exists: link receiver setup and verify both directions |
 | `sops-age-guide.md`, `commit-signing.md` | Get started: supporting guides | Exists |
 | `kcp-workspaces.md` | Get started: supporting guides | Exists: kcp workspace mirroring and shared-stream attribution |
@@ -136,7 +137,7 @@ even where source material does. Proposed guides are named by task, not by filen
 | `commit-messages.md` | Reference, linked from grouped changes | Exists: template reference |
 | Collaboration on a shared branch | Make changes | Missing: publication semantics and multi-author examples |
 | `api-first-publication.md` | Reference, linked from collaboration | Exists: shared publication contract |
-| `installing-apps-as-krm.md` | Make changes | Exists: expanded example of choosing which declarations to capture |
+| `installing-apps-as-krm.md` | Make changes | Exists: expanded example of choosing which declarations to mirror |
 | `interpreting-metrics.md` | Operate: monitor | Exists: shared metric reference |
 | Symptom-driven troubleshooting | Operate | Missing: gather diagnostic paths from configuration and metrics |
 | Stable upgrade procedure | Operate | Missing: steps and verification linking to release entries |
@@ -150,10 +151,10 @@ even where source material does. Proposed guides are named by task, not by filen
 | API and command reference | Reference | Needs split: consolidate field and flag descriptions, find uncovered surfaces |
 | `INDEX.md`, `components.md`, `CONTRIBUTING.md`, `style-guide.md` | Maintainer entry point | Exists: link to repository pages |
 
-## Push notifications as an explicit setup activity
+## The push webhook as an explicit setup activity
 
 The outcome is "react promptly to Git pushes." Webhook setup is part of the normal bi-directional
-path; capture-only installations complete setup without it. A Git-side commit leaves the cluster
+path; an installation whose folder no applier applies completes setup without it. A Git-side commit leaves the cluster
 behind until the coordinated apply runs. Prompt notification shortens that interval and the
 opportunity for further Kubernetes edits to overlap the incoming change.
 
@@ -172,7 +173,7 @@ stays authoritative for fields and delivery diagnostics. It covers:
 3. Configure a GitHub push webhook with that URL and secret. Verify current host instructions when
    writing the walkthrough; link the GitLab, Gitea, and `generic-hmac` variants from the reference.
 4. Follow the documented Flux or Argo CD rules for existing applier webhooks. Name audit delivery
-   and Git push notifications as separate webhook purposes.
+   and push webhooks as separate webhook purposes.
 5. Push a known change and check host delivery, `GitBranch.status.lastPushNoticeAt`, the observed
    remote commit, and the applier's result. A successful HTTP response alone does not prove apply.
 6. Diagnose unreachable endpoints, rejected signatures, repository URL mismatches, and unmatched
@@ -254,9 +255,9 @@ source citations are unchanged.
 
 **Phase 2: Reading paths.**
 
-- Capture-only installation through a first verified commit, as the shortest complete path.
+- Mirror-only installation through a first verified commit, as the shortest complete path.
 - The missing onboarding, normal-change, collaboration, troubleshooting, and upgrade guides.
-- The bi-directional path: applier setup, push notifications with a GitHub example, the Azure
+- The bi-directional path: applier setup, the push webhook with a GitHub example, the Azure
   DevOps limit, and verification of both directions.
 - The marked splits and the attribution ordering.
 - Bring each source the manifest will publish under the prose gate. Measured on 2026-10-26, these

@@ -12,37 +12,33 @@ another approach fits better.
 Pick a setup path with one question: **does Flux or Argo CD apply the same folder GitOps Reverser
 writes?** If yes, follow [coordinate changes from Kubernetes and Git](#coordinate-changes-from-kubernetes-and-git),
 even when you only want to record cluster changes for now. An applier that keeps deploying that
-folder needs coordination either way. If no, follow [capture cluster state in Git](#capture-cluster-state-in-git).
+folder needs coordination either way. If no, follow [mirror cluster state into Git](#mirror-cluster-state-into-git).
 
-### Capture cluster state in Git
+### Mirror cluster state into Git
 
-The shortest path to a commit in Git, with no applier and no Git push webhook. It captures the
+The shortest path to a commit in Git, with no applier and no Git push webhook. It mirrors the
 selected cluster state; batching and restarts mean Git history is not a complete record of every
 event.
 
 1. **Install GitOps Reverser and see a first commit:** [quick start](quickstart.md).
 2. **Connect your Git host:** [GitHub](github-setup-guide.md) or
    [Azure DevOps](azure-devops-getting-started.md).
-3. **Start capturing a team's resources:** choose the source cluster, namespaces, resources,
-   repository, branch, and folder. The [configuration overview](configuration.md#how-the-objects-fit-together)
-   shows how the objects fit, and [one tenant, end to end](configuration.md#one-tenant-end-to-end)
-   walks a team through it. To adopt an existing repository, start on a
-   [scratch branch](configuration.md#seeing-what-a-target-will-do-before-it-does-it) and choose a
-   [deletion policy](configuration.md#deletion-policy-specprunemode) before going live.
+3. **Start mirroring a team's resources:** [onboard a team](team-onboarding.md): the repository,
+   branch, folder, namespaces, and resources it mirrors, and how to adopt an existing repository
+   on a scratch branch first.
 4. **Optional: record who made each change:** [attribute commits to Kubernetes users](attribution-setup-guide.md)
    through API-server audit delivery. It needs control over the API server's audit settings;
    [the k3s example](audit-setup/cluster/readme.md) shows a complete configuration.
 
 ### Coordinate changes from Kubernetes and Git
 
-For a folder that Flux or Argo CD also applies. Start with the capture path above, then:
+For a folder that Flux or Argo CD also applies. Start with the path above, then:
 
 1. **Understand why coordination is needed:** [bi-directional GitOps](bi-directional.md).
 2. **Configure the applier:** [Flux](bi-directional-flux.md) or [Argo CD](bi-directional-argocd.md).
-3. **React promptly to Git pushes:** configure the Git host's push webhook and a `GitReceiver`, as
-   in [telling GitOps Reverser that somebody else pushed](bi-directional.md#telling-gitops-reverser-that-somebody-else-pushed).
-   The [`GitReceiver` reference](configuration.md#gitreceiver) lists the supported hosts.
-4. **Optional: record who made each change**, as in the capture path.
+3. **React promptly to Git pushes:** [point the Git host's push webhook at GitOps Reverser](push-webhook.md),
+   then push a test change and watch it apply.
+4. **Optional: record who made each change**, as in the path above.
 
 ### Supporting guides
 
@@ -61,7 +57,7 @@ Use these where your setup needs them:
 - **Group changes and explain why:** [the commit window demo](demo/commit-window.md) collects two
   edits and saves them as one commit with a `CommitRequest`. [Commit messages](commit-messages.md)
   covers the templates.
-- **Choose what to capture:** [installing apps as KRM](installing-apps-as-krm.md) shows that a Flux
+- **Choose what to mirror:** [installing apps as KRM](installing-apps-as-krm.md) shows that a Flux
   `HelmRelease`, an Argo CD `Application`, or a KRO instance mirrors and edits like any other
   resource.
 - **Work alongside other people on the same branch:** [API-first publication](api-first-publication.md)
