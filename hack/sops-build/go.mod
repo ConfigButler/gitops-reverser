@@ -7,7 +7,7 @@ tool github.com/getsops/sops/v3/cmd/sops
 require (
 	github.com/getsops/sops/v3 v3.13.3
 	golang.org/x/crypto v0.59.0
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	google.golang.org/grpc v1.85.0
 )
 
