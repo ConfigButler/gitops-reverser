@@ -685,7 +685,9 @@ func TestFootprint_OverlapUnionAndOutside(t *testing.T) {
 // index of the old spec was reused, and they stayed open side by side.
 func TestWindowAdmission_AGitTargetChangeProvesTheOpenWindowsAgain(t *testing.T) {
 	f := newAdmissionFixture(t, "admission-generation", nil)
+	reader := captureInfo(f.worker)
 	f.writeBy("alice", "x", "x2")
+	serviceAttach(f.loop, attachReq("alice", time.Hour))
 	f.writeBy("bob", "z", "z2")
 	require.Equal(t, []string{"alice", "bob"}, authorsOf(f.loop.windows.all()))
 
@@ -698,6 +700,15 @@ func TestWindowAdmission_AGitTargetChangeProvesTheOpenWindowsAgain(t *testing.T)
 
 	assert.Equal(t, []string{"carol"}, authorsOf(f.loop.windows.all()),
 		"proven again under the new spec, the open windows are unknown, and close before carol's write")
+	for _, author := range []string{"alice", "bob"} {
+		assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="unproven-footprint" `+
+			`"windowAuthor"="`+author+`"`), 1, "%s's window shares no proven file: it is unproven", author)
+	}
+	f.loop.pushPending()
+	result, ok := outcome(t, f.worker)
+	require.True(t, ok)
+	assert.Equal(t, WindowClosedEarlyUnprovenFootprint, result.WindowClosedEarly,
+		"alice's save is not told another author touched its file")
 }
 
 // TestWindowAdmission_AResetProvesTheOpenWindowsAgain pins the resets in a footprint's revision. A push

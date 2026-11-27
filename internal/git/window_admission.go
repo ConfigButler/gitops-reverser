@@ -20,7 +20,8 @@ import (
 //   - the windows whose footprint overlaps the write's, with close reason path_conflict.
 //
 // Before a write is admitted beside others, every open window is proven against the current revision
-// (FootprintReproved); windows whose new proofs overlap close first, with path_conflict.
+// (FootprintReproved); windows whose new proofs overlap close first, with path_conflict when they share
+// a proven path and unproven_footprint when a proof is unknown.
 //
 // The decisions have names in the log lines, and the reference model reads them: WindowOpened,
 // WriteJoinedWindow, FootprintReproved, WindowClosed (with its reason), FootprintChecked and
@@ -131,31 +132,57 @@ func (l *branchWorkerEventLoop) reprove(window *openWindow, rev footprintRevisio
 }
 
 // closeConflictingWindows closes, oldest first, every open window whose footprint overlaps another
-// open window's, once more than one is open.
+// open window's, once more than one is open. A window that shares a proven path with another closes
+// with path_conflict; one that overlaps only because a footprint is no longer proven, as after a
+// GitTarget change, closes with unproven_footprint.
 func (l *branchWorkerEventLoop) closeConflictingWindows() {
 	open := l.windows.all()
 	if len(open) <= 1 {
 		return
 	}
-	involved := map[*openWindow]bool{}
+	involved := map[*openWindow]windowFinalizeReason{}
 	for i, a := range open {
 		for _, b := range open[i+1:] {
-			if a.footprint.overlaps(*b.footprint) {
-				involved[a], involved[b] = true, true
+			if reason, overlap := overlapCloseReason(*a.footprint, *b.footprint); overlap {
+				involved[a] = strongerOverlapReason(involved[a], reason)
+				involved[b] = strongerOverlapReason(involved[b], reason)
 			}
 		}
 	}
 	for _, window := range open {
-		if !involved[window] {
+		reason, ok := involved[window]
+		if !ok {
 			continue
 		}
 		l.w.Log.Info("Commit window footprint overlaps another open window's; finalizing it",
 			"window", window.seq,
 			"branch", l.w.Branch,
 			"windowAuthor", window.Author,
-			"footprint", window.footprint.String())
-		l.finalizeWindow(window, windowFinalizeReasonPathConflict)
+			"footprint", window.footprint.String(),
+			"reason", string(reason))
+		l.finalizeWindow(window, reason)
 	}
+}
+
+// overlapCloseReason says whether two footprints overlap, and the close reason that gives: path_conflict
+// when both are proven and share a path, unproven_footprint when either is unknown.
+func overlapCloseReason(a, b footprint) (windowFinalizeReason, bool) {
+	if !a.overlaps(b) {
+		return "", false
+	}
+	if a.known() && b.known() {
+		return windowFinalizeReasonPathConflict, true
+	}
+	return windowFinalizeReasonUnprovenFootprint, true
+}
+
+// strongerOverlapReason is the reason a window overlapping several others closes with: path_conflict
+// once any of them shares a proven path with it.
+func strongerOverlapReason(current, next windowFinalizeReason) windowFinalizeReason {
+	if current == windowFinalizeReasonPathConflict {
+		return current
+	}
+	return next
 }
 
 // closeBeforeWrite closes a window the write cannot be admitted beside.
