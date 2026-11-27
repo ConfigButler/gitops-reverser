@@ -1,38 +1,31 @@
 # gitops-reverser in production: how we use it, and what we'd still like
 
-_From the [gitops-api](https://github.com/ConfigButler/gitops-api) team. **Revision 19, 2026-10-28**
+_From the [gitops-api](https://github.com/ConfigButler/gitops-api) team. **Revision 21, 2026-11-27**
 (first sent 2026-07-09). Written to be readable from the gitops-reverser repo — no gitops-api
 knowledge assumed. Every ask is traced to something we measured on a running system. **We run
-`v0.55.0`.**_
+`v0.57.0`.**_
 
 ## Where this stands
 
-**`0.55.0` closed both our open asks and the `kube-root-ca.crt` vote, and we adopted it the day it
-was tagged.** The source-cluster `CommitRequest` deleted more of our code than #30 did: our editor now
-saves inside the customer's own kcp workspace, with their own token, so our save endpoint, our
-per-repository commit lock, the one grant a customer held on our management cluster, and your
-admission webhook with its certificate are all gone. On a rebuilt cluster: loop conformance 21/21,
-our editor click-through 77/77, a save's `ConfigPublication` published 33 ms after its `Applied`, and
-the first snapshot after the rebuild made no commit at all. Adoption write-up:
-[reverser-0.55-adoption.md](https://github.com/ConfigButler/gitops-api/blob/main/docs/design/reverser-0.55-adoption.md).
-
-**Six asks are new since then.** Three are small and came from the adoption. The other three came
-from tuning the editor's save the day after. **#39 is the one that matters**: with your defaults, a
-save's message can land on somebody else's change.
+**`0.56.0` answered four of our six asks, and we adopted `0.57.0` the day after it was tagged.** A
+save is reported as the worker reaches each phase (#40), its push skips the cooldown (#41), a
+misdirected request ends `NotAllowed` (#38), and your answer to #39 came with a regression test. On a
+rebuilt cluster: loop conformance 21/21, our editor click-through 81/81, and a save now commits
+**4–5 s** after it is filed, where it took ~6.8 s on `0.55.0`. `0.57.0`'s object `status.author`
+lets the editor name the saver as the Git author header does ("authored by Simon Koudijs"); kcp
+carries the name and email claims onto the save's own audit event. Adoption write-up:
+[reverser-0.56-adoption.md](https://github.com/ConfigButler/gitops-api/blob/main/docs/design/reverser-0.56-adoption.md).
 
 | Open | What it is |
 |---|---|
-| **39** 🟠 new | `CurrentOrNext` gives a save's message to an earlier, unclaimed write of the same author, and your defaults do it too |
-| **40** 🟡 new | A request's progress is reported on a fixed 2 s poll, so a save's latency moves in 2 s steps |
-| **41** 🟡 new | A push that resolves a `CommitRequest` waits out the 5 s `PushCooldown` |
-| **38** 🟡 new | A source-cluster request naming a `GitTarget` that does not mirror that cluster gets no status at all |
-| **37** ⚪ new | Default `gitTargetRef.namespace` on a source cluster to the serving `KubeProvider`'s namespace |
-| **36** ⚪ new | `AuthorUnresolved` as a failure (`Ready=False`), not a success |
+| **43** 🟠 new, a bug | A source cluster's `CommitRequest`s go unseen for 10 s every 5 min 10 s ([report](https://github.com/ConfigButler/gitops-api/blob/main/hack/spikes/BUG-commitrequest-watch-reconnect-gap.md)) |
+| **42** ⚪ new | Tell a `CommitRequest` when a `path_conflict` closed its window early |
+| **37** ⚪ | Default `gitTargetRef.namespace` on a source cluster to the serving `KubeProvider`'s namespace |
+| **36** ⚪ | `AuthorUnresolved` as a failure (`Ready=False`), not a success |
 | **10** ⚪ | Sibling inference can place an object in another namespace's directory — cosmetic |
 | **28** ⏸ | Two instances on one config-plane cluster — deferred, by agreement |
 
-Plus two **votes for items already on your list**: the durable worker queue, and
-`concurrent-author-windows.md`.
+Plus one **vote for an item already on your list**: the durable worker queue.
 
 ## Who we are
 
@@ -77,79 +70,29 @@ when they part.
 
 ## Open asks
 
-### 39. `CurrentOrNext` gives a save's message to somebody else's writes
+### 43. A source cluster's `CommitRequest`s go unseen for 10 s every 5 min 10 s
 
-**Ask.** If a request attaches to a window that was already open when it registered, keep that
-window's own timers until a write arrives after the registration. Alternatively make `Next` the
-default. At the least, say in the CRD docs that `CurrentOrNext` can label writes the request never
-saw.
+**Ask.** In `CommitRequestServer.watchNamespace`, wait `commitRequestReconnect` only after a watch
+that ended in an error; after a clean end (the 5-minute `TimeoutSeconds`), list and watch again at
+once, or resume from the last resourceVersion.
 
-**Why.** An attached request replaces the window's timers with its own, and they are measured from
-the window's past. Suppose a write of the same author was claimed by no request (kubectl, or the
-tail of an earlier save). It leaves a window open on the `GitTarget`'s 5 s idle timer. A save that
-registers inside that window attaches to it, and the window then closes on the save's timers
-(`maxDuration: 2s`, or an `idleTimeout` already past), before the save's own writes reach the worker.
-The result, measured with a write made just before the request was filed:
+**Why.** Every clean end is followed by a 10 s wait in which nothing watches the namespace, so a
+request created then is claimed up to 10 s late: ~3% of our saves. Reproduced on demand by filing
+requests inside predicted gaps (9.5 s against 0.6 s outside them), and it is not audit lag (the
+create's fact was published the same second). A client that waits for registration before writing,
+as the protocol asks, can time out and lose its message. Full report, evidence and a suggested test:
+[BUG-commitrequest-watch-reconnect-gap.md](https://github.com/ConfigButler/gitops-api/blob/main/hack/spikes/BUG-commitrequest-watch-reconnect-gap.md).
 
-- the request's message is committed on the earlier write;
-- the save's own writes commit under the generated message;
-- the request reports `Committed`.
+### 42. Tell a `CommitRequest` when a `path_conflict` closed its window early
 
-**Your defaults do it too**, not just our tuning. Our click-through caught it as a shift by one:
-three saves in a row, each message on the previous save's change. We now file `attach: Next`, which
-fixes it. The cost is one extra push and then #41's cooldown, so the fix costs us about 4 s whenever
-it is needed.
+**Ask.** When a window an attached request holds is closed by `path_conflict` (another author's write
+overlapped its footprint), say so on the request: a condition reason, or a line in `Ready`'s message.
 
-**Answer (gitops-reverser, PR #465): fixed by #40, and the window rule stays.** The request's timers
-do not reach into the window's past: its `maxDuration` and its first idle interval start at the
-attach. The shift by one came from #40's poll. Your client waits for `WaitingForWindow` before it
-writes, and that status took up to 2 s to appear, as long as the default `maxDuration`. So the
-window had closed under the save's message before the save's writes arrived, and those writes
-opened the window the next save attached to. With #40 the registration reaches the client in about
-56 ms. `TestSaveFolder_ThreeSavesInARowKeepEachMessageOnItsOwnChange` pins three saves in a row,
-each message on its own change, and fails with a 2.1 s client delay.
-
-We tried your first option, holding a save's timers until its first write after the attach, and
-took it out again. It made the `GitTarget`'s timers decide when an attached save commits: a
-`GitTarget` with a short `idleTimeout` brought the bug back, and a folder applied together with its
-`CommitRequest` waited 5 s instead of 2 s. `CurrentOrNext` stays the default, and you can drop
-`attach: Next`, so you no longer pay that extra push either. What remains: a save's writes must reach
-GitOps Reverser within `maxDuration` of the attach. On a slow audit pipeline, raise `maxDuration`.
-
-### 40. Report a request's progress without the 2 s poll
-
-**Ask.** Wake the serving goroutine when the worker registers, resolves or applies a request,
-instead of polling `commitRequestPollInterval = 2s` (`commitrequest_controller.go:63`,
-`recordPhase` in `commitrequest_core.go`). Failing that, poll at ~100 ms while the phase is still
-`""`.
-
-**Why.** A save's visible latency moves in 2 s steps. Measured create → registered: ~200 ms to the
-claim (author found), then ~2 s until the next poll reports `WaitingForWindow`. The same 2 s comes
-again between push and `Ready`, and on the `Applied` follow. Waiting for registration before writing
-is what makes `SaveInProgress` safe, so a client has no way around this poll. About 3 s of our ~6.8 s
-save is this poll.
-
-### 41. Skip `PushCooldown` for a push a `CommitRequest` waits on
-
-**Ask.** Push at once when the commit resolves an attached request, as an apply flush already does
-(`branch_worker.go`, `PushCooldown = 5s`).
-
-**Why.** A person is watching that push. With `attach: Next` (#39), every save that finds an open
-window pushes twice, and the second push waits out the cooldown: ~10.8 s instead of ~6.8 s. Two
-saves in a row hit it the same way.
-
-### 38. Refuse a source-cluster request whose `GitTarget` does not mirror that cluster
-
-**Ask.** A `CommitRequest` on a source cluster that names a `GitTarget` mirroring some _other_
-cluster should end `NotAllowed`, the way `0.55.0` already refuses the opposite direction (a request
-on the control cluster for a `GitTarget` that mirrors another cluster).
-
-**Why.** Measured: a request in one tenant's workspace naming a `GitTarget` that mirrors our
-management cluster stayed with **no status at all**, and nothing was logged, until we deleted it by
-hand. The serving path is not its owner, so it rechecks every 5 minutes
-(`commitRequestUnownedRecheck`). The boundary holds, which is the important half: it is never served
-and attaches to nothing. But its creator waits for ever, and because the request is never finished
-it is also never collected; our tenants hold no `delete` on the type, so it outlives every TTL.
+**Why.** It was our open question 4 on `concurrent-author-windows.md`, and `0.56.0` shipped the
+stage without it: `path_conflict` is a close reason on `git_commit_windows_total` and nothing on the
+request (**checked** in `v0.57.0`: `window_admission.go` finalizes the window, the request sees an
+ordinary close). A save that commits less than its author meant to save, silently, is the bug we
+once built our own lock for. Today each tenant has one human, so it is polish until that changes.
 
 ### 37. Default `gitTargetRef.namespace` on a source cluster
 
@@ -198,11 +141,6 @@ sharing an instance that our users can see. `RenderMatchesLive` starts `Unknown`
 open commit window is dropped, and a save made in that window loses the message its author typed.
 It is the last item standing between us and "a deploy of the reverser is invisible to the people
 editing".
-
-**`concurrent-author-windows.md`**, for when our tenants get several editors. Today each has one
-human, so `SaveInProgress` covers us. Our answer to its open question 4: report a window that a
-`path_conflict` closed early, because a save that commits less than its author meant to save,
-silently, is the bug we built our own lock for.
 
 ## Process notes
 
@@ -254,6 +192,10 @@ One line each: what happened, and whether we are happy.
 | 33 | Say why `prefetch` is false | `0.54.0` (#425), prefetch removed | **Happy** |
 | 34 | An e2e for an in-cluster applier with a remote source cluster | `0.55.0` (#456), scenario 10 | **Very happy** — it found a real apply-window bug in our topology |
 | 35 | Converge the applier on the reverser's own pushes | `0.55.0` (#456), `FluxClaim.spec.catchUpAfter` + `CommitRequest.spec.catchUp: AfterPush` | **Happier than asked** — a save is published 33 ms after its apply |
+| 38 | Refuse a source-cluster request whose `GitTarget` does not mirror that cluster | `0.56.0` (#465), `NotAllowed` naming both clusters | **Happy** — and it is collected after the TTL now |
+| 39 | `CurrentOrNext` labels an earlier write | `0.56.0` (#465): the shift was #40's poll, with a regression test | **Happy** — we keep `attach: Next` until we have measured both |
+| 40, 41 | Report a request's phases without the poll; skip `PushCooldown` for a save's push | `0.56.0` (#465) | **Very happy** — create → `Committed` 6.8 s → 4–5 s |
+| — | `concurrent-author-windows.md` stage 2 (a vote) | `0.56.0` (#467, #469, #470) | **Happy** — question 4 is now #42 |
 | — | Filter `kube-root-ca.crt` (a vote) | `0.55.0` | **Happy** — a rebuild makes no commit at all |
 | — | `WatchRule` readiness lag (never filed) | `0.44.0` (#343) | **Happy** — rule readiness is usable as an alert |
 
@@ -278,8 +220,7 @@ So a wishlist does not become a blame list:
 
 ## Suggested order
 
-1. **#39** — the one that commits a person's sentence on the wrong change, with defaults.
-2. **#38** — small, and the only one where a client can wait for ever.
-3. **#40** and **#41** — together they are about half of a save's latency.
-4. The two votes, in whichever order your plan already has them.
-5. **#36**, **#37** and **#10** — polish, whenever.
+0. **#43**, the watch gap: a bug, small to fix, and every saving client feels it.
+1. **The durable worker queue** (our vote) — the last thing that makes a reverser deploy visible to
+   someone editing.
+2. **#36**, **#37**, **#42** and **#10** — polish, whenever.
