@@ -725,6 +725,12 @@ func TestCommitRequestReconcile_TerminalWriteRetriesOnConflict(t *testing.T) {
 
 // --- pure helpers (formerly internal/queue/commit_request_test.go) ---
 
+// windowClosedEarlyValues are every value git.FinalizeResult.WindowClosedEarly takes.
+var windowClosedEarlyValues = []string{
+	git.WindowClosedEarlyPathConflict, git.WindowClosedEarlyUnprovenFootprint, git.WindowClosedEarlyOtherTarget,
+	git.WindowClosedEarlySingleWindow, git.WindowClosedEarlyFootprintFallback,
+}
+
 func TestApplyFinalizeResultToStatus(t *testing.T) {
 	t.Run("committed", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
@@ -778,6 +784,45 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		requireCondition(t, cr, ConditionTypeReady, metav1.ConditionFalse, crReasonFinalizeFailed)
 		stalled := requireCondition(t, cr, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
 		assert.Equal(t, "boom", stalled.Message)
+	})
+
+	t.Run("a window another write closed early says why, and still settles as its outcome", func(t *testing.T) {
+		for _, closedEarly := range windowClosedEarlyValues {
+			note := windowClosedEarlyNote(closedEarly)
+			for _, outcome := range []git.FinalizeOutcome{git.FinalizeCommitted, git.FinalizeAlreadyPresent} {
+				var cr configv1alpha3.CommitRequest
+				applyFinalizeResultToStatus(&cr, git.FinalizeResult{Outcome: outcome, Commit: "abc", Branch: "main",
+					WindowClosedEarly: closedEarly}, nil)
+				want := "; the window closed early, because " + note +
+					": edits made after that are not part of this save"
+				for _, conditionType := range []string{ConditionTypeReady, ConditionTypeReconciling} {
+					condition := apimeta.FindStatusCondition(cr.Status.Conditions, conditionType)
+					require.NotNil(t, condition, "%s %s", closedEarly, outcome)
+					assert.True(t, strings.HasSuffix(condition.Message, want), "%s %s %s: %q",
+						closedEarly, outcome, conditionType, condition.Message)
+				}
+				requireCondition(t, cr, ConditionTypeReady, metav1.ConditionTrue, string(outcome))
+			}
+		}
+
+		var failed configv1alpha3.CommitRequest
+		applyFinalizeResultToStatus(&failed, git.FinalizeResult{Outcome: git.FinalizeCommitted,
+			WindowClosedEarly: git.WindowClosedEarlyPathConflict}, errors.New("boom"))
+		stalled := requireCondition(t, failed, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
+		assert.Equal(t, "boom", stalled.Message, "a failure says only why it failed")
+	})
+
+	t.Run("every way a window closes early has its own note, and nothing else has one", func(t *testing.T) {
+		notes := map[string]bool{}
+		for _, closedEarly := range windowClosedEarlyValues {
+			note := windowClosedEarlyNote(closedEarly)
+			assert.NotEmpty(t, note, closedEarly)
+			assert.False(t, notes[note], "%s shares its note", closedEarly)
+			notes[note] = true
+		}
+		for _, other := range []string{"", "idle_timeout", "max_duration", "shutdown", "made_up"} {
+			assert.Empty(t, windowClosedEarlyNote(other), other)
+		}
 	})
 
 	t.Run("unknown outcome stalls", func(t *testing.T) {

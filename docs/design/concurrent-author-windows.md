@@ -152,8 +152,8 @@ A write is **proven independent** only when all of these hold:
 | An object under a kustomization, a generator source, or any layout the worker renders | unknown | no |
 | An object the index cannot place | unknown | no |
 
-"No" closes every other open window first, which is today's behavior, reported as
-`identity_change` as it is now. The rule never guesses: unknown is treated as overlapping
+"No" closes every other open window first, reported as `unproven_footprint` (`identity_change`
+before the split into precise reasons). The rule never guesses: unknown is treated as overlapping
 everything. Shared files and kustomize layouts are the obvious next candidates once the base change
 is measured; each needs its own proof.
 
@@ -200,7 +200,9 @@ unrelated push split a save that is protected today.
 | `buffer_limit` | every window | none |
 | `path_conflict` | the windows whose footprint the new write overlaps | none |
 | `footprint_fallback` | every window but the newest, when a commit outside its footprint makes the worker hold one window at a time | none |
-| `identity_change` | every other window | stays for writes of another `GitTarget` and for unproven footprints |
+| `other_target` | every other window, before a write of another `GitTarget` | none |
+| `unproven_footprint` | a window whose footprint, or the write's, cannot be proven | none |
+| `single_window` | every other window, once the worker holds one window at a time | none |
 | `idle_timeout`, `max_duration`, `attach_next` | that window only | none |
 
 Why the first two exist matters for every later change to them:
@@ -304,7 +306,7 @@ release, because stage 2 shipped without a flag.
    model. Every existing test passes unchanged.
 2. **Built. Allow several windows for proven-independent destinations.** Writes keep whole-object commits
    and apply behavior stays as it is. Writes of another `GitTarget` keep closing other windows
-   (`identity_change`), and every layout in the footprint table's "no" rows stays serial.
+   (`other_target`), and every layout in the footprint table's "no" rows stays serial.
 3. **Built. Test the failure boundaries.** Both close orders,
    conflicting writes, delete and recreate, `attach_next`, zero-duration windows, resync, shutdown,
    failed publication and replay, and buffer pressure, each against the reference model, which
@@ -313,10 +315,10 @@ release, because stage 2 shipped without a flag.
    the release instead of a default-off rollout. What the flag's measurement period was for is read
    from the metrics: `git_commit_windows_open` shows windows open side by side,
    `git_commit_windows_single` a worker that fell back to one at a time, and
-   `git_commit_windows_total` by `close_reason` the forced splits (`identity_change`,
-   `path_conflict`, `footprint_fallback`). Memory is not measured yet: the retained-byte budget
-   charges windows and pending writes, but not the footprint indexes, the accepted versions or the
-   withheld-field records.
+   `git_commit_windows_total` by `close_reason` the forced splits (`path_conflict`,
+   `unproven_footprint`, `other_target`, `single_window`, `footprint_fallback`). Memory is not
+   measured yet: the retained-byte budget charges windows and pending writes, but not the footprint
+   indexes, the accepted versions or the withheld-field records.
 5. **Proposed. Reconsider the follow-ups** in
    [window-field-ownership-and-apply-hold.md](window-field-ownership-and-apply-hold.md), using those
    measurements. Field ownership and the apply hold are separate changes, each with its own
@@ -453,3 +455,7 @@ branch stay serial; the proof at arrival is the placement index, with its cost u
 2. Is a cap on open windows needed beyond the byte cap, such as one per `GitTarget`?
 3. When a save's own window is closed early by `path_conflict`, it commits with the save's message
    and less than the person meant to save. Is that acceptable, or should the save report it?
+   **Answered:** the save reports it, for this and every other close a write outside the window
+   causes (`unproven_footprint`, `other_target`, `single_window`, `footprint_fallback`). The request
+   ends as before, and its `Ready` and `Reconciling` messages add why the window closed early, so its
+   edits after that are not part of the save.

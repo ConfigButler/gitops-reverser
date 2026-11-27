@@ -253,6 +253,41 @@ func applyFinalizeResultToStatus(
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.
 		failCommitRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
+		return
+	}
+	if note := windowClosedEarlyNote(result.WindowClosedEarly); note != "" {
+		appendCommitRequestMessage(cr, "; the window closed early, because "+note+
+			": edits made after that are not part of this save", ConditionTypeReady, ConditionTypeReconciling)
+	}
+}
+
+// windowClosedEarlyNote says why a write outside the request's window closed it early, for a
+// git.FinalizeResult.WindowClosedEarly; "" for any other value. The request still settles as its outcome
+// says, but it saves less than its author may have meant to.
+func windowClosedEarlyNote(closedEarly string) string {
+	switch closedEarly {
+	case git.WindowClosedEarlyPathConflict:
+		return "another author's write touched a file it held"
+	case git.WindowClosedEarlyUnprovenFootprint:
+		return "another author wrote while the files of that write, or of this window, could not be proven apart"
+	case git.WindowClosedEarlyOtherTarget:
+		return "a write of another GitTarget on the same branch arrived, and GitTargets on one branch " +
+			"commit one at a time"
+	case git.WindowClosedEarlySingleWindow:
+		return "another author wrote while the branch worker holds one window at a time"
+	case git.WindowClosedEarlyFootprintFallback:
+		return "the branch worker fell back to one window at a time"
+	default:
+		return ""
+	}
+}
+
+// appendCommitRequestMessage adds note to the message of each of cr's conditions named.
+func appendCommitRequestMessage(cr *configv1alpha3.CommitRequest, note string, conditionTypes ...string) {
+	for _, conditionType := range conditionTypes {
+		if condition := apimeta.FindStatusCondition(cr.Status.Conditions, conditionType); condition != nil {
+			condition.Message += note
+		}
 	}
 }
 

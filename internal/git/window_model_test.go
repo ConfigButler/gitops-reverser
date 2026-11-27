@@ -526,7 +526,7 @@ func (m *windowModel) admit(author, obj string) *modelFootprint {
 	for _, other := range m.others(own) {
 		switch {
 		case write.unknown || other.footprint.unknown:
-			m.close(other, windowFinalizeReasonIdentityChange)
+			m.close(other, windowFinalizeReasonUnprovenFootprint)
 		case write.overlaps(*other.footprint):
 			m.close(other, windowFinalizeReasonPathConflict)
 		}
@@ -545,18 +545,24 @@ func (m *windowModel) reprove() {
 		f := m.proveWindow(w)
 		w.footprint = &f
 	}
-	involved := map[*modelWindow]bool{}
+	involved := map[*modelWindow]windowFinalizeReason{}
 	for i, a := range m.windows {
 		for _, b := range m.windows[i+1:] {
-			if a.footprint.overlaps(*b.footprint) {
-				involved[a], involved[b] = true, true
+			if !a.footprint.overlaps(*b.footprint) {
+				continue
 			}
+			reason := windowFinalizeReasonUnprovenFootprint
+			if !a.footprint.unknown && !b.footprint.unknown {
+				reason = windowFinalizeReasonPathConflict
+			}
+			involved[a] = strongerOverlapReason(involved[a], reason)
+			involved[b] = strongerOverlapReason(involved[b], reason)
 		}
 	}
 	for _, w := range slices.Clone(m.windows) {
-		if involved[w] {
+		if reason, ok := involved[w]; ok {
 			m.reached(reachReproof)
-			m.close(w, windowFinalizeReasonPathConflict)
+			m.close(w, reason)
 		}
 	}
 }

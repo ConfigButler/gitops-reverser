@@ -520,8 +520,12 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 	if result.Branch == "" {
 		result.Branch = l.w.Branch
 	}
+	pcr := l.pendingCRs[id]
+	if pcr != nil && pcr.closedEarlyBy != "" {
+		result.WindowClosedEarly = pcr.closedEarlyBy.metricLabel()
+	}
 	l.w.recordCommitRequestOutcome(id, result)
-	if pcr := l.pendingCRs[id]; pcr != nil && pcr.catchUpNow {
+	if pcr != nil && pcr.catchUpNow {
 		l.catchUpAfterSave(pcr, result.Commit)
 	}
 	delete(l.pendingCRs, id)
@@ -530,6 +534,7 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		"request", id.Namespace+"/"+id.Name,
 		"outcome", string(result.Outcome),
 		"commit", result.Commit,
+		"windowClosedEarly", result.WindowClosedEarly,
 		"err", result.Err)
 }
 

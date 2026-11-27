@@ -107,7 +107,23 @@ type FinalizeResult struct {
 	// Held is why a request the worker holds has not reached the remote yet: the worker's
 	// publication report while it cannot publish, empty otherwise. See PublicationStatus.
 	Held string
+	// WindowClosedEarly is the close reason, as git_commit_windows_total's close_reason names it, of a
+	// window this request was attached to that a write outside it closed before the window's own
+	// timers ran out: "path_conflict", "unproven_footprint", "other_target", "single_window" or
+	// "footprint_fallback". The author's edits after that write are not in this request's commit.
+	// Empty when the window closed for any other reason.
+	WindowClosedEarly string
 }
+
+// The values of FinalizeResult.WindowClosedEarly: the close_reason of git_commit_windows_total for a
+// window a write outside it closed early.
+const (
+	WindowClosedEarlyPathConflict      = "path_conflict"
+	WindowClosedEarlyUnprovenFootprint = "unproven_footprint"
+	WindowClosedEarlyOtherTarget       = "other_target"
+	WindowClosedEarlySingleWindow      = "single_window"
+	WindowClosedEarlyFootprintFallback = "footprint_fallback"
+)
 
 // AttachCommitRequest is the "attach this CommitRequest to the author's window, with its
 // message and its timers" work item. It rides the same per-worker FIFO
@@ -217,6 +233,9 @@ type pendingCommitRequest struct {
 	// instant check at expiry would miss the common case and report the refusal as "nothing was
 	// pending" — intermittently, which is worse than never.
 	sawForeignWindow bool
+	// closedEarlyBy is the reason a write outside the window this request is attached to closed it
+	// early (closedEarlyByAnotherWrite), empty otherwise. It is reported on the request's result.
+	closedEarlyBy windowFinalizeReason
 }
 
 // expiryOutcome is the terminal outcome for a request whose attach timeout ran out without it

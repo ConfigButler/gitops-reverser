@@ -440,7 +440,6 @@ const (
 	windowFinalizeReasonMaxDuration       windowFinalizeReason = "max-duration"
 	windowFinalizeReasonAttachNext        windowFinalizeReason = "attach-next"
 	windowFinalizeReasonResyncBeforeApply windowFinalizeReason = "resync-before-apply"
-	windowFinalizeReasonIdentityChange    windowFinalizeReason = "author-or-target-change"
 	windowFinalizeReasonBufferLimit       windowFinalizeReason = "buffer-limit"
 	windowFinalizeReasonShutdown          windowFinalizeReason = "shutdown"
 	windowFinalizeReasonForeignCommit     windowFinalizeReason = "foreign-commit"
@@ -452,7 +451,33 @@ const (
 	// windowFinalizeReasonFootprintFallback closes the windows open side by side when a commit outside
 	// its footprint makes the worker fall back to one window at a time (fallBackToSingleWindow).
 	windowFinalizeReasonFootprintFallback windowFinalizeReason = "footprint-fallback"
+	// windowFinalizeReasonOtherTarget closes the open windows before a write of another GitTarget on
+	// the branch: per-target encryption and bootstrap stay serial.
+	windowFinalizeReasonOtherTarget windowFinalizeReason = "other-target"
+	// windowFinalizeReasonUnprovenFootprint closes a window before a write of another author when the
+	// write's footprint, or the window's, cannot be proven, so the two may touch the same file.
+	windowFinalizeReasonUnprovenFootprint windowFinalizeReason = "unproven-footprint"
+	// windowFinalizeReasonSingleWindow closes a window before a write of another author once the worker
+	// holds one window at a time, after a footprint fallback.
+	windowFinalizeReasonSingleWindow windowFinalizeReason = "single-window"
 )
+
+// closedEarlyByAnotherWrite reports whether a window closed for this reason was cut short by a write
+// outside it, or by the worker's fallback to one window, rather than by its own timers or its owner.
+// A request attached to such a window is told so.
+func (r windowFinalizeReason) closedEarlyByAnotherWrite() bool {
+	switch r {
+	case windowFinalizeReasonPathConflict, windowFinalizeReasonOtherTarget, windowFinalizeReasonUnprovenFootprint,
+		windowFinalizeReasonSingleWindow, windowFinalizeReasonFootprintFallback:
+		return true
+	case windowFinalizeReasonUnspecified, windowFinalizeReasonIdleTimeout, windowFinalizeReasonMaxDuration,
+		windowFinalizeReasonAttachNext, windowFinalizeReasonResyncBeforeApply, windowFinalizeReasonBufferLimit,
+		windowFinalizeReasonShutdown, windowFinalizeReasonForeignCommit, windowFinalizeReasonApplyDue:
+		return false
+	default:
+		return false
+	}
+}
 
 // NewBranchWorker creates a worker for a (provider, branch) combination. A zero
 // BranchWorkerLimits gets the defaults for both knobs; see BranchWorkerLimits.
@@ -1645,6 +1670,11 @@ func (l *branchWorkerEventLoop) finalizeWindow(window *openWindow, reason window
 	windowTarget := targetNamespace + "/" + targetName
 	pendingCR := window.pendingCR
 	effectiveMessage := window.pendingMessage
+	if pendingCR != nil && reason.closedEarlyByAnotherWrite() {
+		if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
+			pcr.closedEarlyBy = reason
+		}
+	}
 	// The render-fidelity gate drops the whole window, request or not: its events were planned
 	// against a render nobody has checked. Suspension is read from the write built below, because
 	// a suspended target still scans. See write_gate.go.
@@ -3046,16 +3076,14 @@ const (
 )
 
 // metricLabel is the commit_windows_total `close_reason` value for this reason. The log field keeps
-// its hyphenated form; a label value follows the snake_case the other labels use. Only
-// identity_change is named apart from its log form, author-or-target-change.
+// its hyphenated form; a label value follows the snake_case the other labels use.
 func (r windowFinalizeReason) metricLabel() string {
 	switch r {
-	case windowFinalizeReasonIdentityChange:
-		return "identity_change"
 	case windowFinalizeReasonIdleTimeout, windowFinalizeReasonMaxDuration, windowFinalizeReasonAttachNext,
 		windowFinalizeReasonBufferLimit, windowFinalizeReasonResyncBeforeApply, windowFinalizeReasonShutdown,
 		windowFinalizeReasonForeignCommit, windowFinalizeReasonApplyDue, windowFinalizeReasonPathConflict,
-		windowFinalizeReasonFootprintFallback, windowFinalizeReasonUnspecified:
+		windowFinalizeReasonFootprintFallback, windowFinalizeReasonOtherTarget, windowFinalizeReasonUnprovenFootprint,
+		windowFinalizeReasonSingleWindow, windowFinalizeReasonUnspecified:
 		return strings.ReplaceAll(string(r), "-", "_")
 	default:
 		return "unspecified"
