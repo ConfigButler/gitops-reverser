@@ -14,8 +14,9 @@ import (
 // Otherwise the windows it cannot sit beside close first, oldest first, so their commits land before
 // its own:
 //
-//   - every other window, with close reason identity_change, when the write is of another GitTarget,
-//     when its footprint or theirs cannot be proven, or once the worker fell back to one window;
+//   - every other window, with close reason other_target, when the write is of another GitTarget;
+//   - every other window, with close reason single_window, once the worker fell back to one window;
+//   - a window whose footprint, or the write's, cannot be proven, with close reason unproven_footprint;
 //   - the windows whose footprint overlaps the write's, with close reason path_conflict.
 //
 // Before a write is admitted beside others, every open window is proven against the current revision
@@ -45,9 +46,9 @@ func (l *branchWorkerEventLoop) admitWrite(event Event) *footprint {
 	if len(others) == 0 {
 		return l.extendedFootprint(own, event)
 	}
-	if why := l.serialAdmission(event, others); why != "" {
+	if reason, why := l.serialAdmission(event, others); why != "" {
 		for _, other := range others {
-			l.closeBeforeWrite(other, event, windowFinalizeReasonIdentityChange, why)
+			l.closeBeforeWrite(other, event, reason, why)
 		}
 		return l.extendedFootprint(own, event)
 	}
@@ -62,10 +63,10 @@ func (l *branchWorkerEventLoop) admitWrite(event Event) *footprint {
 	for _, other := range l.windows.others(own) {
 		switch {
 		case !write.known():
-			l.closeBeforeWrite(other, event, windowFinalizeReasonIdentityChange,
+			l.closeBeforeWrite(other, event, windowFinalizeReasonUnprovenFootprint,
 				"the write's footprint is "+write.String())
 		case !other.footprint.known():
-			l.closeBeforeWrite(other, event, windowFinalizeReasonIdentityChange,
+			l.closeBeforeWrite(other, event, windowFinalizeReasonUnprovenFootprint,
 				"the window's footprint is "+other.footprint.String())
 		case other.footprint.overlaps(write):
 			l.closeBeforeWrite(other, event, windowFinalizeReasonPathConflict,
@@ -80,16 +81,16 @@ func (l *branchWorkerEventLoop) admitWrite(event Event) *footprint {
 }
 
 // serialAdmission says why a write cannot be admitted beside other windows whatever their
-// footprints, or "".
-func (l *branchWorkerEventLoop) serialAdmission(event Event, others []*openWindow) string {
+// footprints, and the close reason that gives them; "" when it can be.
+func (l *branchWorkerEventLoop) serialAdmission(event Event, others []*openWindow) (windowFinalizeReason, string) {
 	switch {
 	case l.singleWindow:
-		return "the worker holds one window at a time"
+		return windowFinalizeReasonSingleWindow, "the worker holds one window at a time"
 	case others[0].GitTarget != event.GitTargetName || others[0].GitTargetNamespace != event.GitTargetNamespace:
 		// Every open window is of one GitTarget: per-target encryption and bootstrap stay serial.
-		return "the write is of another GitTarget"
+		return windowFinalizeReasonOtherTarget, "the write is of another GitTarget"
 	default:
-		return ""
+		return "", ""
 	}
 }
 

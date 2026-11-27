@@ -101,27 +101,63 @@ func TestWindowAdmission_AWriteToAFileAnotherWindowHoldsClosesThatWindowFirst(t 
 	)
 }
 
-// A request whose window another author's overlapping write closes early is told so on its result,
-// and one whose window closes on its own timer is not: it was not cut short.
-func TestWindowAdmission_ARequestWhoseWindowAPathConflictClosedIsToldSo(t *testing.T) {
+// A request whose window a write outside it closes early is told why on its result, by the close
+// reason git_commit_windows_total counts that window under; one whose window closes on its own timer is
+// told nothing, since it was not cut short.
+func TestWindowAdmission_ARequestWhoseWindowAnotherWriteClosedIsToldWhy(t *testing.T) {
+	shared := echoDocument("s1", "a") + "---\n" + echoDocument("s2", "b")
 	for _, tc := range []struct {
-		name          string
-		otherFile     string
+		name  string
+		files map[string]string
+		// before runs before alice's window opens.
+		before func(*echoFixture)
+		// other is the write outside alice's window.
+		other func(*echoFixture)
+		// closeOnItsOwn runs out alice's window's timer after the other write.
 		closeOnItsOwn bool
-		wantConflict  bool
+		want          string
 	}{
-		{name: "another author writes a file the window holds", otherFile: "x", wantConflict: true},
-		{name: "another author writes a file of their own", otherFile: "z", closeOnItsOwn: true},
+		{
+			name:  "another author writes a file the window holds",
+			other: func(f *echoFixture) { f.writeBy("carol", "x", "x3") },
+			want:  WindowClosedEarlyPathConflict,
+		},
+		{
+			name:  "another author writes a file that cannot be proven apart",
+			files: map[string]string{echoTarget + "/default/configmaps/shared.yaml": shared},
+			other: func(f *echoFixture) { f.writeBy("carol", "s1", "c") },
+			want:  WindowClosedEarlyUnprovenFootprint,
+		},
+		{
+			name:   "a write of another GitTarget on the branch",
+			before: bootstrapTeamB,
+			other:  func(f *echoFixture) { f.writeWindow(teamBEvent("carol", "b2")) },
+			want:   WindowClosedEarlyOtherTarget,
+		},
+		{
+			name:   "another author writes while the worker holds one window",
+			before: func(f *echoFixture) { f.loop.singleWindow = true },
+			other:  func(f *echoFixture) { f.writeBy("carol", "z", "z2") },
+			want:   WindowClosedEarlySingleWindow,
+		},
+		{
+			name:          "another author writes a file of their own",
+			other:         func(f *echoFixture) { f.writeBy("carol", "z", "z2") },
+			closeOnItsOwn: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newAdmissionFixture(t, "admission-conflict-request", nil)
+			f := newAdmissionFixture(t, "admission-closed-early", tc.files)
+			if tc.before != nil {
+				tc.before(f)
+			}
 			f.writeBy("alice", "x", "x2")
 			serviceAttach(f.loop, attachReq("alice", time.Hour))
 			alice := f.loop.windows.all()
 			require.Len(t, alice, 1)
 			require.NotNil(t, alice[0].pendingCR, "the request is attached to alice's window")
 
-			f.writeBy("carol", tc.otherFile, "v")
+			tc.other(f)
 			if tc.closeOnItsOwn {
 				require.Len(t, f.loop.windows.all(), 2, "disjoint windows stay open side by side")
 				alice[0].timers.maxAt = time.Now().Add(-time.Millisecond)
@@ -135,9 +171,48 @@ func TestWindowAdmission_ARequestWhoseWindowAPathConflictClosedIsToldSo(t *testi
 			require.True(t, ok, "the request is resolved once its commit is pushed")
 			require.NoError(t, result.Err)
 			assert.Equal(t, FinalizeCommitted, result.Outcome)
-			assert.Equal(t, tc.wantConflict, result.ClosedByPathConflict)
+			assert.Equal(t, tc.want, result.WindowClosedEarly)
 		})
 	}
+}
+
+// The reasons a request is told its window closed early are the values FinalizeResult.WindowClosedEarly
+// documents, each under its close_reason label.
+func TestWindowFinalizeReason_ClosedEarlyByAnotherWrite(t *testing.T) {
+	var early []string
+	for _, reason := range []windowFinalizeReason{
+		windowFinalizeReasonUnspecified, windowFinalizeReasonIdleTimeout, windowFinalizeReasonMaxDuration,
+		windowFinalizeReasonAttachNext, windowFinalizeReasonResyncBeforeApply, windowFinalizeReasonBufferLimit,
+		windowFinalizeReasonShutdown, windowFinalizeReasonForeignCommit, windowFinalizeReasonApplyDue,
+		windowFinalizeReasonPathConflict, windowFinalizeReasonFootprintFallback, windowFinalizeReasonOtherTarget,
+		windowFinalizeReasonUnprovenFootprint, windowFinalizeReasonSingleWindow,
+	} {
+		if reason.closedEarlyByAnotherWrite() {
+			early = append(early, reason.metricLabel())
+		}
+	}
+	assert.ElementsMatch(t, []string{
+		WindowClosedEarlyPathConflict, WindowClosedEarlyUnprovenFootprint, WindowClosedEarlyOtherTarget,
+		WindowClosedEarlySingleWindow, WindowClosedEarlyFootprintFallback,
+	}, early)
+}
+
+// bootstrapTeamB adds GitTarget team-b to the fixture's branch and commits its first write at once, so
+// its folder is bootstrapped and later writes there are live ones.
+func bootstrapTeamB(f *echoFixture) {
+	createGitTargetWithPruneMode(f.t, f.worker, "team-b", "team-b", configv1alpha3.PruneOnEvent)
+	window := f.loop.defaultWindow
+	f.loop.defaultWindow = commitWindowDefaults{}
+	f.writeWindow(teamBEvent("carol", "b1"))
+	f.loop.defaultWindow = window
+}
+
+// teamBEvent is an update by author of a ConfigMap of GitTarget team-b.
+func teamBEvent(author, value string) Event {
+	event := configMapTargetEvent("b", author, "team-b")
+	event.Operation = string(itypes.OperationUpdate)
+	event.Object.Object["data"] = map[string]interface{}{"key": value}
+	return event
 }
 
 func TestWindowAdmission_AWriteThatCannotBeProvenStaysSerial(t *testing.T) {
@@ -318,24 +393,14 @@ func TestWindowAdmission_ShutdownDecidesTheWritesAlreadyQueued(t *testing.T) {
 func TestWindowAdmission_AWriteOfAnotherGitTargetClosesTheOpenWindows(t *testing.T) {
 	f := newAdmissionFixture(t, "admission-other-target", nil)
 	reader := captureInfo(f.worker)
-	createGitTargetWithPruneMode(t, f.worker, "team-b", "team-b", configv1alpha3.PruneOnEvent)
-	other := func(author, value string) Event {
-		event := configMapTargetEvent("b", author, "team-b")
-		event.Operation = string(itypes.OperationUpdate)
-		event.Object.Object["data"] = map[string]interface{}{"key": value}
-		return event
-	}
-	window := f.loop.defaultWindow
-	f.loop.defaultWindow = commitWindowDefaults{}
-	f.writeWindow(other("carol", "b1")) // team-b's folder is bootstrapped by its first commit
+	bootstrapTeamB(f)
 	require.Empty(t, f.loop.windows.all())
-	f.loop.defaultWindow = window
 
 	f.writeBy("alice", "x", "x2")
-	f.writeWindow(other("bob", "b2"))
+	f.writeWindow(teamBEvent("bob", "b2"))
 
 	assert.Equal(t, []string{"bob"}, authorsOf(f.loop.windows.all()))
-	assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="author-or-target-change" `+
+	assert.Len(t, reader.matching(`"msg"="Finalizing open commit window" "reason"="other-target" `+
 		`"windowAuthor"="alice"`), 1, "per-target encryption and bootstrap stay serial")
 }
 

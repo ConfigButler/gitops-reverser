@@ -526,7 +526,7 @@ func (m *windowModel) admit(author, obj string) *modelFootprint {
 	for _, other := range m.others(own) {
 		switch {
 		case write.unknown || other.footprint.unknown:
-			m.close(other, windowFinalizeReasonIdentityChange)
+			m.close(other, windowFinalizeReasonUnprovenFootprint)
 		case write.overlaps(*other.footprint):
 			m.close(other, windowFinalizeReasonPathConflict)
 		}

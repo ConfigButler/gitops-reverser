@@ -7,6 +7,18 @@ guidance that the changelog's breaking-change entries link to.
 We are pre-1.0, so breaking changes bump the **minor** version (release-please is configured with
 `bump-minor-pre-major`) rather than the major. Read the relevant entry before upgrading across it.
 
+## `close_reason="identity_change"` is three reasons
+
+`gitopsreverser_git_commit_windows_total` no longer has `close_reason="identity_change"`. What it
+counted is now one of three values: `other_target` (a write of another `GitTarget` on the same
+branch), `unproven_footprint` (another author wrote where the files cannot be proven apart), or
+`single_window` (another author wrote after the worker fell back to one window at a time). A query or
+alert on `identity_change` matches nothing; sum the three for the old total. See
+[interpreting metrics](interpreting-metrics.md).
+
+A `CommitRequest` whose window a write outside it closed early this way, or by `path_conflict` or
+`footprint_fallback`, still ends with the same reason, and its `Ready` message says why it closed.
+
 ## A `CommitRequest`'s `status.author` is an object
 
 `status.author` names the request's creator as `username`, plus the `name` and `email` their login

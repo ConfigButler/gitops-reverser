@@ -85,8 +85,8 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 		Events: []Event{configMapTargetEvent("b", "bob", "team-a")},
 	}})
 
-	// identity_change: once the worker holds one window at a time, another author's write closes
-	// bob's window whatever it writes.
+	// single_window: once the worker holds one window at a time, another author's write closes bob's
+	// window whatever it writes.
 	loop.singleWindow = true
 	loop.handleQueueItem(WorkItem{Request: &WriteRequest{
 		Events: []Event{configMapTargetEvent("c", "carol", "team-a")},
@@ -97,7 +97,7 @@ func TestCommitWindowMetrics_EachCloseReasonIsCountedUnderItsOwnName(t *testing.
 
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "max_duration", windowTimerSourceTarget))
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "path_conflict", windowTimerSourceTarget))
-	assert.Equal(t, int64(1), windowsClosed(t, reader, "identity_change", windowTimerSourceTarget))
+	assert.Equal(t, int64(1), windowsClosed(t, reader, "single_window", windowTimerSourceTarget))
 	assert.Equal(t, int64(1), windowsClosed(t, reader, "shutdown", windowTimerSourceTarget))
 	requireOneObservationPerWindow(t, reader, 4)
 }
@@ -109,7 +109,6 @@ func TestCommitWindowMetrics_EveryCloseReasonHasItsLabel(t *testing.T) {
 		windowFinalizeReasonIdleTimeout:       "idle_timeout",
 		windowFinalizeReasonMaxDuration:       "max_duration",
 		windowFinalizeReasonAttachNext:        "attach_next",
-		windowFinalizeReasonIdentityChange:    "identity_change",
 		windowFinalizeReasonBufferLimit:       "buffer_limit",
 		windowFinalizeReasonResyncBeforeApply: "resync_before_apply",
 		windowFinalizeReasonShutdown:          "shutdown",
@@ -117,6 +116,9 @@ func TestCommitWindowMetrics_EveryCloseReasonHasItsLabel(t *testing.T) {
 		windowFinalizeReasonApplyDue:          "apply_due",
 		windowFinalizeReasonPathConflict:      "path_conflict",
 		windowFinalizeReasonFootprintFallback: "footprint_fallback",
+		windowFinalizeReasonOtherTarget:       "other_target",
+		windowFinalizeReasonUnprovenFootprint: "unproven_footprint",
+		windowFinalizeReasonSingleWindow:      "single_window",
 		windowFinalizeReasonUnspecified:       "unspecified",
 		windowFinalizeReason("made-up"):       "unspecified",
 	} {

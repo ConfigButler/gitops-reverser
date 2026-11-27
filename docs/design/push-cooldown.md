@@ -100,9 +100,9 @@ when it cannot sit beside them:
 
 | Source | Close reason |
 | --- | --- |
-| A write of another `GitTarget` on the same branch (per-target encryption and bootstrap stay serial) | `author-or-target-change` |
-| A write, or an open window, whose footprint cannot be proven | `author-or-target-change` |
-| A worker that fell back to one window at a time | `author-or-target-change`, after `footprint-fallback` |
+| A write of another `GitTarget` on the same branch (per-target encryption and bootstrap stay serial) | `other-target` |
+| A write, or an open window, whose footprint cannot be proven | `unproven-footprint` |
+| A worker that fell back to one window at a time | `single-window`, after `footprint-fallback` |
 | Overlapping footprints | `path-conflict` |
 | The retained-byte budget | `buffer-limit` |
 | `commit.window.idleTimeout: 0s` | every event commits on arrival |

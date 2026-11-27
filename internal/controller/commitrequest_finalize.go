@@ -255,15 +255,32 @@ func applyFinalizeResultToStatus(
 		failCommitRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
 		return
 	}
-	if result.ClosedByPathConflict {
-		appendCommitRequestMessage(cr, pathConflictNote, ConditionTypeReady, ConditionTypeReconciling)
+	if note := windowClosedEarlyNote(result.WindowClosedEarly); note != "" {
+		appendCommitRequestMessage(cr, "; the window closed early, because "+note+
+			": edits made after that are not part of this save", ConditionTypeReady, ConditionTypeReconciling)
 	}
 }
 
-// pathConflictNote follows an outcome whose window another author's write closed early: the request
-// still settles as its outcome says, but it saves less than its author may have meant to.
-const pathConflictNote = "; the window closed early, because another author's write touched a file it held: " +
-	"edits made after that write are not part of this save"
+// windowClosedEarlyNote says why a write outside the request's window closed it early, for a
+// git.FinalizeResult.WindowClosedEarly; "" for any other value. The request still settles as its outcome
+// says, but it saves less than its author may have meant to.
+func windowClosedEarlyNote(closedEarly string) string {
+	switch closedEarly {
+	case git.WindowClosedEarlyPathConflict:
+		return "another author's write touched a file it held"
+	case git.WindowClosedEarlyUnprovenFootprint:
+		return "another author wrote while the files of that write, or of this window, could not be proven apart"
+	case git.WindowClosedEarlyOtherTarget:
+		return "a write of another GitTarget on the same branch arrived, and GitTargets on one branch " +
+			"commit one at a time"
+	case git.WindowClosedEarlySingleWindow:
+		return "another author wrote while the branch worker holds one window at a time"
+	case git.WindowClosedEarlyFootprintFallback:
+		return "the branch worker fell back to one window at a time"
+	default:
+		return ""
+	}
+}
 
 // appendCommitRequestMessage adds note to the message of each of cr's conditions named.
 func appendCommitRequestMessage(cr *configv1alpha3.CommitRequest, note string, conditionTypes ...string) {

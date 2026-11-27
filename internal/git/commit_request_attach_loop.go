@@ -521,8 +521,8 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		result.Branch = l.w.Branch
 	}
 	pcr := l.pendingCRs[id]
-	if pcr != nil && pcr.closedByPathConflict {
-		result.ClosedByPathConflict = true
+	if pcr != nil && pcr.closedEarlyBy != "" {
+		result.WindowClosedEarly = pcr.closedEarlyBy.metricLabel()
 	}
 	l.w.recordCommitRequestOutcome(id, result)
 	if pcr != nil && pcr.catchUpNow {
@@ -534,7 +534,7 @@ func (l *branchWorkerEventLoop) resolveCommitRequest(id commitRequestID, result 
 		"request", id.Namespace+"/"+id.Name,
 		"outcome", string(result.Outcome),
 		"commit", result.Commit,
-		"closedByPathConflict", result.ClosedByPathConflict,
+		"windowClosedEarly", result.WindowClosedEarly,
 		"err", result.Err)
 }
 
