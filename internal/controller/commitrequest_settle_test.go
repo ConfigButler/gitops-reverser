@@ -240,7 +240,7 @@ func TestCommitRequestsInFlight_ASourceClusterRequestIsSettledOnItsCluster(t *te
 	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider, controlTarget, withInProgress(control))
 	gvr := commitRequestGVR()
 	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
-		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, sourceCommitRequest("default", "save"))
+		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, sourceCommitRequest("save"))
 	worker := &drainingWorker{}
 	inFlight := &CommitRequestsInFlight{Log: logr.Discard()}
 	s := &CommitRequestServer{
