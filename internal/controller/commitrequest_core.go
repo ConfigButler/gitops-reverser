@@ -136,17 +136,17 @@ func (c *commitRequestCore) serve(
 func (c *commitRequestCore) serveStored(
 	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
 ) (time.Duration, error) {
-	key := client.ObjectKeyFromObject(cr)
 	if !cr.DeletionTimestamp.IsZero() {
-		c.inFlight.forget(p, key)
+		c.inFlight.forgetObject(p, cr)
 		return 0, nil
 	}
 	if commitRequestIsTerminal(cr) {
-		c.inFlight.forget(p, key)
+		c.inFlight.forgetObject(p, cr)
 		return c.serveFinished(ctx, p, cr)
 	}
 	if c.finalizer == nil {
-		p.log.V(1).Info("CommitRequest finalize disabled: no Finalizer configured", "name", key)
+		p.log.V(1).Info("CommitRequest finalize disabled: no Finalizer configured",
+			"name", client.ObjectKeyFromObject(cr))
 		return 0, nil
 	}
 	return c.serveOpen(ctx, p, cr)
@@ -526,7 +526,7 @@ func (c *commitRequestCore) drive(
 	target *configbutleraiv1alpha3.GitTarget, provider *configbutleraiv1alpha3.KubeProvider,
 ) (time.Duration, error) {
 	// Remembered before anything reaches a worker, so whatever it decides is written at shutdown.
-	c.inFlight.track(c, p, client.ObjectKeyFromObject(cr))
+	c.inFlight.track(c, p, cr)
 	attach := c.attachFor(cr)
 	if target != nil && string(target.UID) != cr.Status.GitTargetUID {
 		admitted, refusal, err := c.admit(ctx, p, cr, target, provider)

@@ -93,11 +93,11 @@ func (c *commitRequestCore) decide(
 	if err != nil || !written {
 		if err == nil && current != nil && commitRequestIsTerminal(current) {
 			// Another write got there first, and the request is finished all the same.
-			c.inFlight.forget(p, client.ObjectKeyFromObject(current))
+			c.inFlight.forgetObject(p, current)
 		}
 		return commitRequestRequeueNow, err
 	}
-	c.inFlight.forget(p, client.ObjectKeyFromObject(current))
+	c.inFlight.forgetObject(p, current)
 	if !afterClaim {
 		recordCommitRequestOutcome(ctx, o.metricOutcome(), target)
 	}
