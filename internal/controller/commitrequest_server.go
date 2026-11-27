@@ -596,7 +596,8 @@ func (s *CommitRequestServer) session(
 }
 
 // consider serves a request no goroutine serves yet: it takes steps until the core has nothing due
-// before the next relist looks at the request again.
+// before the next relist looks at the request again. The first step starts from u, the object the
+// list or watch event delivered (serveDelivered); every later step reads the request fresh.
 func (s *CommitRequestServer) consider(
 	ctx context.Context,
 	watcher *commitRequestWatcher,
@@ -618,23 +619,41 @@ func (s *CommitRequestServer) consider(
 		defer watcher.serving.Delete(u.GetUID())
 		woken, stop := s.Wakes.watch(u.GetUID())
 		defer stop()
-		for ctx.Err() == nil {
-			after, err := core.serve(ctx, watcher.path, key)
+		// nextStepDue waits for the step a result asks for, and reports false when none is due.
+		nextStepDue := func(after time.Duration, err error) bool {
 			if err != nil {
 				watcher.path.log.V(1).Info("A CommitRequest step failed; will retry", "commitRequest", key,
 					"err", err.Error())
 				after = commitRequestPollInterval
 			}
 			if after == 0 || after >= commitRequestRelist {
-				return
+				return false
 			}
 			select {
 			case <-ctx.Done():
 			case <-wait(after):
 			case <-woken:
 			}
+			return ctx.Err() == nil
+		}
+
+		after, err := serveDeliveredObject(ctx, core, watcher.path, u)
+		for nextStepDue(after, err) {
+			after, err = core.serve(ctx, watcher.path, key)
 		}
 	}()
+}
+
+// serveDeliveredObject takes the first step for u. An object that cannot be read as a CommitRequest
+// fails the step, and the next one reads the request fresh.
+func serveDeliveredObject(
+	ctx context.Context, core *commitRequestCore, p commitRequestPath, u *unstructured.Unstructured,
+) (time.Duration, error) {
+	delivered, err := commitRequestFromUnstructured(u)
+	if err != nil {
+		return 0, err
+	}
+	return core.serveDelivered(ctx, p, delivered)
 }
 
 func (s *CommitRequestServer) core() *commitRequestCore {

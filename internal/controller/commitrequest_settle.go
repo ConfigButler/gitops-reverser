@@ -9,6 +9,8 @@ import (
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	configbutleraiv1alpha3 "github.com/ConfigButler/gitops-reverser/api/v1alpha3"
 )
 
 // A save's outcome is decided by its branch worker and lives in the worker's memory until a step of
@@ -42,14 +44,19 @@ type inFlightKey struct {
 	request  types.NamespacedName
 }
 
-// inFlightRequest is how to take a step of a remembered request.
+// inFlightRequest is how to take a step of a remembered request, and its UID.
 type inFlightRequest struct {
 	core *commitRequestCore
 	path commitRequestPath
+	uid  types.UID
 }
 
 // track remembers a request p attaches.
-func (f *CommitRequestsInFlight) track(c *commitRequestCore, p commitRequestPath, key types.NamespacedName) {
+func (f *CommitRequestsInFlight) track(
+	c *commitRequestCore,
+	p commitRequestPath,
+	cr *configbutleraiv1alpha3.CommitRequest,
+) {
 	if f == nil {
 		return
 	}
@@ -58,10 +65,11 @@ func (f *CommitRequestsInFlight) track(c *commitRequestCore, p commitRequestPath
 	if f.requests == nil {
 		f.requests = map[inFlightKey]inFlightRequest{}
 	}
-	f.requests[inFlightKey{provider: p.provider, request: key}] = inFlightRequest{core: c, path: p}
+	f.requests[inFlightKey{provider: p.provider, request: client.ObjectKeyFromObject(cr)}] =
+		inFlightRequest{core: c, path: p, uid: cr.UID}
 }
 
-// forget drops a request that finished, or is gone.
+// forget drops a request that finished, or is gone, as read fresh by its name.
 func (f *CommitRequestsInFlight) forget(p commitRequestPath, key types.NamespacedName) {
 	if f == nil {
 		return
@@ -69,6 +77,20 @@ func (f *CommitRequestsInFlight) forget(p commitRequestPath, key types.Namespace
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.requests, inFlightKey{provider: p.provider, request: key})
+}
+
+// forgetObject drops cr, which finished, only if the request remembered under its name has cr's UID: an
+// old delivered object must not drop a newer request that reuses the name.
+func (f *CommitRequestsInFlight) forgetObject(p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := inFlightKey{provider: p.provider, request: client.ObjectKeyFromObject(cr)}
+	if remembered, ok := f.requests[key]; ok && remembered.uid == cr.UID {
+		delete(f.requests, key)
+	}
 }
 
 // remembered copies the requests out, for Settle to step through without the lock.

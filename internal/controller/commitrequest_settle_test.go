@@ -281,10 +281,28 @@ func TestCommitRequestsInFlight_ASourceClusterRequestIsSettledOnItsCluster(t *te
 func TestCommitRequestsInFlight_Nil(t *testing.T) {
 	var inFlight *CommitRequestsInFlight
 	assert.NotPanics(t, func() {
-		inFlight.track(&commitRequestCore{}, commitRequestPath{}, types.NamespacedName{Name: "save"})
+		inFlight.track(&commitRequestCore{}, commitRequestPath{}, newCommitRequest("save"))
 		inFlight.forget(commitRequestPath{}, types.NamespacedName{Name: "save"})
+		inFlight.forgetObject(commitRequestPath{}, newCommitRequest("save"))
 		inFlight.Settle(context.Background())
 	})
+}
+
+// A finished object of a request that another of its name replaced, as a list or watch event may still
+// deliver it, leaves the new request remembered: only that request's own object drops it.
+func TestCommitRequestsInFlight_AnOldObjectOfAReplacedRequestLeavesTheNewOne(t *testing.T) {
+	inFlight := &CommitRequestsInFlight{}
+	p := commitRequestPath{provider: types.NamespacedName{Namespace: "default", Name: "edge"}}
+	replaced := newCommitRequest("save")
+	replacement := newCommitRequest("save")
+	replacement.UID = "uid-save-again"
+	inFlight.track(&commitRequestCore{}, p, replacement)
+
+	inFlight.forgetObject(p, replaced)
+	assert.Len(t, inFlight.remembered(), 1, "the replaced request's object leaves the new one remembered")
+
+	inFlight.forgetObject(p, replacement)
+	assert.Empty(t, inFlight.remembered(), "its own object drops it")
 }
 
 // A shutdown out of time writes nothing more: what is left is attached again by the next process.

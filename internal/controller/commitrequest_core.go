@@ -141,6 +141,20 @@ func (c *commitRequestCore) serve(
 	return c.serveOpen(ctx, p, cr)
 }
 
+// serveDelivered is serve for a request a list or watch event delivered, which may be older than the
+// stored one. A finished request is served from it: it never reopens, and each write or delete of one
+// is conditional on its resourceVersion, so a relist reads no finished request again. Any other is
+// read fresh first, because its step may attach it to a worker before any conditional write.
+func (c *commitRequestCore) serveDelivered(
+	ctx context.Context, p commitRequestPath, delivered *configbutleraiv1alpha3.CommitRequest,
+) (time.Duration, error) {
+	if !commitRequestIsTerminal(delivered) || !delivered.DeletionTimestamp.IsZero() {
+		return c.serve(ctx, p, client.ObjectKeyFromObject(delivered))
+	}
+	c.inFlight.forgetObject(p, delivered)
+	return c.serveFinished(ctx, p, delivered)
+}
+
 // serveOpen is the step of a request whose save has not ended: it waits for its GitTarget, leaves it
 // to the path that owns it, or claims and drives it as its owner.
 func (c *commitRequestCore) serveOpen(
@@ -515,7 +529,7 @@ func (c *commitRequestCore) drive(
 	target *configbutleraiv1alpha3.GitTarget, provider *configbutleraiv1alpha3.KubeProvider,
 ) (time.Duration, error) {
 	// Remembered before anything reaches a worker, so whatever it decides is written at shutdown.
-	c.inFlight.track(c, p, client.ObjectKeyFromObject(cr))
+	c.inFlight.track(c, p, cr)
 	attach := c.attachFor(cr)
 	if target != nil && string(target.UID) != cr.Status.GitTargetUID {
 		admitted, refusal, err := c.admit(ctx, p, cr, target, provider)
