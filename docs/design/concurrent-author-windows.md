@@ -453,3 +453,6 @@ branch stay serial; the proof at arrival is the placement index, with its cost u
 2. Is a cap on open windows needed beyond the byte cap, such as one per `GitTarget`?
 3. When a save's own window is closed early by `path_conflict`, it commits with the save's message
    and less than the person meant to save. Is that acceptable, or should the save report it?
+   **Answered:** the save reports it. The request ends as before, and its `Ready` and `Reconciling`
+   messages add that the window closed early, so its edits after the other author's write are not
+   part of the save.

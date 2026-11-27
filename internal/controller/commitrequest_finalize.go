@@ -253,6 +253,24 @@ func applyFinalizeResultToStatus(
 		// An empty or unknown outcome with no error is a bug, not a benign
 		// rejection; fail it so it is not silently hidden.
 		failCommitRequest(cr, crReasonUnexpectedOutcome, "unexpected finalize outcome: "+string(result.Outcome))
+		return
+	}
+	if result.ClosedByPathConflict {
+		appendCommitRequestMessage(cr, pathConflictNote, ConditionTypeReady, ConditionTypeReconciling)
+	}
+}
+
+// pathConflictNote follows an outcome whose window another author's write closed early: the request
+// still settles as its outcome says, but it saves less than its author may have meant to.
+const pathConflictNote = "; the window closed early, because another author's write touched a file it held: " +
+	"edits made after that write are not part of this save"
+
+// appendCommitRequestMessage adds note to the message of each of cr's conditions named.
+func appendCommitRequestMessage(cr *configv1alpha3.CommitRequest, note string, conditionTypes ...string) {
+	for _, conditionType := range conditionTypes {
+		if condition := apimeta.FindStatusCondition(cr.Status.Conditions, conditionType); condition != nil {
+			condition.Message += note
+		}
 	}
 }
 

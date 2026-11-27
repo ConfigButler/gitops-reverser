@@ -1645,6 +1645,11 @@ func (l *branchWorkerEventLoop) finalizeWindow(window *openWindow, reason window
 	windowTarget := targetNamespace + "/" + targetName
 	pendingCR := window.pendingCR
 	effectiveMessage := window.pendingMessage
+	if reason == windowFinalizeReasonPathConflict && pendingCR != nil {
+		if pcr := l.pendingCRs[*pendingCR]; pcr != nil {
+			pcr.closedByPathConflict = true
+		}
+	}
 	// The render-fidelity gate drops the whole window, request or not: its events were planned
 	// against a render nobody has checked. Suspension is read from the write built below, because
 	// a suspended target still scans. See write_gate.go.

@@ -101,6 +101,45 @@ func TestWindowAdmission_AWriteToAFileAnotherWindowHoldsClosesThatWindowFirst(t 
 	)
 }
 
+// A request whose window another author's overlapping write closes early is told so on its result,
+// and one whose window closes on its own timer is not: it was not cut short.
+func TestWindowAdmission_ARequestWhoseWindowAPathConflictClosedIsToldSo(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		otherFile     string
+		closeOnItsOwn bool
+		wantConflict  bool
+	}{
+		{name: "another author writes a file the window holds", otherFile: "x", wantConflict: true},
+		{name: "another author writes a file of their own", otherFile: "z", closeOnItsOwn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAdmissionFixture(t, "admission-conflict-request", nil)
+			f.writeBy("alice", "x", "x2")
+			serviceAttach(f.loop, attachReq("alice", time.Hour))
+			alice := f.loop.windows.all()
+			require.Len(t, alice, 1)
+			require.NotNil(t, alice[0].pendingCR, "the request is attached to alice's window")
+
+			f.writeBy("carol", tc.otherFile, "v")
+			if tc.closeOnItsOwn {
+				require.Len(t, f.loop.windows.all(), 2, "disjoint windows stay open side by side")
+				alice[0].timers.maxAt = time.Now().Add(-time.Millisecond)
+				f.loop.closeOrArmWindow()
+				f.loop.endWake(0)
+			}
+			assert.Equal(t, []string{"carol"}, authorsOf(f.loop.windows.all()), "alice's window is closed")
+			f.loop.pushPending()
+
+			result, ok := outcome(t, f.worker)
+			require.True(t, ok, "the request is resolved once its commit is pushed")
+			require.NoError(t, result.Err)
+			assert.Equal(t, FinalizeCommitted, result.Outcome)
+			assert.Equal(t, tc.wantConflict, result.ClosedByPathConflict)
+		})
+	}
+}
+
 func TestWindowAdmission_AWriteThatCannotBeProvenStaysSerial(t *testing.T) {
 	shared := echoDocument("s1", "a") + "---\n" + echoDocument("s2", "b")
 	f := newAdmissionFixture(t, "admission-unproven",

@@ -780,6 +780,27 @@ func TestApplyFinalizeResultToStatus(t *testing.T) {
 		assert.Equal(t, "boom", stalled.Message)
 	})
 
+	t.Run("a window a path conflict closed says so, and still settles as its outcome", func(t *testing.T) {
+		for _, outcome := range []git.FinalizeOutcome{git.FinalizeCommitted, git.FinalizeAlreadyPresent} {
+			var cr configv1alpha3.CommitRequest
+			applyFinalizeResultToStatus(&cr, git.FinalizeResult{Outcome: outcome, Commit: "abc", Branch: "main",
+				ClosedByPathConflict: true}, nil)
+			ready := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady)
+			require.NotNil(t, ready, outcome)
+			assert.Equal(t, metav1.ConditionTrue, ready.Status, outcome)
+			assert.True(t, strings.HasSuffix(ready.Message, pathConflictNote), "%s: %q", outcome, ready.Message)
+			reconciling := apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReconciling)
+			require.NotNil(t, reconciling, outcome)
+			assert.True(t, strings.HasSuffix(reconciling.Message, pathConflictNote), outcome)
+		}
+
+		var failed configv1alpha3.CommitRequest
+		applyFinalizeResultToStatus(&failed, git.FinalizeResult{Outcome: git.FinalizeCommitted,
+			ClosedByPathConflict: true}, errors.New("boom"))
+		stalled := requireCondition(t, failed, ConditionTypeStalled, metav1.ConditionTrue, crReasonFinalizeFailed)
+		assert.Equal(t, "boom", stalled.Message, "a failure says only why it failed")
+	})
+
 	t.Run("unknown outcome stalls", func(t *testing.T) {
 		var cr configv1alpha3.CommitRequest
 		applyFinalizeResultToStatus(&cr, git.FinalizeResult{}, nil)

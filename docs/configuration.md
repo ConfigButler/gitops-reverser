@@ -3339,7 +3339,9 @@ request produced a pushed commit:
   under the earlier request's message first. Saves by different authors do not race for a
   message: each author's writes collect in a window of their own, side by side while their files
   are proven not to overlap, and otherwise a write by another author closes the open window, and
-  its message, before it opens one of its own.
+  its message, before it opens one of its own. When that write touched a file the window of a
+  request held, the request still ends as its outcome says, and its `Ready` message adds that the
+  window closed early: the author's edits after that write are not part of the save.
 
   `SaveInProgress` is decided when the branch worker registers the request, which is after its
   author was found, not when it is created. A client that relies on it to keep two of its saves

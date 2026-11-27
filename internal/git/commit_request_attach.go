@@ -107,6 +107,10 @@ type FinalizeResult struct {
 	// Held is why a request the worker holds has not reached the remote yet: the worker's
 	// publication report while it cannot publish, empty otherwise. See PublicationStatus.
 	Held string
+	// ClosedByPathConflict says the request's window was closed before its own timers ran out,
+	// because another author's write touched a file the window held: the author's edits after that
+	// write are not in this request's commit.
+	ClosedByPathConflict bool
 }
 
 // AttachCommitRequest is the "attach this CommitRequest to the author's window, with its
@@ -217,6 +221,9 @@ type pendingCommitRequest struct {
 	// instant check at expiry would miss the common case and report the refusal as "nothing was
 	// pending" — intermittently, which is worse than never.
 	sawForeignWindow bool
+	// closedByPathConflict is set when the window this request is attached to was closed because
+	// another author's write overlapped its footprint. It is reported on the request's result.
+	closedByPathConflict bool
 }
 
 // expiryOutcome is the terminal outcome for a request whose attach timeout ran out without it
