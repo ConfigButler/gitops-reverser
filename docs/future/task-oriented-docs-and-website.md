@@ -13,6 +13,22 @@ Organize the reader-facing navigation around outcomes. A reader should be able t
 step without already knowing names such as `GitTarget`, attribution, or API-first publication.
 Keep architecture and configuration reference available alongside the task guides.
 
+## Two personas
+
+The docs serve two kinds of reader, and each has a page that starts from its problem before any
+setup:
+
+- **Platform teams** run Kubernetes with a GitOps repository and serve application teams:
+  [let teams change the cluster through Kubernetes](../for-platform-teams.md).
+- **Application teams** offer their users or customers an API, such as per-customer settings:
+  [offer your users an API, with every change in Git](../for-application-teams.md). This is the page
+  that explains why a product would serve one kcp workspace per customer.
+
+A persona page explains GitOps Reverser's part, and links the sibling projects for the parts it
+leaves to others (browser access, live views, delivering settings to workloads) instead of
+documenting them here. An example earns its place on a persona page when it shows a decision GitOps
+Reverser makes.
+
 ## The four main categories
 
 These categories form the documentation landing page and the website's documentation navigation.
@@ -121,8 +137,10 @@ even where source material does. Proposed guides are named by task, not by filen
 | `docs/README.md` | Documentation landing page | Exists: organized around the four categories; link each new guide as it lands |
 | Root `README.md` | Homepage | Exists: reuse the product explanation and demo |
 | `alternatives.md` | Homepage: is this right for me? | Exists: link from adoption guidance |
+| `for-platform-teams.md` | Homepage and landing page: who uses it | Exists: the platform-team persona, the grants model, and the three adoption stages with their guides |
+| `for-application-teams.md` | Homepage and landing page: who uses it | Exists: the application-team persona, the Kubernetes API as a settings backend, the k8s-trail example, sibling projects, and why kcp |
 | `quickstart.md` | Get started: mirror | Exists: verify a first commit without an applier claim or push webhook |
-| `team-onboarding.md` | Get started: mirror | Exists: grants, branch, folder, selection, scratch-branch adoption, deletion policy; asks whether an applier deploys the folder |
+| `team-onboarding.md` | Get started: mirror | Exists: one worked example for the platform administrator, with a handoff to the team at step 5; grants, branch, folder, selection, scratch-branch adoption, deletion policy |
 | `github-setup-guide.md` | Get started: Git host | Exists: link to the push webhook guide |
 | `push-webhook.md` | Get started: coordination | Exists: receiver listener, route, `GitReceiver`, GitHub webhook, verification, rotation, and the Azure DevOps limit |
 | `azure-devops-getting-started.md` | Get started: Git host | Exists: state the push webhook limit described below |

@@ -7,6 +7,17 @@ These pages are organized by what you want to do. If you are new, read the
 Not sure this is the right tool? [Alternatives](alternatives.md) compares nearby tools and says when
 another approach fits better.
 
+## Who uses GitOps Reverser
+
+- **Platform teams** run Kubernetes with a GitOps repository, and want people and tools to change
+  the cluster through the Kubernetes API while Git stays the record. Start with
+  [let teams change the cluster through Kubernetes](for-platform-teams.md).
+- **Application teams** offer their users or customers an API, such as per-customer settings, and
+  want every change reviewable, attributed, and in their own Git repository. Start with
+  [offer your users an API, with every change in Git](for-application-teams.md).
+
+Both continue with **Get started** below.
+
 ## 1. Get started
 
 Pick a setup path with one question: **does Flux or Argo CD apply the same folder GitOps Reverser
