@@ -1,16 +1,28 @@
 # Start mirroring a team's resources
 
-This guide takes one team from nothing to its resources landing in a folder of the team's
-repository, ending at a first commit you can inspect. It is for a platform administrator onboarding
-a team on an existing installation, and for the team owner who then decides what to mirror.
+This guide is for a platform administrator who adds a team to an existing GitOps Reverser
+installation. It follows one example from start to finish:
+
+> Acme's platform team keeps one repository, `acme/platform`, for every team. Team A runs its apps
+> in the namespace `team-a`. It wants every change to its Deployments, Services, and ConfigMaps
+> recorded in the folder `teams/team-a`, which nothing deploys yet.
+
+At the end, Team A's resources are in that folder, and every change to them becomes a commit.
+
+Steps 1 to 4 are yours: they lend the team a repository, a branch, and access to its namespace.
+Steps 5 to 7 are the team's own choices, made in its own namespace. Do them together, or
+[send the team to step 5](#5-team-choose-the-folder) when you are done. Repeat the guide for every
+team on the same installation.
 
 It assumes GitOps Reverser is installed. If it is not, follow the [quick start](quickstart.md)
-first. You can repeat this guide for every team on the same installation.
+first. [Let teams change the cluster through Kubernetes](for-platform-teams.md) explains where this
+guide fits in a platform's adoption.
 
 ## First: does Flux or Argo CD apply the folder?
 
-Ask this before you pick the folder. If Flux or Argo CD applies the folder this team's resources
-will be written to, the two tools need coordinating, or each commit GitOps Reverser makes is applied
+Ask this before you pick the folder. Nothing deploys Team A's folder yet, but your team's may
+already be deployed. If Flux or Argo CD applies the folder this team's resources will be written
+to, the two tools need coordinating, or each commit GitOps Reverser makes is applied
 back over edits still in flight. In that case, finish this guide on a
 [scratch branch](#adopt-an-existing-repository-safely) that nothing deploys, then follow
 [bi-directional GitOps](bi-directional.md) before you point the team at the deployed folder.
@@ -161,6 +173,9 @@ Bind it to the team's group with a `RoleBinding`. Add `gitbranches` when the tea
 branch.
 
 ## 5. Team: choose the folder
+
+From here on, the team works in its own namespace, with the Role from step 4. The platform has
+lent it the `GitBranch` `platform/main` and the `KubeProvider` `gitops-reverser/local`.
 
 A `GitTarget` names the folder, the branch, and the source cluster:
 
@@ -321,3 +336,5 @@ through every condition.
 - [Group related changes into one commit](demo/commit-window.md) with a `CommitRequest`.
 - [Encrypt Secrets with SOPS and age](sops-age-guide.md) before mirroring `Secret`s.
 - If Flux or Argo CD applies the folder: [bi-directional GitOps](bi-directional.md).
+- If the team offers its own API to users or customers:
+  [offer your users an API, with every change in Git](for-application-teams.md).

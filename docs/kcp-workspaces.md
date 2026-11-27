@@ -2,7 +2,9 @@
 
 This guide mirrors the resources of one or more [kcp](https://www.kcp.io) workspaces into Git, and
 optionally names the workspace user who made each change as the commit author. It is for a
-platform administrator who runs kcp and installs GitOps Reverser beside it.
+platform administrator who runs kcp and installs GitOps Reverser beside it. Why a product would
+serve one workspace per customer is in
+[offer your users an API, with every change in Git](for-application-teams.md#one-api-per-customer-why-kcp).
 
 The guide has two parts, and you can stop after the first:
 
