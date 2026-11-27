@@ -29,7 +29,6 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clienttesting "k8s.io/client-go/testing"
-	"k8s.io/client-go/util/flowcontrol"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
@@ -558,39 +557,68 @@ func finishedSourceCommitRequest(name string) *unstructured.Unstructured {
 	return u
 }
 
-// throttledGets is a source cluster's client whose gets wait for a token-bucket rate limiter, as every
-// call of a real client does, outside the fake's own lock, so a list and watch never wait behind them.
+// orderedGets rate-limits a source cluster's gets, outside the fake's own lock, so a list and watch
+// never wait behind them. Each get takes the next turn, interval after the one before, in the order
+// the gets were made, and is recorded by name once it holds its turn.
+type orderedGets struct {
+	interval time.Duration
+
+	mu   sync.Mutex
+	next time.Time
+	took map[string]int
+}
+
+// turn records a get of name and waits for its turn.
+func (o *orderedGets) turn(name string) {
+	o.mu.Lock()
+	at := time.Now()
+	if o.next.After(at) {
+		at = o.next
+	}
+	o.next = at.Add(o.interval)
+	o.took[name]++
+	o.mu.Unlock()
+	time.Sleep(time.Until(at))
+}
+
+func (o *orderedGets) gets(name string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.took[name]
+}
+
+// throttledGets is a source cluster's client whose gets take turns from limit.
 type throttledGets struct {
 	dynamic.Interface
 
-	limiter flowcontrol.RateLimiter
+	limit *orderedGets
 }
 
 func (c throttledGets) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
-	return throttledResource{NamespaceableResourceInterface: c.Interface.Resource(gvr), limiter: c.limiter}
+	return throttledResource{NamespaceableResourceInterface: c.Interface.Resource(gvr), limit: c.limit}
 }
 
 type throttledResource struct {
 	dynamic.NamespaceableResourceInterface
 
-	limiter flowcontrol.RateLimiter
+	limit *orderedGets
 }
 
 func (r throttledResource) Namespace(namespace string) dynamic.ResourceInterface {
 	return throttledNamespace{ResourceInterface: r.NamespaceableResourceInterface.Namespace(namespace),
-		limiter: r.limiter}
+		limit: r.limit}
 }
 
 type throttledNamespace struct {
 	dynamic.ResourceInterface
 
-	limiter flowcontrol.RateLimiter
+	limit *orderedGets
 }
 
 func (r throttledNamespace) Get(
 	ctx context.Context, name string, options metav1.GetOptions, subresources ...string,
 ) (*unstructured.Unstructured, error) {
-	r.limiter.Accept()
+	r.limit.turn(name)
 	return r.ResourceInterface.Get(ctx, name, options, subresources...)
 }
 
@@ -604,42 +632,50 @@ func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheFinishedOnes
 	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
 	gvr := commitRequestGVR()
 	stored := make([]runtime.Object, 0, finished)
-	finishedNames := map[string]bool{}
 	for i := range finished {
-		name := fmt.Sprintf("finished-%02d", i)
-		finishedNames[name] = true
-		stored = append(stored, finishedSourceCommitRequest(name))
+		stored = append(stored, finishedSourceCommitRequest(fmt.Sprintf("finished-%02d", i)))
 	}
 	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, stored...)
-	var finishedGets atomic.Int32
-	source.PrependReactor("get", "commitrequests", func(action clienttesting.Action) (bool, runtime.Object, error) {
-		if finishedNames[action.(clienttesting.GetAction).GetName()] {
-			finishedGets.Add(1)
-		}
-		return false, nil, nil
-	})
 	watching := make(chan struct{})
 	var watchOnce sync.Once
 	source.PrependWatchReactor("commitrequests", func(clienttesting.Action) (bool, k8swatch.Interface, error) {
 		watchOnce.Do(func() { close(watching) })
 		return false, nil, nil
 	})
+	limit := &orderedGets{interval: 100 * time.Millisecond, took: map[string]int{}}
 	s := &CommitRequestServer{
 		Client: c, Finalizer: committed(), TTL: time.Hour, Log: logr.Discard(),
 		Clusters: fakeClusters{
-			dynamic:   throttledGets{Interface: source, limiter: flowcontrol.NewTokenBucketRateLimiter(10, 1)},
+			dynamic:   throttledGets{Interface: source, limit: limit},
 			discovery: fakeDiscovery(nil, commitRequestResources("configbutler.ai/v1alpha3", "commitrequests")),
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	s.syncProviders(ctx)
+
+	// The session serves every listed request before it opens the watch. Wait until each has either
+	// taken a turn for a get or finished its step, so the new request's turn comes after any of theirs.
 	select {
-	case <-watching: // the list has been served, and any gets of it are queued
+	case <-watching:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the session never watched")
 	}
+	s.mu.Lock()
+	watcher := s.watchers[provider.Key()]
+	s.mu.Unlock()
+	require.NotNil(t, watcher)
+	require.Eventually(t, func() bool {
+		for _, u := range stored {
+			name := u.(*unstructured.Unstructured).GetName()
+			if _, serving := watcher.serving.Load(u.(*unstructured.Unstructured).GetUID()); serving &&
+				limit.gets(name) == 0 {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, time.Millisecond, "every listed request has taken a turn or finished its step")
 
 	created := time.Now()
 	require.NoError(t, source.Tracker().Create(gvr, sourceCommitRequest("new"), "default"))
@@ -654,7 +690,10 @@ func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheFinishedOnes
 	assert.Eventually(t, claimed, 2*time.Second, 20*time.Millisecond,
 		"the new request is claimed without waiting behind the finished ones")
 	t.Logf("claimed %s after it was created", time.Since(created).Round(10*time.Millisecond))
-	assert.Zero(t, finishedGets.Load(), "no finished request is read again after the list returned it")
+	for _, u := range stored {
+		name := u.(*unstructured.Unstructured).GetName()
+		assert.Zero(t, limit.gets(name), "finished request %s is not read again after the list returned it", name)
+	}
 }
 
 // An event can deliver a request older than the stored one: the write of its claim, arriving after the
