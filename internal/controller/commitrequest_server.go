@@ -597,6 +597,11 @@ func (s *CommitRequestServer) session(
 
 // consider serves a request no goroutine serves yet: it takes steps until the core has nothing due
 // before the next relist looks at the request again.
+//
+// A finished or unclaimed request takes its first step from u, the object the list or watch event just
+// delivered, not from a get of it: a relist would otherwise get every stored request again, finished
+// ones included, through the source cluster's rate-limited client, and a request created meanwhile
+// would wait behind them all for its claim. See servableAsDelivered for why only those two.
 func (s *CommitRequestServer) consider(
 	ctx context.Context,
 	watcher *commitRequestWatcher,
@@ -609,7 +614,7 @@ func (s *CommitRequestServer) consider(
 		return
 	}
 	key := k8stypes.NamespacedName{Namespace: u.GetNamespace(), Name: u.GetName()}
-	core := s.core()
+	step := stepsOf(s.core(), watcher.path, key, u)
 	wait := s.after
 	if wait == nil {
 		wait = time.After
@@ -619,7 +624,7 @@ func (s *CommitRequestServer) consider(
 		woken, stop := s.Wakes.watch(u.GetUID())
 		defer stop()
 		for ctx.Err() == nil {
-			after, err := core.serve(ctx, watcher.path, key)
+			after, err := step(ctx)
 			if err != nil {
 				watcher.path.log.V(1).Info("A CommitRequest step failed; will retry", "commitRequest", key,
 					"err", err.Error())
@@ -635,6 +640,39 @@ func (s *CommitRequestServer) consider(
 			}
 		}
 	}()
+}
+
+// stepsOf takes the steps of the request key, which u delivered: the first from u itself where
+// servableAsDelivered allows it, and every other from the request as it is stored then.
+func stepsOf(
+	core *commitRequestCore, path commitRequestPath, key k8stypes.NamespacedName, u *unstructured.Unstructured,
+) func(context.Context) (time.Duration, error) {
+	delivered, err := commitRequestFromUnstructured(u)
+	if err != nil || !servableAsDelivered(delivered) {
+		delivered = nil // the first step gets it, and reports what cannot be read
+	}
+	return func(ctx context.Context) (time.Duration, error) {
+		if cr := delivered; cr != nil {
+			delivered = nil
+			return core.serveStored(ctx, path, cr)
+		}
+		return core.serve(ctx, path, key)
+	}
+}
+
+// servableAsDelivered reports whether a step may be decided from cr as a list or watch event delivered
+// it, which may be older than the stored request: an event can arrive after the goroutine that made the
+// write took its later steps and ended. That is safe where every step only reads, or writes
+// conditionally, before anything else:
+//
+//   - A finished request never opens again, and each write and the delete of one is conditional.
+//   - An unclaimed request, with no status at all, is claimed by a conditional write before it is
+//     attached, and a conflict then leaves it to whoever wrote first.
+//
+// A claimed request is attached to its worker, or withdrawn from it, as its step's first act, so it is
+// read again first: an old object would attach one whose save has already ended.
+func servableAsDelivered(cr *configbutleraiv1alpha3.CommitRequest) bool {
+	return commitRequestIsTerminal(cr) || len(cr.Status.Conditions) == 0
 }
 
 func (s *CommitRequestServer) core() *commitRequestCore {

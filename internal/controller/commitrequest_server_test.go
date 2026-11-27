@@ -541,3 +541,125 @@ func TestCommitRequestServer_AWatchClosedAtOnceWaitsBeforeListingAgain(t *testin
 		}
 	}
 }
+
+// finishedSourceCommitRequest is a request on a source cluster whose save ended and that waits out a
+// delete-after time far away, as every request a provider keeps for its TTL does.
+func finishedSourceCommitRequest(name string) *unstructured.Unstructured {
+	u := sourceCommitRequest(name)
+	u.SetAnnotations(map[string]string{
+		CommitRequestDeleteAfterAnnotation: time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339),
+	})
+	u.Object["status"] = map[string]any{"conditions": []any{map[string]any{
+		"type": ConditionTypeReady, "status": string(metav1.ConditionTrue), "reason": crReasonCommitted,
+		"message": "committed", "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+	}}}
+	return u
+}
+
+// A list serves each request it returns from the listed object, not from a get of it: through a
+// rate-limited client, a get of every stored request would queue a request created during the relist
+// behind them all, so its claim waited in proportion to how many requests the namespace keeps. Here
+// each get holds the client's later calls behind it, as client-side throttling does, and the new one is
+// still served within a bound no number of finished requests reaches.
+func TestCommitRequestServer_ARelistDoesNotQueueANewRequestBehindTheStoredOnes(t *testing.T) {
+	const finished = 40
+	const throttle = 100 * time.Millisecond // finished * throttle is four seconds of queue
+	provider := kubeconfigProvider("edge", true)
+	provider.Spec.CommitRequests = configv1alpha3.CommitRequestsReconcileAndDeleteFinished
+	c := newCommitRequestClient(t, nil, mirroringTarget("edge"), provider)
+	gvr := commitRequestGVR()
+	stored := make([]runtime.Object, 0, finished)
+	finishedNames := map[string]bool{}
+	for i := range finished {
+		name := "finished-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		finishedNames[name] = true
+		stored = append(stored, finishedSourceCommitRequest(name))
+	}
+	source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{gvr: "CommitRequestList"}, stored...)
+	// The fake client takes one action at a time, so each get holds every later call of this client
+	// behind it, as a rate limiter does.
+	var finishedGets atomic.Int32
+	source.PrependReactor("get", "commitrequests", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if finishedNames[action.(clienttesting.GetAction).GetName()] {
+			finishedGets.Add(1)
+		}
+		time.Sleep(throttle)
+		return false, nil, nil
+	})
+	watching := make(chan struct{})
+	var watchOnce sync.Once
+	source.PrependWatchReactor("commitrequests", func(clienttesting.Action) (bool, k8swatch.Interface, error) {
+		watchOnce.Do(func() { close(watching) })
+		return false, nil, nil
+	})
+	s := &CommitRequestServer{
+		Client: c, Finalizer: committed(), TTL: time.Hour, Log: logr.Discard(),
+		Clusters: fakeClusters{dynamic: source, discovery: fakeDiscovery(nil,
+			commitRequestResources("configbutler.ai/v1alpha3", "commitrequests"))},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.syncProviders(ctx)
+	select {
+	case <-watching:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session never watched")
+	}
+
+	// Created by someone else, on the cluster, not through the server's own throttled client.
+	require.NoError(t, source.Tracker().Create(gvr, sourceCommitRequest("new"), "default"))
+	require.Eventually(t, func() bool {
+		u, getErr := source.Tracker().Get(gvr, "default", "new")
+		if getErr != nil {
+			return false
+		}
+		cr, convErr := commitRequestFromUnstructured(u.(*unstructured.Unstructured))
+		if convErr != nil {
+			return false
+		}
+		return apimeta.FindStatusCondition(cr.Status.Conditions, ConditionTypeReady) != nil // the claim
+	}, 2*time.Second, 20*time.Millisecond, "the new request is claimed without waiting behind the stored ones")
+	assert.Zero(t, finishedGets.Load(), "no finished request is read again after the list returned it")
+}
+
+// An event can deliver a request older than the stored one: the write of its claim, arriving after the
+// steps that pushed it. A claimed request is read again before it is attached, so an old object never
+// attaches a request whose save has ended.
+func TestCommitRequestServer_AnOldEventOfAClaimedRequestIsReadAgain(t *testing.T) {
+	cr := newCommitRequest("save")
+	cr.Spec.GitTargetRef.Namespace = "default"
+	f := committed()
+	c := newCommitRequestClient(t, nil, cr, mirroringTarget("edge"), kubeconfigProvider("edge", true))
+	server := &CommitRequestServer{Client: c, Finalizer: f}
+	watcher := &commitRequestWatcher{
+		provider: types.NamespacedName{Namespace: "default", Name: "edge"}, path: watcherPath(c, "edge", false),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	deliver := func(cr *configv1alpha3.CommitRequest) {
+		u, err := commitRequestToUnstructured(cr)
+		require.NoError(t, err)
+		server.consider(ctx, watcher, u)
+		require.Eventually(t, func() bool {
+			_, serving := watcher.serving.Load(cr.UID)
+			return !serving
+		}, 10*time.Second, time.Millisecond, "the delivered request's steps end")
+	}
+
+	stored := fetchCommitRequest(t, c, "save")
+	claimEvent := stored.DeepCopy() // how the claim reads, as its event will deliver it
+	var target configv1alpha3.GitTarget
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "default", Name: "team-a-config"}, &target))
+	claimEvent.Status.GitTargetUID = string(target.UID)
+	markCommitRequestProgressing(claimEvent, "", "")
+
+	deliver(&stored)
+	ready := commitRequestReady(t, c, "save")
+	require.NotNil(t, ready)
+	require.Equal(t, crReasonCommitted, ready.Reason, "the request is pushed")
+	require.Len(t, f.calls, 1)
+
+	deliver(claimEvent)
+	assert.Len(t, f.calls, 1, "the old event attached nothing: the stored request had finished")
+}

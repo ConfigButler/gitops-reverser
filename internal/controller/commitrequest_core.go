@@ -126,6 +126,17 @@ func (c *commitRequestCore) serve(
 		}
 		return 0, client.IgnoreNotFound(err)
 	}
+	return c.serveStored(ctx, p, cr)
+}
+
+// serveStored takes one step for cr, as it was read from p's store: by a get, or by the list or watch
+// event that delivered it, where the caller knows the step is safe on an object that may have changed
+// since (servableAsDelivered). Every write is conditional on cr.ResourceVersion, so such a step fails
+// with a conflict and the next one reads the request again.
+func (c *commitRequestCore) serveStored(
+	ctx context.Context, p commitRequestPath, cr *configbutleraiv1alpha3.CommitRequest,
+) (time.Duration, error) {
+	key := client.ObjectKeyFromObject(cr)
 	if !cr.DeletionTimestamp.IsZero() {
 		c.inFlight.forget(p, key)
 		return 0, nil
