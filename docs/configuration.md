@@ -3565,6 +3565,9 @@ Use an annotation that the producing control plane sets consistently as source m
 routing metadata only: it keeps the audit fact and the watch event in the same source-cluster
 partition, so a user from one logical cluster can never be credited for a matching object in another.
 
+For kcp, where the annotation is `kcp.io/cluster` and its value is a workspace's logical cluster
+name, see [mirror kcp workspaces](kcp-workspaces.md).
+
 Valkey/Redis is **optional**: when `--redis-addr` is set, watch resume cursors are stored so restarts
 pick up where they left off; when left empty, watches cold-replay from scratch on restart instead. The
 Helm chart defaults to **configured-author** (`attribution.enabled: false`): the audit webhook is

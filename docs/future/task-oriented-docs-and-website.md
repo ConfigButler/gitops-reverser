@@ -1,7 +1,8 @@
 # Task-oriented documentation and a static website
 
-Status: proposed documentation and website plan. The navigation, page splits, and website described
-here are future work.
+Status: phase 1 (navigation) is done: [the documentation landing page](../README.md) is organized
+under the four categories below. The page splits, the missing guides, and the website are future
+work.
 
 ## Goal
 
@@ -117,7 +118,7 @@ even where source material does. Proposed guides are named by task, not by filen
 
 | Guide or source | Destination | State and action |
 | --- | --- | --- |
-| `docs/README.md` | Documentation landing page | Exists: rewrite around the four categories |
+| `docs/README.md` | Documentation landing page | Exists: organized around the four categories; link each new guide as it lands |
 | Root `README.md` | Homepage | Exists: reuse the product explanation and demo |
 | `alternatives.md` | Homepage: is this right for me? | Exists: link from adoption guidance |
 | `quickstart.md` | Get started: capture | Exists: verify a first commit without an applier claim or push webhook |
@@ -129,6 +130,7 @@ even where source material does. Proposed guides are named by task, not by filen
 | `bi-directional.md` | Get started: coordination overview | Needs split: keep the setup decision and common behavior; extract receiver setup into the push-notification guide and the everyday Git edit into Make changes |
 | `bi-directional-flux.md`, `bi-directional-argocd.md` | Get started: applier setup | Exists: link receiver setup and verify both directions |
 | `sops-age-guide.md`, `commit-signing.md` | Get started: supporting guides | Exists |
+| `kcp-workspaces.md` | Get started: supporting guides | Exists: kcp workspace mirroring and shared-stream attribution |
 | Normal Kubernetes change | Make changes | Missing: expand the quick-start example into create, update, delete, and refusal outcomes |
 | `demo/commit-window.md` | Make changes: group and explain | Exists: the worked task guide |
 | `commit-messages.md` | Reference, linked from grouped changes | Exists: template reference |
@@ -245,10 +247,10 @@ against these requirements and their maintenance cost.
 
 ## Implementation phases
 
-**Phase 1: Navigation.** Rewrite `docs/README.md` under the four categories from the inventory,
-with both setup paths under Get started. Link `docs/INDEX.md` as the maintainer entry point. Keep
-the lifecycle folders and source citations; navigation provides the new structure without moving
-files.
+**Phase 1: Navigation. Done.** `docs/README.md` lists the inventory under the four categories, with
+both setup paths under Get started, and links `docs/INDEX.md` as the maintainer entry point. A
+missing guide is linked to its best existing source until it is written. The lifecycle folders and
+source citations are unchanged.
 
 **Phase 2: Reading paths.**
 

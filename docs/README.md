@@ -1,45 +1,103 @@
 # Documentation
 
-This repository has two kinds of markdown:
+GitOps Reverser turns changes made through the Kubernetes API into commits in a Git repository.
+These pages are organized by what you want to do. If you are new, read the
+[product overview](../README.md) first, then follow **Get started** from the top.
 
-- stable user/operator guides
-- maintainer notes, design docs, and working plans
+Not sure this is the right tool? [Alternatives](alternatives.md) compares nearby tools and says when
+another approach fits better.
 
-If you only want the supported product docs, start with the files below.
+## 1. Get started
 
-## Start here
+Pick a setup path with one question: **does Flux or Argo CD apply the same folder GitOps Reverser
+writes?** If yes, follow [coordinate changes from Kubernetes and Git](#coordinate-changes-from-kubernetes-and-git),
+even when you only want to record cluster changes for now. An applier that keeps deploying that
+folder needs coordination either way. If no, follow [capture cluster state in Git](#capture-cluster-state-in-git).
 
-- [`../README.md`](../README.md): product overview and supported workflows
-- [`quickstart.md`](quickstart.md): installation and your first Git commit
-- [`demo/commit-window.md`](demo/commit-window.md): two resources and a `CommitRequest`
-- [`configuration.md`](configuration.md): core configuration objects, every setting, and how
-  they fit together
-- [`commit-messages.md`](commit-messages.md): the three commit message templates and their context
-- [`api-first-publication.md`](api-first-publication.md): why API edits drive publication, how
-  replay handles remote changes, and how commit windows and push timing fit together
-- [`installing-apps-as-krm.md`](installing-apps-as-krm.md): installing an app is adding a KRM
-  document: Flux `HelmRelease`, Argo CD `Application`, KRO, and core resources all mirror and edit alike
-- [`commit-signing.md`](commit-signing.md): how valid Git signatures map to platform verification
-- [`github-setup-guide.md`](github-setup-guide.md): GitHub repository and credential setup
-- [`azure-devops-getting-started.md`](azure-devops-getting-started.md): Azure DevOps repository and credential setup
-- [`attribution-setup-guide.md`](attribution-setup-guide.md): naming real Kubernetes users as commit
-  authors via kube-apiserver audit delivery
-- [`sops-age-guide.md`](sops-age-guide.md): Secret encryption with SOPS + age
-- [`security-model.md`](security-model.md): controller access, trust boundaries, and the Git
-  credentials Secret shape
-- [`rbac.md`](rbac.md): the two ClusterRoles (plus the optional applier grants), and how to stop the
-  reverser enumerating Secrets
-- [`bi-directional.md`](bi-directional.md): when Flux or Argo CD applies a folder GitOps Reverser
-  writes, and why every other setup needs nothing
-- [`bi-directional-flux.md`](bi-directional-flux.md): the complete Flux setup for such a folder
-- [`bi-directional-argocd.md`](bi-directional-argocd.md): the complete Argo CD setup for such a folder
-- [`alternatives.md`](alternatives.md): nearby tools and when another approach fits better
-- [`UPGRADING.md`](UPGRADING.md): breaking changes and migration steps, newest first
-- [`../CONTRIBUTING.md`](../CONTRIBUTING.md): contributor workflow and validation commands
-- [`style-guide.md`](style-guide.md): how docs here are written, including the no-em-dash rule and
-  the American-English decision
-- [`../test/e2e/E2E_DEBUGGING.md`](../test/e2e/E2E_DEBUGGING.md): e2e troubleshooting, reuse,
-  and `.stamps`
+### Capture cluster state in Git
+
+The shortest path to a commit in Git, with no applier and no Git push webhook. It captures the
+selected cluster state; batching and restarts mean Git history is not a complete record of every
+event.
+
+1. **Install GitOps Reverser and see a first commit:** [quick start](quickstart.md).
+2. **Connect your Git host:** [GitHub](github-setup-guide.md) or
+   [Azure DevOps](azure-devops-getting-started.md).
+3. **Start capturing a team's resources:** choose the source cluster, namespaces, resources,
+   repository, branch, and folder. The [configuration overview](configuration.md#how-the-objects-fit-together)
+   shows how the objects fit, and [one tenant, end to end](configuration.md#one-tenant-end-to-end)
+   walks a team through it. To adopt an existing repository, start on a
+   [scratch branch](configuration.md#seeing-what-a-target-will-do-before-it-does-it) and choose a
+   [deletion policy](configuration.md#deletion-policy-specprunemode) before going live.
+4. **Optional: record who made each change:** [attribute commits to Kubernetes users](attribution-setup-guide.md)
+   through API-server audit delivery. It needs control over the API server's audit settings;
+   [the k3s example](audit-setup/cluster/readme.md) shows a complete configuration.
+
+### Coordinate changes from Kubernetes and Git
+
+For a folder that Flux or Argo CD also applies. Start with the capture path above, then:
+
+1. **Understand why coordination is needed:** [bi-directional GitOps](bi-directional.md).
+2. **Configure the applier:** [Flux](bi-directional-flux.md) or [Argo CD](bi-directional-argocd.md).
+3. **React promptly to Git pushes:** configure the Git host's push webhook and a `GitReceiver`, as
+   in [telling GitOps Reverser that somebody else pushed](bi-directional.md#telling-gitops-reverser-that-somebody-else-pushed).
+   The [`GitReceiver` reference](configuration.md#gitreceiver) lists the supported hosts.
+4. **Optional: record who made each change**, as in the capture path.
+
+### Supporting guides
+
+Use these where your setup needs them:
+
+- [Encrypt Secrets with SOPS and age](sops-age-guide.md)
+- [Sign commits](commit-signing.md)
+- [Narrow the controller's permissions](rbac.md)
+- [Mirror kcp workspaces](kcp-workspaces.md), including commit authors from kcp's shared audit stream
+- [Helm chart values](../charts/gitops-reverser/README.md)
+
+## 2. Make changes
+
+- **Make a change through Kubernetes:** create, update, or delete a selected resource and follow it
+  into Git. The [quick start's test step](quickstart.md#4-test-it) is the smallest example.
+- **Group changes and explain why:** [the commit window demo](demo/commit-window.md) collects two
+  edits and saves them as one commit with a `CommitRequest`. [Commit messages](commit-messages.md)
+  covers the templates.
+- **Choose what to capture:** [installing apps as KRM](installing-apps-as-krm.md) shows that a Flux
+  `HelmRelease`, an Argo CD `Application`, or a KRO instance mirrors and edits like any other
+  resource.
+- **Work alongside other people on the same branch:** [API-first publication](api-first-publication.md)
+  explains how edits from several authors and targets become commits, and what happens when another
+  writer moves the branch.
+- **Make a change through Git:** with an applier configured, a push reaches the cluster as described
+  in [the life of an apply](bi-directional.md#the-life-of-an-apply).
+
+## 3. Operate
+
+- **Monitor health and resource usage:** [interpreting metrics](interpreting-metrics.md), including
+  [suggested alerts](interpreting-metrics.md#suggested-alerts).
+- **Investigate a missing or unexpected change:** start from the resource's conditions
+  (`kubectl describe`), then the [metrics for the watch-to-push pipeline](interpreting-metrics.md#pipeline-watch-to-push)
+  and the [operational boundaries](architecture.md#operational-boundaries).
+- **Upgrade an installation:** [UPGRADING.md](UPGRADING.md) lists breaking changes and migration
+  steps, newest first.
+
+## 4. Understand and reference
+
+- [Architecture](architecture.md): how a Kubernetes edit reaches Git, how a Git edit reaches the
+  cluster, and the boundaries around safety and recovery.
+- [Configuration](configuration.md): every object, field, default, and controller setting.
+- [Security model](security-model.md): credentials, permissions, trust boundaries, and the Git
+  credentials Secret shape.
+- [RBAC](rbac.md): the two ClusterRoles, the optional applier grants, and how to stop the controller
+  listing Secrets.
+- [Definitions](definitions.md): the vocabulary these pages use.
+- [Helm chart](../charts/gitops-reverser/README.md): installation options and values.
+
+## Contributing
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md): contributor workflow and validation commands.
+- [Style guide](style-guide.md): how these docs are written, including the no-em-dash rule and the
+  American-English decision.
+- [e2e debugging](../test/e2e/E2E_DEBUGGING.md): e2e troubleshooting, reuse, and `.stamps`.
 
 ## Maintainer notes
 
