@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.58.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.57.0...v0.58.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* **commitrequest:** gitopsreverser_git_commit_windows_total no longer has close_reason="identity_change". It is one of other_target, unproven_footprint or single_window; sum the three for the old total.
+
+### Features
+
+* **commitrequest:** say why a write outside a save's window closed it early, and split identity_change into precise close reasons ([#491](https://github.com/ConfigButler/gitops-reverser/issues/491)) ([9970ce7](https://github.com/ConfigButler/gitops-reverser/commit/9970ce719b2f7b9b959159029ab5d57b55d7a19c))
+
+
+### Bug Fixes
+
+* **commitrequest:** list a source cluster's CommitRequests again at once when a watch ends ([#490](https://github.com/ConfigButler/gitops-reverser/issues/490)) ([4671282](https://github.com/ConfigButler/gitops-reverser/commit/4671282eebd3eb45b45acfdb76cec30dad6b11cf))
+
+
+### Documentation
+
+* add persona pages for platform teams and application teams ([#489](https://github.com/ConfigButler/gitops-reverser/issues/489)) ([9458a32](https://github.com/ConfigButler/gitops-reverser/commit/9458a3221301bf73f84431f4a02df04167bcb6d1))
+* organize the docs by task, and add team onboarding, push webhook, and kcp guides ([#488](https://github.com/ConfigButler/gitops-reverser/issues/488)) ([05d3dfb](https://github.com/ConfigButler/gitops-reverser/commit/05d3dfb959e27f3187b1ee683cc6081b0614870c))
+
 ## [0.57.0](https://github.com/ConfigButler/gitops-reverser/compare/v0.56.0...v0.57.0) (2026-11-25)
 
 
