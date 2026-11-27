@@ -332,6 +332,19 @@ clusters, and in prose "the receiver" is fine. A delivery to it is a hint to loo
 about the branch: it wakes the branch worker of each provider for the repository and branch it
 names, and the worker reads the remote itself.
 
+**Push webhook.** The Git host's webhook for pushes, configured in the repository's or the
+organization's settings and pointed at a receiver's `status.webhookPath`. Say "push webhook" for the
+host-side configuration and the capability as a whole. Not "push notification" or "push hook".
+
+**Push event.** The Git host's own name for what a push webhook reports: one push, naming a
+repository, a branch, and the commit it moved to. GitHub, GitLab and Gitea all call it that.
+
+**Delivery.** One request a push webhook sends to a receiver, carrying one push event. It is
+verified before its body is parsed, and a verified delivery is only a hint (see **Receiver**).
+`gitopsreverser_receiver_deliveries_total` counts deliveries by `outcome`, and
+`GitBranch.status.lastPushNoticeAt` records when one last reached the branch. The **audit webhook**
+sends requests too; call those audit requests, so "delivery" stays with the push webhook.
+
 ## Attribution
 
 The word alone is ambiguous, so it is never used alone. There are two:
@@ -354,6 +367,18 @@ is the `<route>` segment in `/audit-webhook/<route>`, and defaults to the `KubeP
 `<namespace>.<name>`. A route is **held** by one namespace: the one its first dot-segment names when
 a provider there carries it, otherwise the namespace of the oldest provider carrying it. A provider
 elsewhere that carries it is not used (`AuditRouteConflict`), so no namespace reads another's facts.
+
+**Audit webhook.** The kube-apiserver's audit webhook backend, configured to post audit events to the
+operator's audit listener. It authenticates with a client certificate, where a push webhook proves
+itself with a shared token, which is why the two never share a listener. A bare "webhook" is ambiguous wherever both
+could be meant: say which.
+
+**Named endpoint, bare endpoint.** The two paths the audit listener serves. A **named endpoint**,
+`/audit-webhook/<route>`, files every event it receives under that route. The **bare endpoint**,
+`/audit-webhook` with no route, serves a **shared audit stream**: one producer's events for many
+source clusters, such as a kcp shard's. It reads each event's route from the event annotation
+`--author-attribution-audit-route-annotation-key` names, drops an event without one, and is off until
+that flag is set. The stream is shared; the endpoint is bare. Not "shared endpoint".
 
 **Grace window.** The bounded wait for a matching fact before a watch event ships credited to the
 committer instead.
@@ -546,3 +571,5 @@ outage.
 | trigger, apply trigger (for an applier claim) | applier claim | the resource does not declare when to apply, and "trigger" already names watch-plan, API-surface and Argo Events triggers |
 | quiet branch | flush | no apply waits for a branch with nothing pending; it goes after a flush |
 | consumer (for what applies a `GitRepository`) | what applies it, `alsoAppliedBy` | consumer names the object a grant admits |
+| push notification, push hook | push webhook, delivery | the host configures a push webhook, and it sends deliveries |
+| shared endpoint (for `/audit-webhook`) | bare endpoint | the stream is what is shared; the endpoint is the path with no route |

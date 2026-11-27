@@ -971,8 +971,8 @@ sum by (outcome) (rate(gitopsreverser_audit_eventlist_duration_seconds_count[5m]
 
 **Per-event census.** `audit_events_total` increments exactly once per decoded event. `category`
 is the coarse bucket of `outcome` (carried as its own label so the health invariant is a simple
-selector). `audit_route` is the route the event was posted under, `/audit-webhook/<route>` or the
-shared endpoint's annotation, when some `KubeProvider` declares it; `unrecognized` when none does,
+selector). `audit_route` is the route the event was posted under, `/audit-webhook/<route>` or, on the
+bare endpoint, the event's annotation, when some `KubeProvider` declares it; `unrecognized` when none does,
 and `none` for an event that names no route. A route is producer-chosen text, so only declared ones
 become label values. A fresh pod reads every route as `unrecognized` until its `KubeProvider`s have
 reconciled, which takes seconds.
