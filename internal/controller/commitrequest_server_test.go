@@ -497,33 +497,47 @@ func TestCommitRequestServer_AWatchThatEndsListsAgainAtOnce(t *testing.T) {
 }
 
 // A watch a server closes at once, cleanly or with 410 Gone, waits commitRequestReconnect before listing
-// again, so such a server is not listed in a loop.
+// again, so such a server is not listed in a loop: also when its list takes longer than
+// commitRequestShortWatch, since only the watch's own run counts.
 func TestCommitRequestServer_AWatchClosedAtOnceWaitsBeforeListingAgain(t *testing.T) {
 	for _, tc := range commitRequestWatchEnds {
-		t.Run(tc.name, func(t *testing.T) {
-			source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
-				map[schema.GroupVersionResource]string{commitRequestGVR(): "CommitRequestList"})
-			lists := countCommitRequestLists(source)
-			source.PrependWatchReactor("commitrequests",
-				func(clienttesting.Action) (bool, k8swatch.Interface, error) {
-					w := k8swatch.NewFakeWithChanSize(1, false)
-					tc.end(w)
-					return true, w, nil
-				})
-			s := &CommitRequestServer{Log: logr.Discard()}
-			watcher := &commitRequestWatcher{forbidden: map[string]bool{}, undeletable: map[string]bool{}}
-			ctx, cancel := context.WithCancel(context.Background())
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				s.watchNamespace(ctx, logr.Discard(), watcher, source.Resource(commitRequestGVR()), "default")
-			}()
+		for _, slowList := range []bool{false, true} {
+			name := tc.name
+			if slowList {
+				name += ", slow list"
+			}
+			t.Run(name, func(t *testing.T) {
+				source := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+					map[schema.GroupVersionResource]string{commitRequestGVR(): "CommitRequestList"})
+				lists := countCommitRequestLists(source)
+				if slowList {
+					source.PrependReactor("list", "commitrequests",
+						func(clienttesting.Action) (bool, runtime.Object, error) {
+							time.Sleep(commitRequestShortWatch + 100*time.Millisecond)
+							return false, nil, nil
+						})
+				}
+				source.PrependWatchReactor("commitrequests",
+					func(clienttesting.Action) (bool, k8swatch.Interface, error) {
+						w := k8swatch.NewFakeWithChanSize(1, false)
+						tc.end(w)
+						return true, w, nil
+					})
+				s := &CommitRequestServer{Log: logr.Discard()}
+				watcher := &commitRequestWatcher{forbidden: map[string]bool{}, undeletable: map[string]bool{}}
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					s.watchNamespace(ctx, logr.Discard(), watcher, source.Resource(commitRequestGVR()), "default")
+				}()
 
-			require.Eventually(t, func() bool { return lists.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
-			time.Sleep(2 * commitRequestShortWatch)
-			assert.Equal(t, int32(1), lists.Load(), "no second list before commitRequestReconnect")
-			cancel()
-			<-done
-		})
+				require.Eventually(t, func() bool { return lists.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
+				time.Sleep(3 * commitRequestShortWatch)
+				assert.Equal(t, int32(1), lists.Load(), "no second list before commitRequestReconnect")
+				cancel()
+				<-done
+			})
+		}
 	}
 }

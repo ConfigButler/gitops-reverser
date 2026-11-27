@@ -508,20 +508,19 @@ func (s *CommitRequestServer) clusterClient(
 // watchNamespace lists and watches one namespace's CommitRequests, or every namespace's, until ctx ends.
 // A session that ends cleanly, as every one does after commitRequestRelist, or on 410 Gone, lists again
 // at once: the next watch starts from that list's resourceVersion, so no request goes unseen in between.
-// A failure waits commitRequestReconnect first, and so does a session that ended that way within
-// commitRequestShortWatch, so a server that closes every watch at once is not listed in a loop.
+// A failure waits commitRequestReconnect first, and so does a watch that ended that way within
+// commitRequestShortWatch of opening, so a server that closes every watch at once is not listed in a loop,
+// however long its list takes.
 func (s *CommitRequestServer) watchNamespace(
 	ctx context.Context, log logr.Logger, watcher *commitRequestWatcher,
 	resource dynamic.NamespaceableResourceInterface, namespace string,
 ) {
 	label := namespaceLabel(namespace)
 	for ctx.Err() == nil {
-		started := time.Now()
-		err := s.session(ctx, watcher, resource.Namespace(namespace), label)
+		ran, err := s.session(ctx, watcher, resource.Namespace(namespace), label)
 		if ctx.Err() != nil {
 			return
 		}
-		ran := time.Since(started)
 		relist := err == nil || apierrors.IsResourceExpired(err) || apierrors.IsGone(err)
 		switch {
 		case relist && ran >= commitRequestShortWatch:
@@ -552,14 +551,15 @@ func errString(err error) string {
 	return err.Error()
 }
 
-// session lists the requests and watches them, until the watch ends. A list that succeeds clears a
-// denial reported for the namespace, so a Role granted since is reported at once.
+// session lists the requests and watches them, until the watch ends, and says how long the watch ran:
+// zero when it never opened. A list that succeeds clears a denial reported for the namespace, so a Role
+// granted since is reported at once.
 func (s *CommitRequestServer) session(
 	ctx context.Context, watcher *commitRequestWatcher, resource dynamic.ResourceInterface, namespace string,
-) error {
+) (time.Duration, error) {
 	list, err := resource.List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	watcher.mark(watcher.forbidden, namespace, false)
 	for i := range list.Items {
@@ -570,16 +570,17 @@ func (s *CommitRequestServer) session(
 		ResourceVersion: list.GetResourceVersion(), AllowWatchBookmarks: true, TimeoutSeconds: &timeout,
 	})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer w.Stop()
+	opened := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			return time.Since(opened), nil
 		case ev, ok := <-w.ResultChan():
 			if !ok {
-				return nil
+				return time.Since(opened), nil
 			}
 			switch ev.Type {
 			case k8swatch.Added, k8swatch.Modified:
@@ -587,7 +588,7 @@ func (s *CommitRequestServer) session(
 					s.consider(ctx, watcher, u)
 				}
 			case k8swatch.Error:
-				return apierrors.FromObject(ev.Object)
+				return time.Since(opened), apierrors.FromObject(ev.Object)
 			case k8swatch.Deleted, k8swatch.Bookmark:
 			}
 		}
